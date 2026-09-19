@@ -14,6 +14,9 @@ import { createDeferredCore } from "../shared/deferred.js";
 import { beginDoctorMaintenance } from "./doctor-maintenance.js";
 
 const boundary = vi.hoisted(() => ({
+  admission: vi.fn(),
+  authority: vi.fn(),
+  scopeAssert: undefined as undefined | (() => void),
   acquire: vi.fn(),
   stateAcquire: vi.fn(),
   owner: vi.fn(),
@@ -68,6 +71,10 @@ vi.mock("../infra/update-run-ledger.js", () => ({
   listUpdateRuns: () => [],
   recordUpdateRunRepairContinuation: vi.fn(),
 }));
+vi.mock("../infra/update-run-activity.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../infra/update-run-activity.js")>()),
+  inspectUpdateRepairDriverAdmission: boundary.admission,
+}));
 vi.mock("node:timers/promises", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:timers/promises")>()),
   setTimeout: boundary.sleep,
@@ -106,9 +113,20 @@ vi.mock("../daemon/service-operation-lock.js", () => ({
     _env: NodeJS.ProcessEnv,
     run: (assertCurrent: () => void) => Promise<unknown>,
   ) => {
+    const previous = boundary.scopeAssert;
+    let active = true;
+    const assertCurrent = () => {
+      if (!active) {
+        throw new Error("native operation custody retired");
+      }
+      boundary.authority();
+    };
+    boundary.scopeAssert = assertCurrent;
     try {
-      return await run(() => {});
+      return await run(assertCurrent);
     } finally {
+      active = false;
+      boundary.scopeAssert = previous;
       boundary.unlock();
     }
   },
@@ -130,6 +148,8 @@ const root = "/synthetic/doctor-install";
 let stopped: PreManagedServiceStop;
 beforeEach(() => {
   vi.resetAllMocks();
+  boundary.scopeAssert = undefined;
+  boundary.admission.mockReturnValue({ kind: "recovery", runs: [] });
   boundary.stateAcquire.mockImplementation(() => ({ release: boundary.release }));
   boundary.acquire.mockImplementation(() => ({
     release: boundary.release,
@@ -310,6 +330,7 @@ it.each(
     if (!maintenance) {
       throw new Error("The repair did not acquire maintenance");
     }
+    boundary.unlock.mockClear();
     const barrier = cleanupBarrier();
     if (phase === "inspection") {
       const read = boundary.read.getMockImplementation()!;
@@ -439,14 +460,102 @@ it.each([false, true])(
 
 it("restores a service after state ownership fails without retaining a partial maintenance scope", async () => {
   boundary.owner.mockReturnValue({ state: "live", mode: "supervised" });
-  boundary.acquire.mockImplementationOnce(() => {
-    throw new StateDatabaseCoordinatorContentionError("gateway-lifecycle");
-  });
+  let heldLeases = 0;
+  boundary.acquire
+    .mockImplementation(() => {
+      heldLeases++;
+      return {
+        release: () => {
+          heldLeases--;
+        },
+        createSchemaFenceDelegate: vi.fn(),
+      };
+    })
+    .mockImplementationOnce(() => {
+      throw new StateDatabaseCoordinatorContentionError("gateway-lifecycle");
+    });
   boundary.stateAcquire.mockImplementation(() => {
     throw new StateDatabaseCoordinatorContentionError("state-lifecycle");
   });
   await expect(begin()).rejects.toThrow(/state-lifecycle/);
   expect(boundary.restart).toHaveBeenCalledOnce();
-  expect(boundary.release).toHaveBeenCalledTimes(2);
+  expect(heldLeases).toBe(0);
   expect(boundary.sleep).not.toHaveBeenCalled();
 });
+
+it.each(["drain", "acquired", "native-revoked"] as const)(
+  "refuses changed repair admission and compensates under original service custody (%s)",
+  async (phase) => {
+    let ticks = 0;
+    let gatewayHeld = false;
+    let stateHeld = false;
+    let conflict = false;
+    let checkedUnderBoth = false;
+    let stopCustody: (() => void) | undefined;
+    let capturedStopAdmission: (() => void) | undefined;
+    boundary.owner.mockReturnValue({ state: "live", mode: "supervised" });
+    boundary.acquire.mockImplementation(() => {
+      if (ticks < 2) {
+        throw new StateDatabaseCoordinatorContentionError("gateway-lifecycle");
+      }
+      gatewayHeld = true;
+      return {
+        release: () => {
+          gatewayHeld = false;
+        },
+        createSchemaFenceDelegate: vi.fn(),
+      };
+    });
+    boundary.stateAcquire.mockImplementation(() => {
+      stateHeld = true;
+      conflict = true;
+      return {
+        release: () => {
+          stateHeld = false;
+        },
+      };
+    });
+    boundary.sleep.mockImplementation(async () => {
+      ticks++;
+      if (phase === "drain") {
+        conflict = true;
+      }
+    });
+    boundary.admission.mockImplementation(() => {
+      checkedUnderBoth ||= gatewayHeld && stateHeld;
+      return conflict
+        ? { kind: "conflict", message: "repair admission conflict" }
+        : { kind: "recovery", runs: [] };
+    });
+    const stop = boundary.stop.getMockImplementation()!;
+    boundary.stop.mockImplementation(async (params) => {
+      if (params.phase !== "inspect") {
+        stopCustody = boundary.scopeAssert;
+        capturedStopAdmission = params.assertCurrent;
+      }
+      return await stop(params);
+    });
+    boundary.resume.mockImplementation(async () => {
+      // Windows autostart recovery retains the caller assertion supplied at stop.
+      capturedStopAdmission?.();
+    });
+    boundary.authority.mockImplementation(() => {
+      if (phase === "native-revoked" && conflict) {
+        throw new Error("native operation custody retired");
+      }
+    });
+    boundary.restart.mockImplementation(async () => {
+      expect(stopCustody).toBeTypeOf("function");
+      stopCustody!();
+      expect(gatewayHeld || stateHeld).toBe(false);
+    });
+    await expect(begin()).rejects.toThrow(
+      /repair admission conflict|native operation custody retired/,
+    );
+    expect(checkedUnderBoth).toBe(true);
+    expect(boundary.restart).toHaveBeenCalledTimes(phase === "native-revoked" ? 0 : 1);
+    expect(boundary.complete).toHaveBeenCalled();
+    expect(boundary.close).not.toHaveBeenCalled();
+    expect(gatewayHeld || stateHeld).toBe(false);
+  },
+);

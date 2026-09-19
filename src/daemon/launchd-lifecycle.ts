@@ -16,6 +16,7 @@ import {
   isLaunchctlAlreadyLoaded,
   isUnsupportedGuiDomain,
   parseLaunchctlPrint,
+  probeLaunchAgentState,
   readLaunchAgentRuntime,
   resolveLaunchAgentGatewayContext,
   resolveLaunchAgentGuiDomain,
@@ -223,6 +224,21 @@ async function rethrowLaunchAgentActivationFailure(
   );
 }
 
+async function needsLaunchAgentBootstrap(
+  kickstart: Awaited<ReturnType<typeof execLaunchctl>>,
+  serviceTarget: string,
+  assertCurrent?: () => void,
+): Promise<boolean> {
+  if (kickstart.code === 0 || isLaunchctlNotLoaded(kickstart)) {
+    return kickstart.code !== 0;
+  }
+  // Empty or generic kickstart output cannot establish whether the job exists.
+  assertCurrent?.();
+  const observed = await probeLaunchAgentState(serviceTarget);
+  assertCurrent?.();
+  return observed.state === "not-loaded";
+}
+
 export async function startLaunchAgent({
   stdout,
   env,
@@ -253,7 +269,7 @@ export async function startLaunchAgent({
   try {
     assertCurrent?.();
     let start = await execLaunchctl(["kickstart", serviceTarget]);
-    if (isLaunchctlNotLoaded(start)) {
+    if (await needsLaunchAgentBootstrap(start, serviceTarget, assertCurrent)) {
       await bootstrapLaunchAgentOrThrow({
         domain,
         serviceTarget,
@@ -419,7 +435,7 @@ export async function restartLaunchAgent({
       if (start.code === 0) {
         reportMutation("kickstart");
       } else {
-        if (!isLaunchctlNotLoaded(start)) {
+        if (!(await needsLaunchAgentBootstrap(start, serviceTarget, assertCurrent))) {
           throw new Error(`launchctl kickstart failed: ${start.stderr || start.stdout}`.trim());
         }
         // A preserved plist may be demand-only; bootstrap only registers it.

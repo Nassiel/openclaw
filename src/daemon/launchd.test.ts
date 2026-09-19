@@ -9,6 +9,7 @@ import type { PortListener } from "../infra/ports-types.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { GATEWAY_SERVICE_KIND, GATEWAY_SERVICE_MARKER } from "./constants.js";
 import type { ExecResult } from "./exec-file.js";
+import { launchAgentActivationRecoveryCases } from "./launchd-activation.test-support.js";
 import { registerLaunchdAncestryTests } from "./launchd-ancestry.test-support.js";
 import {
   capturePassThroughOutput,
@@ -411,7 +412,7 @@ function executeLaunchctlMock(file: string, args: string[]) {
     return { stdout: "", stderr: "", code: 0 };
   }
   if (call[0] === "kickstart") {
-    if (state.kickstartError && state.kickstartFailuresRemaining > 0) {
+    if (state.kickstartFailuresRemaining > 0) {
       state.kickstartFailuresRemaining -= 1;
       if (state.kickstartUnloadsService) {
         state.serviceLoaded = false;
@@ -3456,47 +3457,34 @@ describe("launchd install", () => {
     expect(cleanStaleGatewayProcessesSync).not.toHaveBeenCalled();
   });
 
-  it("falls back to bootstrap when kickstart cannot find the service", async () => {
-    const env = createDefaultLaunchdEnv();
-    state.kickstartError = "Could not find service";
-    state.kickstartFailuresRemaining = 1;
-
-    const result = await restartLaunchAgent(launchAgentControlFixture(env));
-
-    const domain = typeof process.getuid === "function" ? `gui/${process.getuid()}` : "gui/501";
-    const serviceId = `${domain}/ai.openclaw.gateway`;
-    const kickstartCalls = state.launchctlCalls.filter(
-      (c) => c[0] === "kickstart" && c[1] === "-k" && c[2] === serviceId,
-    );
-
-    expect(result).toEqual({ outcome: "completed" });
-    expect(launchctlCommandNames()).toContain("enable");
-    expect(launchctlCommandNames()).toContain("bootstrap");
-    expect(kickstartCalls).toHaveLength(1);
-    expect(launchctlCommandNames()).not.toContain("bootout");
-  });
-
-  it.each(
-    (["start", "restart"] as const).flatMap((action) =>
-      ["loaded", "stopped", "bootstrap-kickstart"].map((phase) => ({ action, phase })),
-    ),
-  )("keeps launchd recovery available after $action fails ($phase)", async ({ action, phase }) => {
-    const env = createDefaultLaunchdEnv();
-    if (phase !== "loaded") {
-      await stopLaunchAgent({ env, stdout: new PassThrough() });
-      expect(state.serviceLoaded).toBe(false);
-    }
-    state.kickstartError =
-      phase === "bootstrap-kickstart" ? "Could not find service" : "Input/output error";
-    state.kickstartFailuresRemaining = phase === "bootstrap-kickstart" ? 2 : 1;
-    state.kickstartUnloadsService = phase === "bootstrap-kickstart";
-    const activate = action === "start" ? startLaunchAgent : restartLaunchAgent;
-    await expect(
-      activate({ env, stdout: new PassThrough(), preserveDefinition: true }),
-    ).rejects.toThrow(/LaunchAgent .* is loaded; launchd can retry/);
-    expect(state.serviceLoaded).toBe(true);
-    expect(launchctlCommandNames().includes("bootstrap")).toBe(phase !== "loaded");
-  });
+  it.each(launchAgentActivationRecoveryCases)(
+    "settles $action after kickstart failure ($phase, $detail, preserve=$preserveDefinition)",
+    async ({ action, phase, detail, preserveDefinition }) => {
+      const env = createDefaultLaunchdEnv();
+      if (phase !== "loaded") {
+        await stopLaunchAgent({ env, stdout: new PassThrough() });
+        expect(state.serviceLoaded).toBe(false);
+      }
+      state.kickstartError = detail;
+      state.kickstartFailuresRemaining = phase === "bootstrap-kickstart" ? 2 : 1;
+      state.kickstartUnloadsService = phase === "bootstrap-kickstart";
+      const activate = action === "start" ? startLaunchAgent : restartLaunchAgent;
+      const result = activate({ env, stdout: new PassThrough(), preserveDefinition });
+      if (phase === "stopped") {
+        await expect(result).resolves.toEqual(
+          action === "start" ? undefined : { outcome: "completed" },
+        );
+        expect(state.serviceRunning).toBe(true);
+      } else {
+        await expect(result).rejects.toThrow(
+          /launchctl kickstart failed:[\s\S]*LaunchAgent .* is loaded; launchd can retry/,
+        );
+        await expect(result).rejects.toThrow(`launchctl kickstart failed: ${detail}`.trim());
+      }
+      expect(state.serviceLoaded).toBe(true);
+      expect(launchctlCommandNames().includes("bootstrap")).toBe(phase !== "loaded");
+    },
+  );
 
   it("hands restart off to a detached helper when invoked from the current LaunchAgent", async () => {
     const env = createDefaultLaunchdEnv();

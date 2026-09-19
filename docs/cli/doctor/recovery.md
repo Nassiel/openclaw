@@ -46,6 +46,14 @@ repairing state. If ownership remains held, Doctor warns, restores the service,
 and refuses the unsafe repair. On macOS, failed activation attempts restore the
 LaunchAgent registration so its KeepAlive policy can recover; the error reports
 whether the job is loaded and gives a recovery command if bootstrap also fails.
+An ambiguous `kickstart` error followed by a probe that confirms the job is absent
+uses bootstrap recovery; successful activation then completes normally. A failure
+for a job that remains loaded stays visible.
+
+Doctor rechecks update admission after acquiring both maintenance coordinators.
+If it must cancel before repair starts, it reverses its own stop while its native
+service custody remains valid. Normal post-repair restoration still requires
+current update admission.
 
 For legacy services or conflicting systemd scopes, run `openclaw doctor`
 interactively to review the findings and confirm supported cleanup. Cleanup
