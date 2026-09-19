@@ -40,6 +40,13 @@ definition was unchanged, restored, or needs inspection; follow the reported
 status and installer commands after the active maintenance or update finishes.
 Unverified restoration keeps recovery pending instead of claiming a safe restart.
 
+When explicit repair stops a managed Gateway, Doctor waits for that process to
+release shared-state lifecycle ownership within the service stop deadline before
+repairing state. If ownership remains held, Doctor warns, restores the service,
+and refuses the unsafe repair. On macOS, failed activation attempts restore the
+LaunchAgent registration so its KeepAlive policy can recover; the error reports
+whether the job is loaded and gives a recovery command if bootstrap also fails.
+
 For legacy services or conflicting systemd scopes, run `openclaw doctor`
 interactively to review the findings and confirm supported cleanup. Cleanup
 reports what it removed or skipped; it does not guarantee a replacement service

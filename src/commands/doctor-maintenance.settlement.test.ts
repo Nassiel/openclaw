@@ -6,12 +6,18 @@ import type {
 } from "../cli/update-cli/update-command-service-maintenance.js";
 import type { GatewayService, readGatewayServiceState } from "../daemon/service.js";
 import { collectNestedErrorCandidates } from "../infra/error-graph-internal.js";
+import { GATEWAY_SERVICE_STOP_TIMEOUT_MS } from "../infra/gateway-shutdown-budget.js";
+import { StateDatabaseCoordinatorContentionError } from "../infra/state-database-coordinator.js";
 import { hasCommandProcessCleanupError } from "../process/exec-result.js";
 import { resolveCommandProcessSignal, retainCommandProcessCleanup } from "../process/exec-spawn.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { beginDoctorMaintenance } from "./doctor-maintenance.js";
 
 const boundary = vi.hoisted(() => ({
+  acquire: vi.fn(),
+  stateAcquire: vi.fn(),
+  owner: vi.fn(),
+  sleep: vi.fn(),
   stop: vi.fn<typeof maybeStopManagedServiceBeforeMutableUpdate>(),
   read: vi.fn<typeof readGatewayServiceState>(),
   command: vi.fn<GatewayService["readCommand"]>(),
@@ -62,13 +68,18 @@ vi.mock("../infra/update-run-ledger.js", () => ({
   listUpdateRuns: () => [],
   recordUpdateRunRepairContinuation: vi.fn(),
 }));
+vi.mock("node:timers/promises", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:timers/promises")>()),
+  setTimeout: boundary.sleep,
+}));
+vi.mock("../infra/gateway-owner-lease.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../infra/gateway-owner-lease.js")>()),
+  readGatewayOwnerLease: boundary.owner,
+}));
 vi.mock("../infra/state-database-coordinator.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../infra/state-database-coordinator.js")>()),
-  acquireGatewayMaintenanceCoordinator: () => ({
-    release: boundary.release,
-    createSchemaFenceDelegate: vi.fn(),
-  }),
-  acquireStateDatabaseCoordinator: () => ({ release: boundary.release }),
+  acquireGatewayMaintenanceCoordinator: boundary.acquire,
+  acquireStateDatabaseCoordinator: boundary.stateAcquire,
 }));
 vi.mock("../state/openclaw-state-db-async-lifecycle.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../state/openclaw-state-db-async-lifecycle.js")>()),
@@ -119,6 +130,11 @@ const root = "/synthetic/doctor-install";
 let stopped: PreManagedServiceStop;
 beforeEach(() => {
   vi.resetAllMocks();
+  boundary.stateAcquire.mockImplementation(() => ({ release: boundary.release }));
+  boundary.acquire.mockImplementation(() => ({
+    release: boundary.release,
+    createSchemaFenceDelegate: vi.fn(),
+  }));
   vi.stubEnv("OPENCLAW_STATE_DIR", "/synthetic/doctor-state");
   vi.stubEnv("OPENCLAW_CONFIG_PATH", "/synthetic/doctor-state/openclaw.json");
   vi.stubEnv("OPENCLAW_UPDATE_RUN_ID", undefined);
@@ -370,3 +386,67 @@ it.each(
     );
   },
 );
+
+it.each([false, true])(
+  "waits for the stopped Gateway's lifecycle ownership (expires=%s)",
+  async (expires) => {
+    let elapsed = 0;
+    let ticks = 0;
+    let loaded = true;
+    vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+    boundary.owner.mockReturnValue({ state: "live", mode: "supervised" });
+    const acquire = boundary.acquire.getMockImplementation()!;
+    boundary.acquire.mockImplementation(() => {
+      if (expires || ticks < 3) {
+        throw new StateDatabaseCoordinatorContentionError("gateway-lifecycle");
+      }
+      return acquire();
+    });
+    boundary.sleep.mockImplementation(async (ms: number) => {
+      expect(loaded).toBe(false);
+      expect(boundary.restart).not.toHaveBeenCalled();
+      elapsed += ms;
+      ticks++;
+    });
+    const stop = boundary.stop.getMockImplementation()!;
+    boundary.stop.mockImplementation(async (params) => {
+      const result = await stop(params);
+      if (params.phase !== "inspect") {
+        loaded = false;
+      }
+      return result;
+    });
+    boundary.restart.mockImplementation(async () => {
+      loaded = true;
+    });
+
+    if (expires) {
+      await expect(begin()).rejects.toThrow(/gateway-lifecycle/);
+      expect(elapsed).toBe(GATEWAY_SERVICE_STOP_TIMEOUT_MS);
+      expect(boundary.log).toHaveBeenCalledWith(
+        expect.stringMatching(/Warning:.*gateway-lifecycle.*openclaw doctor --fix/),
+      );
+    } else {
+      const maintenance = await begin();
+      expect(ticks).toBe(3);
+      expect(boundary.restart).not.toHaveBeenCalled();
+      await maintenance!.finish({});
+    }
+    expect(loaded).toBe(true);
+    expect(boundary.restart).toHaveBeenCalledOnce();
+  },
+);
+
+it("restores a service after state ownership fails without retaining a partial maintenance scope", async () => {
+  boundary.owner.mockReturnValue({ state: "live", mode: "supervised" });
+  boundary.acquire.mockImplementationOnce(() => {
+    throw new StateDatabaseCoordinatorContentionError("gateway-lifecycle");
+  });
+  boundary.stateAcquire.mockImplementation(() => {
+    throw new StateDatabaseCoordinatorContentionError("state-lifecycle");
+  });
+  await expect(begin()).rejects.toThrow(/state-lifecycle/);
+  expect(boundary.restart).toHaveBeenCalledOnce();
+  expect(boundary.release).toHaveBeenCalledTimes(2);
+  expect(boundary.sleep).not.toHaveBeenCalled();
+});
