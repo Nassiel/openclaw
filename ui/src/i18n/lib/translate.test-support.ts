@@ -23,14 +23,25 @@ export function createI18nManagerForTesting(
   return getTestApi().createI18nManager(loadLocaleTranslation);
 }
 
-/** Restores both the active locale and its exact persisted preference after a shared-worker test. */
+/** Restores locale, document attributes, and the exact saved preference after a shared-worker test. */
 export function captureI18nStateForTesting(): () => Promise<void> {
   const previousLocale = i18n.getLocale();
+  const root = document.documentElement;
+  const previousAttributes = ["lang", "dir"].map(
+    (name) => [name, root.getAttribute(name)] as const,
+  );
   const storage = getSafeLocalStorage();
   const previousPreference = storage?.getItem("openclaw.i18n.locale") ?? null;
 
   return async () => {
     await i18n.setLocale(previousLocale);
+    for (const [name, value] of previousAttributes) {
+      if (value === null) {
+        root.removeAttribute(name);
+      } else {
+        root.setAttribute(name, value);
+      }
+    }
     if (previousPreference === null) {
       storage?.removeItem("openclaw.i18n.locale");
     } else {
