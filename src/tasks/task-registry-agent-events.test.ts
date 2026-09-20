@@ -27,6 +27,7 @@ import { getTaskFlowRegistryStore } from "./task-flow-registry.store.js";
 import { captureTaskDeliveryWork } from "./task-registry-delivery.test-support.js";
 import { updateTask } from "./task-registry-mutation.js";
 import { publishTaskRecordAfterAtomicStore } from "./task-registry-publication.js";
+import { prepareTaskRegistryRead } from "./task-registry-read.js";
 import { linkTaskToFlowById, markTaskTerminalById } from "./task-registry-record-api.js";
 import {
   tasks,
@@ -412,8 +413,23 @@ describe("task agent event persistence", () => {
             ? { phase: "end", endedAt: Date.now() }
             : { phase: "start", startedAt: Date.now() },
         });
+        // A registered task read joins these accepted events, including a publication
+        // legitimately replaced after commit. Stale delivery must not poison the read.
+        const readResult = Promise.allSettled([prepareTaskRegistryRead()]);
         await returned.promise;
         await joinEvents();
+        const [read] = await readResult;
+        if (scenario === "cleanup failure") {
+          expect(read).toMatchObject({
+            status: "rejected",
+            reason: expect.objectContaining({ message: "Synthetic delivery cleanup failure" }),
+          });
+        } else {
+          expect(read).toMatchObject({ status: "fulfilled" });
+          if (read.status === "fulfilled") {
+            expect(read.value?.getTaskById(task.taskId)).toEqual(tasks.get(task.taskId));
+          }
+        }
         expect(observerFailure).toBeUndefined();
         expect(nativeRolledBack).toBe(nativeRollback);
         const delivered = peekSystemEvents("agent:main:main");
