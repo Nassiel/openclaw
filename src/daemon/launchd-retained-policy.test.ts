@@ -18,7 +18,7 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 it.each(
-  ["loaded", "not-loaded", "recovery"].flatMap((scenario) =>
+  ["loaded", "not-loaded", "recovery", "bootstrap-failure"].flatMap((scenario) =>
     [true, false].map((preserveAutoStart) => ({ scenario, preserveAutoStart })),
   ),
 )(
@@ -27,6 +27,7 @@ it.each(
     const commands: string[] = [];
     let loaded = scenario === "loaded";
     let firstKick = true;
+    let firstBootstrap = true;
     const success = { code: 0, termination: "exit" as const, stdout: "", stderr: "" };
     vi.spyOn(native, "execLaunchctl").mockImplementation(async (args) => {
       const command = args[0];
@@ -44,6 +45,10 @@ it.each(
         return loaded ? success : { ...success, code: 1, stderr: "Could not find service" };
       }
       if (command === "bootstrap") {
+        if (firstBootstrap && scenario === "bootstrap-failure") {
+          firstBootstrap = false;
+          return { ...success, code: 5, stderr: "fixture bootstrap failure" };
+        }
         loaded = true;
         return success;
       }
@@ -62,11 +67,12 @@ it.each(
       preserveDefinition: true,
       preserveAutoStart,
     });
-    if (scenario === "recovery") {
-      await expect(result).rejects.toThrow("fixture kickstart failure");
+    if (scenario === "bootstrap-failure") {
+      await expect(result).rejects.toThrow("fixture bootstrap failure");
     } else {
       await expect(result).resolves.toEqual({ outcome: "completed" });
     }
+    expect(loaded).toBe(true);
     expect(commands.includes("enable")).toBe(!preserveAutoStart);
     expect(commands).not.toContain("disable");
     expect(commands).not.toContain("bootout");
