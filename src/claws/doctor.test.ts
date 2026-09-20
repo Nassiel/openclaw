@@ -6,24 +6,21 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { McpServerConfig } from "../config/types.mcp.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../state/openclaw-state-db-contract.js";
-import {
-  closeOpenClawStateDatabaseAsync,
-  closeOpenClawStateDatabaseForTest,
-} from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
+import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import { applyClawAddPlan } from "./add.js";
 import { installClawCronJobs } from "./cron.js";
 import { collectClawStateHealthFindings } from "./doctor.js";
 import { buildClawAddPlan } from "./lifecycle.js";
 import { installClawMcpServers } from "./mcp.js";
+import { prepareClawInstallSchemaVersions } from "./provenance-runtime-read.js";
 import { persistClawPackageRef } from "./provenance.js";
 import { parseClawManifest } from "./schema.js";
 import type { ClawSourceIdentity } from "./types.js";
 
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
   afterEach(async () => {
-    await closeOpenClawStateDatabaseAsync();
-    closeOpenClawStateDatabaseForTest();
+    await closeStateDatabaseForTest();
     cleanup();
   }),
 );
@@ -227,8 +224,9 @@ describe("collectClawStateHealthFindings", () => {
 
   it("does not change existing database bytes, metadata, schema, or journal mode", async () => {
     const current = await installFixture({ withMcp: true, withCron: true });
-    await closeOpenClawStateDatabaseAsync();
-    closeOpenClawStateDatabaseForTest();
+    // Keep a real shared-state worker open until the snapshot cleanup boundary.
+    await prepareClawInstallSchemaVersions({ env: current.env });
+    await closeStateDatabaseForTest();
     const databasePath = resolveOpenClawStateSqlitePath(current.env);
     const readMetadata = () => {
       const database = new DatabaseSync(databasePath, { readOnly: true });

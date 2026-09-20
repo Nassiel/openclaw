@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { MessagePort } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { Result } from "@openclaw/normalization-core/result";
 import { runtimeProcessEntrypoints } from "../infra/runtime-process-entrypoints.js";
@@ -19,6 +20,8 @@ import {
 } from "../infra/sqlite-worker-store.js";
 import type { OpenClawAgentDatabaseWorkerLeaseReceipt } from "./openclaw-agent-db-lease.js";
 import { captureOpenClawAgentDatabaseRegistration } from "./openclaw-agent-db-registry-listing.js";
+import { getOpenClawAgentDatabaseValidation } from "./openclaw-agent-db-validation-cache.js";
+import { getOpenClawAgentDatabaseIfOpen } from "./openclaw-agent-db.js";
 import { cleanupRetiredAgentDatabaseLease } from "./openclaw-agent-execution-cleanup.js";
 import type {
   AgentDatabaseExecutionIdentity,
@@ -154,31 +157,47 @@ export function createAgentDatabaseNativeGeneration(
         assertCurrent();
         assertCallerCurrent?.();
         if (request.stage === "prepare" && isRecord(facts) && facts.kind === "shared-owner") {
-          source.assertCurrent();
-          publishOpenClawStateDatabaseWorkerAdmission(context.admission);
-          const received = facts.lease;
-          if (
-            !isDeepStrictEqual(facts.identity, context.admission.identity) ||
-            !isRecord(received) ||
-            received.leaseId !== input.leaseId ||
-            received.agentId !== input.agentId ||
-            received.path !== pathname ||
-            received.ownerPid !== process.pid ||
-            (received.ownerStartTime !== null && typeof received.ownerStartTime !== "number") ||
-            received.sharedStatePath !== context.admission.databasePath ||
-            received.sharedStateIdentity !== context.admission.identity.key
-          ) {
-            throw new Error("Agent worker lease differs from its captured native owner");
+          if (!(facts.validationPort instanceof MessagePort)) {
+            throw new Error("Agent worker lost its validation handoff port");
           }
-          lease = {
-            leaseId: input.leaseId,
-            agentId: input.agentId,
-            path: pathname,
-            ownerPid: process.pid,
-            ownerStartTime: received.ownerStartTime,
-            sharedStatePath: context.admission.databasePath,
-            sharedStateIdentity: context.admission.identity.key,
-          };
+          try {
+            source.assertCurrent();
+            publishOpenClawStateDatabaseWorkerAdmission(context.admission);
+            const received = facts.lease;
+            if (
+              !isDeepStrictEqual(facts.identity, context.admission.identity) ||
+              !isRecord(received) ||
+              received.leaseId !== input.leaseId ||
+              received.agentId !== input.agentId ||
+              received.path !== pathname ||
+              received.ownerPid !== process.pid ||
+              (received.ownerStartTime !== null && typeof received.ownerStartTime !== "number") ||
+              received.sharedStatePath !== context.admission.databasePath ||
+              received.sharedStateIdentity !== context.admission.identity.key
+            ) {
+              throw new Error("Agent worker lease differs from its captured native owner");
+            }
+            lease = {
+              leaseId: input.leaseId,
+              agentId: input.agentId,
+              path: pathname,
+              ownerPid: process.pid,
+              ownerStartTime: received.ownerStartTime,
+              sharedStatePath: context.admission.databasePath,
+              sharedStateIdentity: context.admission.identity.key,
+            };
+            const database = getOpenClawAgentDatabaseIfOpen({
+              agentId,
+              path: pathname,
+              env: context.environment,
+            });
+            facts.validationPort.postMessage(
+              database ? getOpenClawAgentDatabaseValidation(database) : undefined,
+              [],
+            );
+          } finally {
+            facts.validationPort.close();
+          }
           return true;
         }
         if (

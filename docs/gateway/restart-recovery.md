@@ -132,6 +132,17 @@ The launchd stop budget remains 20 seconds; Linux units use the deadlines below.
 This requires a Gateway started with the updated launcher: replacing files cannot
 change a launcher that is already running.
 
+For these managed restarts, if the CLI cannot verify the service command, serving
+owner, or restart-intent recording, it refuses the restart before signaling with
+`GATEWAY_RESTART_PREPARATION_REFUSED`. Restore service inspection or state access,
+verify Gateway status, and retry. An unverified launcher PID is never a fallback.
+
+Running 2026.9.4 Gateways remain eligible through their published state-local lock
+identity. The CLI verifies the service installation, live process start identity,
+and membership in that native service before preparing the restart. Stale or
+mismatched identities cannot authorize a running-service restart. An inactive
+service can still start without restart intent once the prior owner is proven dead.
+
 On Linux, the systemd unit must use `KillMode=mixed` so the initial stop signal
 reaches only the Gateway. Systemd still kills remaining child processes when the
 Gateway exits or its stop deadline expires. Older `KillMode=control-group` units
@@ -158,8 +169,13 @@ shutdown deadline. A shorter supervisor timeout also caps requested restart wait
 The drained work, ordering, and interruption behavior stay the same.
 
 Service-child cleanup uses the remaining Gateway shutdown budget, leaving time
-for final exit bookkeeping. A forced restart skips active-work drain but retains
-the 10-second cleanup reserve; it does not start a fresh 85-second wait. Ordinary
+for final exit bookkeeping. A forced restart handed to a supervisor skips active-work
+drain but retains the 10-second cleanup reserve; it does not start a fresh
+85-second wait. A restart without a supervisor handoff uses the existing shutdown
+deadline for cleanup. This includes foreground Gateways inside another service's
+cgroup, restarts with `OPENCLAW_NO_RESPAWN=1`, and standalone updates that must
+launch their own replacement. Cgroup membership alone does not provide a supervisor
+that will replace the Gateway. Ordinary
 cancellation keeps its five-second grace before forced termination. During
 shutdown, a relay that needs forced termination after its owned processes are
 confirmed gone produces a warning. Completed cleanup leaves the Gateway's exit

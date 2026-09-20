@@ -6,6 +6,7 @@ export { abortEmbeddedAgentRun } from "../../agents/embedded-agent-runner/runs.j
 export { listActiveEmbeddedRunSessionIds } from "../../agents/embedded-agent-runner/active-run-projections.js";
 export { getDiagnosticSessionActivitySnapshot } from "../../logging/diagnostic-run-activity.js";
 export {
+  resolveGatewayRestartDecision,
   respawnGatewayProcessForUpdate,
   restartGatewayProcessWithFreshPid,
 } from "../../infra/process-respawn.js";
@@ -30,6 +31,9 @@ export {
   cancelManagedServiceUpdateHandoff,
   claimManagedServiceUpdateHandoff,
   commitManagedServiceUpdateHandoff,
+  isForegroundUpdateHandoff,
+  completeForegroundUpdateHandoffAfterClose,
+  captureForegroundUpdateHandoffStop,
   requestManagedServiceUpdateHandoffPark,
 } from "../../infra/update-managed-service-handoff.js";
 export { resetGatewaySuspendCoordinatorForLifecycleRestart } from "../../infra/gateway-suspend-coordinator.js";

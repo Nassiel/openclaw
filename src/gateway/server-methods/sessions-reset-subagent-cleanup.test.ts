@@ -148,6 +148,10 @@ async function registerCollector(id: string, childSessionKey = key, agentId = "m
 }
 
 afterEach(async () => {
+  // Preserve failures from the accepted prefix before imports can retire their entries.
+  await taskRegistryListener.captureTaskRegistryReadFence(
+    captureOpenClawStateWorkerContext().admission,
+  );
   await settleSubagentRegistryPersistenceWork();
   vi.restoreAllMocks();
   restoreRegisteredAgentHarnesses(harnesses);
@@ -276,6 +280,10 @@ test("postcommit failure cannot restore cleanup authority after a successful res
 
 async function startCollector(id: string) {
   await registerCollector(id);
+  emitCollectorStart(id);
+}
+
+function emitCollectorStart(id: string) {
   emitAgentEvent({
     runId: id,
     stream: "lifecycle",
@@ -328,34 +336,32 @@ async function settleCollectorCleanup(id: string) {
   } finally {
     unsubscribe();
   }
+  await taskRegistryListener.captureTaskRegistryReadFence(
+    captureOpenClawStateWorkerContext().admission,
+  );
   await settleSubagentRegistryPersistenceWork();
 }
 
 test("same-turn reset keeps its active continuation and task unsuppressed", async () => {
   const activeId = "active-continuation";
+  await registerCollector(activeId);
   const snapshotReady = createDeferredCore();
   const releaseSnapshot = createDeferredCore();
+  const store = getTaskRegistryStore();
+  const readSnapshot = store.loadMutationSnapshotAsync.bind(store);
+  vi.spyOn(store, "loadMutationSnapshotAsync").mockImplementation(async (...args) => {
+    const snapshot = await readSnapshot(...args);
+    if (args[1] && "taskId" in args[1] && args[1].runId === activeId) {
+      snapshotReady.resolve();
+      await releaseSnapshot.promise;
+    }
+    return snapshot;
+  });
   const readFence = taskRegistryListener.captureTaskRegistryReadFence;
   const interrupt = vi.fn();
   let admission: Awaited<ReturnType<typeof beginSessionWorkAdmission>> | undefined;
   try {
-    await startCollector(activeId);
-    // Registration also reconciles snapshots; hold only post-registration event publication.
-    const store = getTaskRegistryStore();
-    const readSnapshot = store.loadMutationSnapshotAsync.bind(store);
-    vi.spyOn(store, "loadMutationSnapshotAsync").mockImplementation(async (...args) => {
-      const snapshot = await readSnapshot(...args);
-      if (args[1]?.runId === activeId) {
-        snapshotReady.resolve();
-        await releaseSnapshot.promise;
-      }
-      return snapshot;
-    });
-    emitAgentEvent({
-      runId: activeId,
-      stream: "tool",
-      data: { phase: "start", name: "held-publication" },
-    });
+    emitCollectorStart(activeId);
     await snapshotReady.promise;
     admission = await beginSessionWorkAdmission({
       scope: resolveSessionStorePathCore(undefined, { agentId: "main" }),
@@ -568,6 +574,9 @@ test("reset cannot publish while a terminal completion owns an awaited capture",
     await expectDefined(completion.mock.results[0]?.value, "completion attempt");
     const deletion = await deletionStarted.promise;
     await deletion.completion;
+    await taskRegistryListener.captureTaskRegistryReadFence(
+      captureOpenClawStateWorkerContext().admission,
+    );
     await settleSubagentRegistryPersistenceWork();
   }
 });
@@ -591,6 +600,9 @@ test("a retained kill claim cannot revive durably revoked session cleanup", asyn
     stream: "lifecycle",
     data: { phase: "end", aborted: true, stopReason: "aborted", endedAt: Date.now() },
   });
+  await taskRegistryListener.captureTaskRegistryReadFence(
+    captureOpenClawStateWorkerContext().admission,
+  );
   await settleSubagentRegistryPersistenceWork();
   expect(loadSubagentRegistryFromSqlite().get(id)?.execution.suppressSessionEffects).toBe(true);
   await testing.sweepOnceForTests();

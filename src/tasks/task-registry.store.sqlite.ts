@@ -81,9 +81,9 @@ export function settleTaskRegistrySqliteWrites(join: (deadlineMs: number) => voi
 }
 
 export function loadTaskRegistryMutationStateFromSqlite(
-  scope: TaskRegistryMutationScope,
+  scopes: readonly TaskRegistryMutationScope[],
 ): TaskRegistryStoreSnapshot {
-  return readTaskRegistryMutationSnapshotInDatabase(openTaskRegistryDatabase().db, scope);
+  return readTaskRegistryMutationSnapshotInDatabase(openTaskRegistryDatabase().db, scopes);
 }
 
 /** Loads task records without creating or migrating shared state. */

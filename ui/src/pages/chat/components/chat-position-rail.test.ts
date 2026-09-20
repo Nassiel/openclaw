@@ -31,12 +31,49 @@ describe("conversation position rail", () => {
   beforeEach(installTranscriptDomMocks);
   afterEach(resetTranscriptTestDom);
 
-  it.each(["resize", "resize-jump", "end", "focus", "focus-resize", "pointer", "reader"] as const)(
+  const railUpdateScenarios = [
+    "boot",
+    "boot-resize",
+    "resize",
+    "resize-jump",
+    "end",
+    "focus",
+    "focus-resize",
+    "pointer",
+    "reader",
+  ] as const;
+
+  it.each(railUpdateScenarios)(
     "keeps the reader's rail position through %s updates",
     async (scenario) => {
+      let publishVisibility: (element: Element) => void = () => {};
       vi.stubGlobal(
         "IntersectionObserver",
-        class {
+        class implements IntersectionObserver {
+          readonly root = null;
+          readonly rootMargin = "0px";
+          readonly scrollMargin = "0px";
+          readonly thresholds = [0];
+          constructor(callback: IntersectionObserverCallback) {
+            publishVisibility = (element) => {
+              const rect = element.getBoundingClientRect();
+              callback(
+                [
+                  {
+                    target: element,
+                    boundingClientRect: rect,
+                    intersectionRect: rect,
+                    rootBounds: rect,
+                    intersectionRatio: 1,
+                    isIntersecting: true,
+                    time: 0,
+                  },
+                ],
+                this,
+              );
+            };
+          }
+          takeRecords = () => [];
           observe = vi.fn();
           unobserve = vi.fn();
           disconnect = vi.fn();
@@ -68,6 +105,7 @@ describe("conversation position rail", () => {
           (session) => {
             vi.spyOn(session, "activeMessageId").mockImplementation(activeMessage);
             return html`<div class="chat-thread">
+              <div class="chat-bubble" data-entry-id="message-79">Latest message</div>
               ${renderChatPositionRail({ positions, transcript: session, requestUpdate: () => {} })}
             </div>`;
           },
@@ -107,7 +145,25 @@ describe("conversation position rail", () => {
         await flush();
         expect(marks.scrollTop).toBe(startsAtTop ? 0 : 677);
         expect(marks.querySelectorAll(".chat-position-rail__marker").length).toBeLessThan(50);
-        if (scenario === "end") {
+        if (scenario === "boot" || scenario === "boot-resize") {
+          height = 554;
+          marksHeight = 240;
+          await flush();
+          // The initial observer result can arrive after the composer claims its space.
+          publishVisibility(root.querySelector(".chat-bubble")!);
+          if (scenario === "boot-resize") {
+            height = 543;
+            marksHeight = 229;
+          }
+          await flush();
+          expect(marker(79).hasAttribute("data-visible")).toBe(true);
+          const initialOffset = scenario === "boot-resize" ? 731 : 720;
+          expect(marks.scrollTop).toBe(initialOffset);
+          height = 512;
+          marksHeight = 198;
+          await flush();
+          expect(marks.scrollTop).toBe(initialOffset);
+        } else if (scenario === "end") {
           // Initial row measurements settle at the end before later composer growth.
           height = 552;
           scrollHeight = 552;

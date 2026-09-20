@@ -13,6 +13,12 @@ web UI's typography and light/dark palettes. They follow system appearance chang
 while open, preserving connection drafts, credential visibility, and Quick Chat
 replies. The connected dashboard retains its own web UI appearance setting.
 
+Quick Chat places the latest reply above a single bottom composer. Its disclosure
+button collapses the reply while retaining streamed text, widget contents, and
+the next draft. Return sends; Shift-Return adds a newline. The next draft remains
+editable while a reply streams, and sending becomes available when that turn
+finishes. **Open dashboard** opens the Primary Gateway's full interface.
+
 During remote setup or in Connection Settings, choose token or password under
 **Authentication**. **Show credential** reveals only what you entered; changing
 authentication types clears that draft and masks the new field. Press Enter or
@@ -324,6 +330,38 @@ package-managed installs still link to the existing release page. The
 `linux-stable` publication channel does not change those client defaults.
 Changing them requires separate release-owner approval and signed
 installed-client migration proof.
+
+## Desktop sharing
+
+**Settings → This computer → Desktop sharing** controls this companion's desktop
+viewer on Linux and Windows. The macOS Tauri build calls that settings page
+**This Mac**. Sharing defaults to enabled once the local CLI is available and
+its settings can be resolved. An authored `desktop.host.enabled: false` remains
+an opt-out until you explicitly change the native setting. The native choice
+is saved in the companion's existing system credential store.
+
+The companion starts a desktop-only CLI node for the Primary Gateway, including
+when the settings page has never been opened. Approve its device and desktop
+capability requests on that Gateway when prompted. **Running** confirms the
+local sharing process is active; opening the viewer also requires approved
+pairing and an authenticated local Screen Sharing/VNC server. On macOS, enable
+**System Settings → General → Sharing → Screen Sharing**. Linux and Windows use
+an authenticated VNC server reachable on loopback. The viewer reports setup or
+authentication errors when you open it.
+
+Turning sharing off or quitting the companion closes its desktop relay and
+joins its process tree. Changing Primary retires the old node before starting
+the replacement. Each logical Gateway and local config profile has its own node
+identity; recovery of an SSH tunnel retains that identity when its local port
+changes. Computer Control and Keep computer awake retain their separate
+settings and permissions.
+
+The CLI remains the owner of local configuration, including `$include` files.
+The companion reads its resolved setting and passes the canonical config path
+to the node. Missing CLI support, invalid config, and failed startup appear in
+**Desktop sharing status** with a recovery message. If an off preference cannot
+be saved, sharing stops for this run and the status warns that the previous
+saved choice may return after restarting the app.
 
 ## Keep computer awake
 

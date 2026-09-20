@@ -13,6 +13,7 @@ import {
   assertNoOpenClawAgentDatabaseLeases,
   runWithAgentDatabaseMaintenanceAuthority,
 } from "./openclaw-agent-db-lease.js";
+import { getOpenClawAgentDatabaseValidation } from "./openclaw-agent-db-validation-cache.js";
 import {
   closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
@@ -133,11 +134,17 @@ describe("asynchronous agent database maintenance admission", () => {
     const f = fixture();
     const createTarget = (agentId: string) => {
       const database = openOpenClawAgentDatabase({ agentId, env: f.env });
-      return { agentId, pathname: database.path };
+      const validation = expectDefined(
+        getOpenClawAgentDatabaseValidation(database),
+        "verified maintenance target",
+      );
+      return { agentId, pathname: database.path, validation };
     };
     const second = createTarget("second");
     const third = createTarget("third");
-    closeOpenClawAgentDatabasesForTest();
+    await closeOpenClawAgentDatabasesAsync();
+    expect(Atomics.load(new Int32Array(second.validation.valid), 0)).toBe(1);
+    expect(Atomics.load(new Int32Array(third.validation.valid), 0)).toBe(1);
     vi.mocked(fork).mockClear();
     const entry = resolveRuntimeProcessEntrypointUrl("sqliteIntegrity").href;
     const children = () =>
@@ -152,6 +159,8 @@ describe("asynchronous agent database maintenance admission", () => {
         return [result.value];
       });
     await withAgentDatabaseMaintenanceLease({ env: f.env }, async (maintenance) => {
+      expect(Atomics.load(new Int32Array(second.validation.valid), 0)).toBe(0);
+      expect(Atomics.load(new Int32Array(third.validation.valid), 0)).toBe(0);
       await migrateOpenClawAgentDatabaseForMaintenance(f.options, maintenance);
       await withAgentDatabaseMaintenanceLease({ env: f.env }, async (nested) => {
         await migrateOpenClawAgentDatabaseForMaintenance(second, nested);
