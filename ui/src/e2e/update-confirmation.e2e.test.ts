@@ -191,12 +191,15 @@ suite.define(() => {
           }
           await expect.poll(() => inboxBadge.count()).toBe(snoozed ? 0 : 1);
           await page.locator(".sidebar-identity-card").click();
+          const accountMenu = page.locator(".sidebar-identity-menu");
+          await accountMenu.locator(".sidebar-identity-menu__name").waitFor();
           await expect
             .poll(() =>
               page.locator(".sidebar-identity-menu .sidebar-footer-build__update").count(),
             )
             .toBe(snoozed ? 1 : 0);
           await page.keyboard.press("Escape");
+          await accountMenu.waitFor({ state: "detached" });
         }
       },
     );
