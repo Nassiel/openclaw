@@ -4,13 +4,9 @@ import { formatCliCommand } from "../cli/command-format.js";
 import type { PreManagedServiceStop } from "../cli/update-cli/update-command-service-maintenance.js";
 import { isDefaultInstallIdentity } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import {
-  ServiceInspectionError,
-  findServiceOwnershipRefusal,
-} from "../daemon/service-inspection-error.js";
+import { findServiceOwnershipRefusal } from "../daemon/service-inspection-error.js";
 import { GatewayServiceAuthorityError } from "../daemon/service-update-authority.js";
 import { acquireWithWait } from "../infra/acquire-with-wait.js";
-import { formatErrorMessage } from "../infra/errors.js";
 import { assertLegacyGatewayStoppedForMaintenance } from "../infra/gateway-lock-legacy.js";
 import { readActiveGatewayLockIdentity } from "../infra/gateway-lock.js";
 import { readGatewayOwnerLease } from "../infra/gateway-owner-lease.js";
@@ -227,174 +223,33 @@ export async function beginDoctorMaintenance(params: {
     try {
       const serviceEnv = before.serviceEnv;
       const [
-        { readGatewayServiceState, resolveGatewayService },
-        { withGatewayServiceOperationLock },
+        { restoreDoctorGatewayService },
         { resolveUpdatedGatewayRestartPort },
         { renderRestartDiagnostics, waitForGatewayHealthyRestart },
-        { revalidateManagedGatewayServiceAfterUpdate },
       ] = await Promise.all([
-        import("../daemon/service.js"),
-        import("../daemon/service-operation-lock.js"),
+        import("./doctor-maintenance-restoration.js"),
         import("../cli/update-cli/update-command-service-plan.js"),
         import("../cli/daemon-cli/restart-health.js"),
-        import("../cli/update-cli/update-command-service-maintenance.js"),
       ]);
-      const service = resolveGatewayService();
-      const state = await withGatewayServiceOperationLock(serviceEnv, async (assertCurrent) => {
-        const assertInspectionCurrent = () => {
-          assertCustody?.();
-          assertCurrent();
-        };
-        const assertMaintenanceCurrent = () => {
-          assertInspectionCurrent();
-          assertRestoreAdmission?.();
-        };
-        assertMaintenanceCurrent();
-        const readCurrent = () =>
-          settle(() =>
-            readGatewayServiceState(service, {
-              env: serviceEnv,
-              requireEffective: true,
-              requireLoadedCommand: true,
-              // LoadUnit only loads metadata. Keep live custody here; fresh update
-              // admission surrounds inspection and activation, outside the read budget.
-              ...(process.platform === "linux" && before.serviceManagerUid !== undefined
-                ? {
-                    loadForInspection: {
-                      managerUid: before.serviceManagerUid,
-                      assertCurrent: assertInspectionCurrent,
-                    },
-                  }
-                : {}),
-            }),
-          );
-        let current: Awaited<ReturnType<typeof readGatewayServiceState>> | undefined;
-        let inspectionFailure: unknown;
-        try {
-          current = await readCurrent();
-          if (current.inspectionReason) {
-            inspectionFailure = new ServiceInspectionError(current.inspectionReason);
-            const refusal = findServiceOwnershipRefusal(inspectionFailure);
-            if (refusal) {
-              throw refusal;
-            }
-          } else if (
-            current.loadState.status === "unknown" ||
-            (current.runtime?.status !== "running" && current.runtime?.status !== "stopped")
-          ) {
-            inspectionFailure = new Error(
-              current.loadState.status === "unknown"
-                ? current.loadState.detail
-                : (current.runtime?.inspectionFailure?.detail ??
-                    "Gateway runtime inspection was inconclusive."),
-            );
-          }
-        } catch (error) {
-          if (hasCommandProcessCleanupError(error)) {
-            throw error;
-          }
-          const refusal = findServiceOwnershipRefusal(error);
-          if (refusal) {
-            throw refusal;
-          }
-          inspectionFailure = error;
-        }
-        assertMaintenanceCurrent();
-        let installation = before.serviceUpdateVerdict;
-        if (current) {
-          assertDoctorServiceSelection(env, current.env);
-          const inspected = current;
-          const verdict = await settle(() =>
-            revalidateManagedGatewayServiceAfterUpdate({
-              state: inspected,
-              root,
-              preManagedServiceStop: before,
-              allowIncompleteInspection: true,
-            }),
-          );
-          if (verdict.kind === "unavailable") {
-            inspectionFailure ??= new Error(verdict.message);
-          } else {
-            installation = verdict;
-          }
-        }
-        if (installation?.kind === "owned" && installation.requiresInstallRootRefresh) {
-          if (!inspectionFailure) {
-            const [{ maybeRepairGatewayServiceConfig }, { createDoctorPrompter }] =
-              await Promise.all([
-                import("./doctor-gateway-services.js"),
-                import("./doctor-prompter.js"),
-              ]);
-            cfg = await settle(() =>
-              maybeRepairGatewayServiceConfig(
-                cfg,
-                "local",
-                params.runtime,
-                createDoctorPrompter({ runtime: params.runtime, options: params.options }),
-                {
-                  async writeConfig(nextConfig) {
-                    assertMaintenanceCurrent();
-                    // Failed maintenance entry has no inspected Doctor writer context.
-                    // Do not fall back to an independent config replacement on recovery.
-                    if (!writeConfig) {
-                      throw new Error(
-                        "Doctor config writer is unavailable during service restoration.",
-                      );
-                    }
-                    const committed = await writeConfig(nextConfig);
-                    assertMaintenanceCurrent();
-                    return committed;
-                  },
-                  serviceMaintenance: {
-                    managerUid: before.serviceManagerUid,
-                    assertCurrent: assertMaintenanceCurrent,
-                    assertReadCurrent: assertInspectionCurrent,
-                  },
-                },
-              ),
-            );
-            assertMaintenanceCurrent();
-            const repairedState = await readCurrent();
-            assertMaintenanceCurrent();
-            assertDoctorServiceSelection(env, repairedState.env);
-            const repaired = await settle(() =>
-              revalidateManagedGatewayServiceAfterUpdate({
-                state: repairedState,
-                root,
-                preManagedServiceStop: before,
-              }),
-            );
-            assertMaintenanceCurrent();
-            if (repaired.kind === "owned" && !repaired.requiresInstallRootRefresh) {
-              return repairedState;
-            }
-          }
-          const message = `Gateway service still targets ${installation.root}; Doctor could not reconcile it with ${root}. The previous installation remains stopped because state compatibility is unverified. Run ${formatCliCommand("openclaw gateway install --force", env)} from the intended install.`;
-          warnings.push(message);
-          params.runtime.log(message);
-          return undefined;
-        }
-        if (inspectionFailure) {
-          const warning = `Warning: Gateway restoration inspection was inconclusive: ${formatErrorMessage(inspectionFailure)} Starting the managed Gateway stopped by Doctor and verifying readiness.`;
-          warnings.push(warning);
-          params.runtime.log(warning);
-        }
-        assertMaintenanceCurrent();
-        const restore = current && !inspectionFailure ? service.restart : service.start;
-        await settle(async () => {
-          await restore({
-            env: current?.env ?? serviceEnv,
-            stdout: params.options.json ? process.stderr : process.stdout,
-            preserveDefinition: true,
-            assertCurrent: assertMaintenanceCurrent,
-            ...(before.serviceSystemdIdentity
-              ? { systemdIdentity: before.serviceSystemdIdentity }
-              : {}),
-          });
-        });
-        assertMaintenanceCurrent();
-        return current ?? { env: serviceEnv, command: null };
+      const {
+        service,
+        state,
+        cfg: restoredConfig,
+      } = await restoreDoctorGatewayService({
+        before,
+        serviceEnv,
+        root,
+        env,
+        cfg,
+        writeConfig,
+        options: params.options,
+        runtime: params.runtime,
+        warnings,
+        settle,
+        assertCustody,
+        assertRestoreAdmission,
       });
+      cfg = restoredConfig;
       if (!state) {
         return;
       }
