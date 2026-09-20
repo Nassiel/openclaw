@@ -45,6 +45,7 @@ import { cliProcessTestFiles } from "../vitest/vitest.cli-process-paths.mjs";
 import { createCliProcessVitestConfig } from "../vitest/vitest.cli-process.config.ts";
 import { createCommandsVitestConfig } from "../vitest/vitest.commands.config.ts";
 import { databaseWorkerCoreTestFiles } from "../vitest/vitest.database-worker-core-paths.mjs";
+import { doctorSessionSqliteTestFiles } from "../vitest/vitest.doctor-session-sqlite-paths.mjs";
 import { diagnosticForksPool } from "../vitest/vitest.forks-pool.ts";
 import { createGatewayClientVitestConfig } from "../vitest/vitest.gateway-client.config.ts";
 import { createGatewayCoreVitestConfig } from "../vitest/vitest.gateway-core.config.ts";
@@ -2243,9 +2244,9 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     expect(owners.get("agentic-commands-doctor-sessions-cron-memory")).toEqual([
       "src/commands/doctor-session-sqlite.memory.test.ts",
     ]);
-    expect(owners.get("agentic-commands-doctor-sessions-cron-sqlite")).toEqual([
-      "src/commands/doctor-session-sqlite.test.ts",
-    ]);
+    expect(owners.get("agentic-commands-doctor-sessions-cron-sqlite")).toEqual(
+      doctorSessionSqliteTestFiles,
+    );
     expect(owners.get("agentic-commands-doctor-sessions-cron")).toEqual([
       "src/commands/doctor-heartbeat-cadence-migration.test.ts",
       "src/commands/doctor-heartbeat-scratch-migration.test.ts",
@@ -2280,17 +2281,15 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
 
     for (const compactMode of ["push", "pull-request"] as const) {
       const plan = getCommittedCompactPlan(compactMode, "blacksmith");
-      const jobs = ownerNames.map((name) =>
-        plan.findIndex((shard) => shard.groups.some((group) => group.shard_name === name)),
+      const placements = plan.flatMap((shard, jobIndex) =>
+        shard.groups
+          .filter((group) => ownerNames.includes(group.shard_name.replace(/-hosted-\d+$/u, "")))
+          .map((group) => ({ group, jobIndex })),
       );
-      expect(jobs.every((job) => job >= 0)).toBe(true);
-      expect(new Set(jobs).size).toBe(jobs.length);
-      expect(
-        plan
-          .flatMap((shard) => shard.groups)
-          .filter((group) => ownerNames.includes(group.shard_name))
-          .every((group) => group.runner === DEFAULT_NODE_TEST_RUNNER),
-      ).toBe(true);
+      const names = placements.map(({ group }) => group.shard_name.replace(/-hosted-\d+$/u, ""));
+      expect(new Set(names)).toEqual(new Set(ownerNames));
+      expect(new Set(placements.map(({ jobIndex }) => jobIndex)).size).toBe(placements.length);
+      expect(placements.every(({ group }) => group.runner === DEFAULT_NODE_TEST_RUNNER)).toBe(true);
     }
 
     const families = [ownerNames, [1, 2, 3].map((part) => `agentic-gateway-core-${part}`)];

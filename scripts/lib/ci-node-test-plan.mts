@@ -11,6 +11,7 @@ import {
   databaseWorkerCoreTestFiles,
   isDatabaseWorkerCoreTestFile,
 } from "../../test/vitest/vitest.database-worker-core-paths.mjs";
+import { resolveDoctorSessionSqliteTestOwner } from "../../test/vitest/vitest.doctor-session-sqlite-paths.mjs";
 import {
   gatewayDatabaseWorkerTestFiles,
   gatewayPluginTestFiles,
@@ -1108,11 +1109,9 @@ function resolveCommandShardName(file: string): string {
     ) {
       return "agentic-commands-doctor-config-state";
     }
-    if (name === "doctor-session-sqlite.memory.test.ts") {
-      return "agentic-commands-doctor-sessions-cron-memory";
-    }
-    if (name === "doctor-session-sqlite.test.ts") {
-      return "agentic-commands-doctor-sessions-cron-sqlite";
+    const sqliteOwner = resolveDoctorSessionSqliteTestOwner(file);
+    if (sqliteOwner) {
+      return `agentic-commands-doctor-sessions-cron-${sqliteOwner}`;
     }
     if (
       name.startsWith("doctor-cron") ||
