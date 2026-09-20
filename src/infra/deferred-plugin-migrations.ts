@@ -4,8 +4,10 @@ import { z } from "zod";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { openClawStateDatabaseCache } from "../state/openclaw-state-db-cache.js";
 import {
+  isArtifactPreservingStateRead,
   withExistingOpenClawStateDatabaseArtifactPreservingReadOnly,
   withExistingOpenClawStateDatabaseCurrentReadOnly,
+  withExistingOpenClawStateDatabaseReadOnly,
 } from "../state/openclaw-state-db-readonly.js";
 import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
 import { withSharedStateWriteCoordinator } from "../state/openclaw-state-db-write-coordination.js";
@@ -104,19 +106,22 @@ function assertPendingGeneration(
 }
 
 export function readDeferredPluginMigrations(
-  options: { path?: string; env?: NodeJS.ProcessEnv } = {},
+  options: {
+    path?: string;
+    env?: NodeJS.ProcessEnv;
+    artifactPreservingReadOnly?: boolean;
+  } = {},
 ): readonly DeferredPluginMigration[] {
-  return (
-    withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(
-      ({ db }) => readPendingMigrationRecords(db),
-      options,
-    ) ?? []
-  );
+  const read =
+    options.artifactPreservingReadOnly === false
+      ? withExistingOpenClawStateDatabaseReadOnly
+      : withExistingOpenClawStateDatabaseArtifactPreservingReadOnly;
+  return read(({ db }) => readPendingMigrationRecords(db), options) ?? [];
 }
 
 /** Keep asynchronous config inspection off the main thread without creating state. */
 export async function readDeferredPluginMigrationsAsync(
-  options: { path?: string; env?: NodeJS.ProcessEnv } = {},
+  options: Parameters<typeof readDeferredPluginMigrations>[0] = {},
 ): Promise<readonly DeferredPluginMigration[]> {
   const context = captureOpenClawStateWorkerContext(options);
   const { runOpenClawStateWorkerOperation } =
@@ -124,7 +129,14 @@ export async function readDeferredPluginMigrationsAsync(
   context.admission.assertCurrent();
   const pending = await runOpenClawStateWorkerOperation(
     context,
-    (scope) => scope.execute({ type: "plugins.deferredMigrations.read", input: undefined }),
+    (scope) =>
+      scope.execute({
+        type: "plugins.deferredMigrations.read",
+        input: {
+          artifactPreservingReadOnly:
+            options.artifactPreservingReadOnly !== false || isArtifactPreservingStateRead(),
+        },
+      }),
     { existingOnly: true },
   );
   context.admission.assertCurrent();
