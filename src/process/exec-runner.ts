@@ -613,6 +613,7 @@ async function runCommandWithOutputEncoding(
     throw error;
   }
 
+  const killIssuedByAbort = termination === "signal" || termination === "output-limit";
   const resolvedCode = resolveProcessExitCode({
     explicitCode: result.exitCode ?? childExitState?.code,
     childExitCode: nodeChild.exitCode,
@@ -621,7 +622,7 @@ async function runCommandWithOutputEncoding(
     timedOut: termination === "timeout",
     noOutputTimedOut: termination === "no-output-timeout",
     killIssuedByTimeout: termination === "timeout" || termination === "no-output-timeout",
-    killIssuedByAbort: termination === "signal" || termination === "output-limit",
+    killIssuedByAbort,
   });
   termination ??= resolvedSignal != null || result.isTerminated ? "signal" : "exit";
   const normalizedCode =
@@ -667,6 +668,7 @@ async function runCommandWithOutputEncoding(
     code: normalizedCode,
     signal: resolvedSignal,
     killed: nodeChild.killed,
+    killIssuedByAbort: killIssuedByAbort || undefined,
     cleanup,
     termination: termination === "output-limit" ? ("signal" as const) : termination,
     noOutputTimedOut: termination === "no-output-timeout",

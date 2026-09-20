@@ -92,6 +92,7 @@ describe("runCommandWithTimeout", () => {
       }
       const result = await running;
       expect(result.cleanup).toBe(mode === "default-signal" ? "cooperative" : mode);
+      expect(result.killIssuedByAbort).toBe(mode === "normal" ? undefined : true);
       if (mode === "default-signal") {
         expect(result).toMatchObject({ code: null, signal: "SIGINT", termination: "signal" });
       }
@@ -324,6 +325,7 @@ describe("runCommandWithTimeout", () => {
         termination: "signal",
         cleanup: "uncertain",
       });
+      expect(result.killIssuedByAbort).toBeUndefined();
     },
   );
 
