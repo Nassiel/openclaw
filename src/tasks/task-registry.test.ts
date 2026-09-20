@@ -59,6 +59,11 @@ import {
 } from "./task-flow-registry.js";
 import type { TaskFlowRecord } from "./task-flow-registry.types.js";
 import { getTaskActivitySnapshot } from "./task-registry-activity.js";
+import {
+  captureTaskDeliveryWork,
+  waitForAssertion,
+  waitForFast,
+} from "./task-registry-delivery.test-support.js";
 import { updateTaskStateByRunId } from "./task-registry-record-api.js";
 import {
   readTaskRegistryRevision,
@@ -123,13 +128,6 @@ import {
   setTaskRegistryControlRuntimeForTests,
   setTaskRegistryDeliveryRuntimeForTests,
 } from "./task-runtime.test-helpers.js";
-
-function waitForFast<T>(
-  callback: () => T | Promise<T>,
-  options: { timeout?: number; interval?: number } = {},
-) {
-  return vi.waitFor(callback, { interval: 1, ...options });
-}
 
 const DEFAULT_TASK_RETENTION_MS = 7 * 24 * 60 * 60_000;
 const LOST_TASK_RETENTION_MS = 24 * 60 * 60_000;
@@ -218,10 +216,6 @@ function createSessionBindingRecord(
     ...(overrides.expiresAt !== undefined ? { expiresAt: overrides.expiresAt } : {}),
     ...(overrides.metadata !== undefined ? { metadata: overrides.metadata } : {}),
   };
-}
-
-function waitForAssertion(assertion: () => void, timeoutMs = 2_000, stepMs = 5) {
-  return waitForFast(assertion, { timeout: timeoutMs, interval: stepMs });
 }
 
 function expectRecordFields(record: unknown, expected: Record<string, unknown>) {
@@ -373,7 +367,7 @@ describe("task-registry", () => {
           markTaskTerminalById({ taskId: task.taskId, status: "succeeded", endedAt: Date.now() });
           await maybeDeliverTaskTerminalUpdate(task.taskId);
         } else {
-          await maybeDeliverTaskStateChangeUpdate(task.taskId, {
+          await maybeDeliverTaskStateChangeUpdate(task, {
             at: Date.now(),
             kind: "progress",
             summary: "Checking the result",
@@ -404,7 +398,7 @@ describe("task-registry", () => {
           notifyPolicy: "state_changes",
         });
         if (kind === "progress") {
-          await maybeDeliverTaskStateChangeUpdate(task.taskId, {
+          await maybeDeliverTaskStateChangeUpdate(task, {
             at: Date.now(),
             kind: "progress",
             summary: "Checking the result",
@@ -4195,7 +4189,7 @@ describe("task-registry", () => {
       expectRecordFields(requireTaskByRunId("run-state-change"), {
         notifyPolicy: "state_changes",
       });
-      await maybeDeliverTaskStateChangeUpdate(task.taskId);
+      await maybeDeliverTaskStateChangeUpdate(task);
       expect(hoisted.sendMessageMock).toHaveBeenCalledTimes(1);
     });
   });
@@ -4230,8 +4224,8 @@ describe("task-registry", () => {
       });
       const event = { at: 250, kind: "progress" as const, summary: "Still working." };
 
-      await maybeDeliverTaskStateChangeUpdate(task.taskId, event);
-      await maybeDeliverTaskStateChangeUpdate(task.taskId, event);
+      await maybeDeliverTaskStateChangeUpdate(task, event);
+      await maybeDeliverTaskStateChangeUpdate(task, event);
 
       expect(hoisted.sendMessageMock).toHaveBeenCalledTimes(testCase.expectedSendCount);
     });
@@ -4318,6 +4312,7 @@ describe("task-registry", () => {
         notifyPolicy: "state_changes",
       });
 
+      using deliveries = captureTaskDeliveryWork();
       const relay = startAcpSpawnParentStreamRelay({
         runId: "run-state-stream",
         parentSessionKey: "agent:main:main",
@@ -4330,14 +4325,14 @@ describe("task-registry", () => {
       });
 
       relay.notifyStarted();
-      await flushAsyncWork();
+      await deliveries.settle();
       expectRecordFields(sentMessageCall(), {
         content: "Background task update: ACP background task. Started.",
       });
 
       hoisted.sendMessageMock.mockClear();
       vi.advanceTimersByTime(1_500);
-      await flushAsyncWork();
+      await deliveries.settle();
       expectRecordFields(sentMessageCall(), {
         content:
           "Background task update: ACP background task. No prompt submission observed for 1s after child start.",

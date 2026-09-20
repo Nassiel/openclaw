@@ -19,6 +19,7 @@ import type {
 } from "../tasks/task-flow-registry.store.types.js";
 import type { TaskFlowRecord } from "../tasks/task-flow-registry.types.js";
 import type { TaskInitialWorkerOperations } from "../tasks/task-initial-worker.types.js";
+import { acknowledgeTaskStateNotification } from "../tasks/task-notification.operation.js";
 import { captureTaskCreationEventTarget } from "../tasks/task-registry-agent-event-target.js";
 import {
   captureTaskAgentEventLineage,
@@ -162,6 +163,21 @@ export function createInMemoryTaskRegistryStore(
           input: TaskInitialWorkerOperations[Key]["input"],
         ) => TaskInitialWorkerOperations[Key]["output"];
       } = {
+        "tasks.acknowledgeStateChange": (input) =>
+          acknowledgeTaskStateNotification(input, {
+            readCurrent: () => ({
+              task: state.tasks.get(input.taskId),
+              deliveryState: state.deliveryStates.get(input.taskId),
+            }),
+            write: (write) => write(),
+            assertCurrent,
+            upsertDelivery: (deliveryState) => this.upsertDeliveryState(deliveryState),
+            upsertTask: (task, deliveryState) =>
+              this.upsertTaskWithDeliveryState({ task, deliveryState }),
+            deferCommit: (publish) => publish(),
+            onCommitted() {},
+            onFailure() {},
+          }),
         "tasks.createRecord": (input) =>
           runTaskCreateOperation(input, {
             readSelection: (identity) => {

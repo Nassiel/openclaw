@@ -283,6 +283,7 @@ describe("task agent event preparation", () => {
           release.resolve();
         }
         try {
+          await fence;
           await joinEvents();
         } finally {
           configureTaskRegistryRuntime({ store });
