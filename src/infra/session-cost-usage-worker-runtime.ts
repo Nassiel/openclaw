@@ -446,7 +446,9 @@ export async function runUsageCostWorker(
                   // Copy native bytes into a standalone allocation before transferring custody.
                   const blob = row?.blob ? Uint8Array.from(row.blob) : null;
                   output = row ? { blob } : undefined;
-                  if (blob) transferList.push(blob.buffer);
+                  if (blob) {
+                    transferList.push(blob.buffer);
+                  }
                   break;
                 }
                 case "prune-row":

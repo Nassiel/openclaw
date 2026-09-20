@@ -30,6 +30,8 @@ export type TranscriptPayloadRecord = {
   navigation_json: string | null;
 };
 
+export type TranscriptPayloadAlias = "transcript_events" | "event" | "te" | "parent";
+
 /** Physical payload writes participate in the transcript owner's admitted transaction. */
 export function createTranscriptEventInserter(database: DatabaseSync, sessionId: string) {
   const insert = prepareSqliteQuerySync<
@@ -82,10 +84,10 @@ function hasUtf8Storage(database: DatabaseSync): boolean {
   return utf8;
 }
 
-function navigationProjection(): RawBuilder<string | null> {
-  const event = sql.ref<string>("source.event_json");
-  /* kysely-allow-raw: record the existing projections and exact model byte costs once; exceptional envelopes retain native identity behavior. */
-  return sql<string | null>`CASE WHEN json_valid(${event}) THEN CASE
+function navigationProjection(event: Expression<string>): RawBuilder<string | null> {
+  return /* kysely-allow-raw: record native projections and exact byte costs; exceptional envelopes retain identity behavior. */ sql<
+    string | null
+  >`CASE WHEN json_valid(${event}) THEN CASE
     WHEN json_type(${event}) != 'object'
       OR coalesce(json_type(${event}, '$.message'), 'null') NOT IN ('object', 'null') THEN NULL
     ELSE json_object('version', 1,
@@ -110,7 +112,11 @@ function readNavigation(database: DatabaseSync, eventJson: string): string | nul
         const db = getNodeSqliteKysely<Record<string, never>>(database);
         const metadata = db
           .selectFrom(db.selectNoFrom(parameter((value) => value).as("event_json")).as("source"))
-          .select(navigationProjection().as("navigation_json"));
+          .select((eb) => navigationProjection(eb.ref("source.event_json")).as("navigation_json"));
+        const admitted = /* kysely-allow-raw: reject oversized metadata natively before returning its text to JavaScript. */ sql<
+          string | null
+        >`CASE WHEN octet_length(metadata.navigation_json) <= ${MAX_NAVIGATION_BYTES}
+          THEN metadata.navigation_json ELSE NULL END`;
         return (
           db
             // The size guard and returned value must reuse one envelope, not flatten into two projections.
@@ -119,13 +125,7 @@ function readNavigation(database: DatabaseSync, eventJson: string): string | nul
               () => metadata,
             )
             .selectFrom("metadata")
-            .select(
-              /* kysely-allow-raw: reject oversized metadata inside SQLite before its text crosses into JavaScript. */
-              sql<
-                string | null
-              >`CASE WHEN octet_length(metadata.navigation_json) <= ${MAX_NAVIGATION_BYTES}
-              THEN metadata.navigation_json ELSE NULL END`.as("navigation_json"),
-            )
+            .select(admitted.as("navigation_json"))
         );
       },
     );
@@ -224,55 +224,86 @@ function registerDecoder(database: DatabaseSync): void {
 /** Only selected bodies decode; identity TEXT remains inside SQLite for native repairs. */
 export function transcriptEventJsonSql(
   database: DatabaseSync,
-  alias = "transcript_events",
+  alias: TranscriptPayloadAlias = "transcript_events",
 ): RawBuilder<string> {
   registerDecoder(database);
-  const identity = sql.ref(`${alias}.event_json`);
-  /* kysely-allow-raw: select the canonical payload arm lazily and keep giant identity TEXT out of the JS callback. */
-  return sql<string>`CASE WHEN ${identity} IS NOT NULL THEN ${identity}
-    ELSE ${sql.id(DECODE_FUNCTION)}(${sql.ref(`${alias}.event_zstd`)}, ${sql.ref(`${alias}.event_utf8_bytes`)}) END`;
+  const identity =
+    /* kysely-allow-raw: closed transcript aliases select the canonical identity column. */ sql.ref(
+      `${alias}.event_json`,
+    );
+  const compressed =
+    /* kysely-allow-raw: closed transcript aliases select the canonical compressed column. */ sql.ref(
+      `${alias}.event_zstd`,
+    );
+  const bytes =
+    /* kysely-allow-raw: closed transcript aliases select recorded canonical byte counts. */ sql.ref(
+      `${alias}.event_utf8_bytes`,
+    );
+  const decode = getNodeSqliteKysely<Record<string, never>>(database).fn<string>(DECODE_FUNCTION, [
+    compressed,
+    bytes,
+  ]);
+  return /* kysely-allow-raw: lazy payload selection keeps giant identity TEXT out of the bounded JS decoder. */ sql<string>`CASE WHEN ${identity} IS NOT NULL THEN ${identity}
+    ELSE ${decode} END`;
 }
 
-export function transcriptEventNavigationSql(alias = "transcript_events"): RawBuilder<string> {
-  return storedProjectionSql("navigation", sql.ref<string>(`${alias}.event_json`), alias);
+export function transcriptEventNavigationSql(
+  alias: TranscriptPayloadAlias = "transcript_events",
+): RawBuilder<string> {
+  const identity =
+    /* kysely-allow-raw: closed transcript aliases select the native identity fallback. */ sql.ref<string>(
+      `${alias}.event_json`,
+    );
+  return storedProjectionSql("navigation", identity, alias);
 }
 
 function storedProjectionSql(
   field: "navigation" | "reset" | "model",
   fallback: Expression<string>,
-  alias: string,
+  alias: TranscriptPayloadAlias,
 ): RawBuilder<string> {
-  const metadata = sql.ref(`${alias}.navigation_json`);
-  /* kysely-allow-raw: only exceptional identity rows need native projection; stored envelopes preserve each consumer's projection owner. */
-  return sql<string>`CASE WHEN ${metadata} IS NULL THEN ${fallback}
+  const metadata =
+    /* kysely-allow-raw: closed transcript aliases select the native navigation envelope. */ sql.ref(
+      `${alias}.navigation_json`,
+    );
+  return /* kysely-allow-raw: exceptional identity rows retain native projection; other rows use the recorded owner projection. */ sql<string>`CASE WHEN ${metadata} IS NULL THEN ${fallback}
     ELSE json_extract(${metadata}, ${`$.${field}`}) END`;
 }
 
-export function transcriptEventResetNavigationSql(alias = "transcript_events"): RawBuilder<string> {
-  return storedProjectionSql(
-    "reset",
-    projectResetBoundaryNavigationSql(sql.ref<string>(`${alias}.event_json`)),
-    alias,
-  );
+export function transcriptEventResetNavigationSql(
+  alias: TranscriptPayloadAlias = "transcript_events",
+): RawBuilder<string> {
+  const identity =
+    /* kysely-allow-raw: closed transcript aliases select the native identity fallback. */ sql.ref<string>(
+      `${alias}.event_json`,
+    );
+  return storedProjectionSql("reset", projectResetBoundaryNavigationSql(identity), alias);
 }
 
-export function transcriptEventModelNavigationSql(alias = "transcript_events"): RawBuilder<string> {
-  return storedProjectionSql(
-    "model",
-    projectModelContextNavigationSql(sql.ref<string>(`${alias}.event_json`)),
-    alias,
-  );
+export function transcriptEventModelNavigationSql(
+  alias: TranscriptPayloadAlias = "transcript_events",
+): RawBuilder<string> {
+  const identity =
+    /* kysely-allow-raw: closed transcript aliases select the native identity fallback. */ sql.ref<string>(
+      `${alias}.event_json`,
+    );
+  return storedProjectionSql("model", projectModelContextNavigationSql(identity), alias);
 }
 
 /** Model admission retains projected byte costs, which can be much smaller than canonical JSON. */
 export function transcriptEventModelBytesSql(
   omitCheckpoint: Expression<number>,
-  alias = "transcript_events",
+  alias: TranscriptPayloadAlias = "transcript_events",
 ): RawBuilder<number> {
-  const metadata = sql.ref(`${alias}.navigation_json`);
-  const identity = sql.ref<string>(`${alias}.event_json`);
-  /* kysely-allow-raw: metadata sizes exclude the JSONL separator; native fallback preserves UTF-16 database byte units. */
-  return sql<number>`CASE WHEN ${metadata} IS NULL
+  const metadata =
+    /* kysely-allow-raw: closed transcript aliases select native projection accounting. */ sql.ref(
+      `${alias}.navigation_json`,
+    );
+  const identity =
+    /* kysely-allow-raw: closed transcript aliases select the native identity fallback. */ sql.ref<string>(
+      `${alias}.event_json`,
+    );
+  return /* kysely-allow-raw: native fallback preserves UTF-16 byte units; metadata excludes the JSONL separator. */ sql<number>`CASE WHEN ${metadata} IS NULL
     THEN octet_length(${projectModelContextEventSql(identity, omitCheckpoint)})
     ELSE json_extract(${metadata}, CASE WHEN ${omitCheckpoint} = 1
       THEN '$.modelWithoutCheckpointBytes' ELSE '$.modelBytes' END) END`;
@@ -280,17 +311,25 @@ export function transcriptEventModelBytesSql(
 
 /** Suffix admission can retain opaque custom data without charging or decoding its body. */
 export function transcriptEventWithoutCustomDataBytesSql(
-  alias = "transcript_events",
+  alias: TranscriptPayloadAlias = "transcript_events",
 ): RawBuilder<number> {
-  const metadata = sql.ref(`${alias}.navigation_json`);
-  /* kysely-allow-raw: use the same native json_remove byte cost as retained-custom suffix projection. */
-  return sql<number>`CASE WHEN ${metadata} IS NULL
-    THEN octet_length(json_remove(${sql.ref(`${alias}.event_json`)}, '$.data'))
+  const metadata =
+    /* kysely-allow-raw: closed transcript aliases select native projection accounting. */ sql.ref(
+      `${alias}.navigation_json`,
+    );
+  const identity =
+    /* kysely-allow-raw: closed transcript aliases select the native identity fallback. */ sql.ref(
+      `${alias}.event_json`,
+    );
+  return /* kysely-allow-raw: preserve the native json_remove cost used by retained-custom suffix projection. */ sql<number>`CASE WHEN ${metadata} IS NULL
+    THEN octet_length(json_remove(${identity}, '$.data'))
     ELSE json_extract(${metadata}, '$.withoutCustomDataBytes') END`;
 }
 
 export function transcriptEventUtf8BytesSql(
-  alias = "transcript_events",
+  alias: TranscriptPayloadAlias = "transcript_events",
 ): RawBuilder<number | null> {
-  return sql.ref<number | null>(`${alias}.event_utf8_bytes`);
+  return /* kysely-allow-raw: closed transcript aliases select known UTF-8 bytes without loading payloads. */ sql.ref<
+    number | null
+  >(`${alias}.event_utf8_bytes`);
 }

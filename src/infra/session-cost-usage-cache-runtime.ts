@@ -267,7 +267,9 @@ function mergeUsageCostRefreshRequest(
   state.config = params.config ?? state.config;
   state.agentId = params.agentId;
   state.storePath = params.storePath;
-  for (const row of params.rebuildRows ?? []) state.pendingRebuildRows.set(row.key, row);
+  for (const row of params.rebuildRows ?? []) {
+    state.pendingRebuildRows.set(row.key, row);
+  }
   if (!params.sessionFiles) {
     state.fullRefreshRequested = true;
     return;
@@ -331,8 +333,9 @@ async function runQueuedUsageCostRefresh(
           }
           if (result === "busy") {
             for (const row of rebuildRows) {
-              if (!state.pendingRebuildRows.has(row.key))
+              if (!state.pendingRebuildRows.has(row.key)) {
                 state.pendingRebuildRows.set(row.key, row);
+              }
             }
             if (fullRefreshRequested) {
               state.fullRefreshRequested = true;

@@ -201,7 +201,7 @@ export function readDatabaseSnapshot(databasePath: string) {
         .select(["session_id", "seq", "created_at"])
         .select(
           (version.user_version < 22
-            ? sql.ref<string>("transcript_events.event_json")
+            ? sql.ref<string>("transcript_events.event_json") // kysely-allow-raw: frozen pre22 TEXT NOT NULL.
             : transcriptEventJsonSql(database)
           ).as("event_json"),
         )

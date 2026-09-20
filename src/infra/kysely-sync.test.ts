@@ -1,7 +1,7 @@
 // Covers the compile-only Kysely facade used by sync node:sqlite helpers.
 import { spawnSync } from "node:child_process";
 import { constants, DatabaseSync, StatementSync } from "node:sqlite";
-import { sql, type Generated } from "kysely";
+import { sql, type ColumnType } from "kysely";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { withTestTimeout } from "../../test/helpers/promise.js";
 import { resolveTestNodeExecPath } from "../test-utils/node-process.js";
@@ -23,7 +23,7 @@ import { assertNoActiveSqliteReaders, withSqliteReaderOwner } from "./sqlite-rea
 
 type SyncHelperTestDatabase = {
   items: {
-    id: Generated<number>;
+    id: ColumnType<number, number | bigint | undefined, number | bigint>;
     name: string;
   };
 };
@@ -99,7 +99,7 @@ describe("kysely sync helpers", () => {
     const id = 9007199254740993n;
     const inserted = executeSqliteQuerySync(
       database,
-      db.insertInto("items").values({ id: sql<number>`${id}`, name: "original" }),
+      db.insertInto("items").values({ id, name: "original" }),
     );
     expect(inserted).toEqual({ insertId: id, numAffectedRows: 1n, rows: [] });
     for (const name of ["first", "second", "third"]) {
@@ -483,10 +483,7 @@ describe("kysely sync helpers", () => {
     database = new DatabaseSync(":memory:");
     let nested = false;
     const db = getNodeSqliteKysely<SyncHelperTestDatabase>(database);
-    const query = db.selectNoFrom(
-      /* kysely-allow-raw: cache re-entry test needs a synthetic UDF call, not a store column. */
-      sql<number>`nested_value()`.as("value"),
-    );
+    const query = db.selectNoFrom((eb) => eb.fn<number>("nested_value", []).as("value"));
     database.function("nested_value", () => {
       if (nested) {
         return 1;
@@ -564,10 +561,7 @@ describe("kysely sync helpers", () => {
     database = new DatabaseSync(":memory:");
     const db = getNodeSqliteKysely<SyncHelperTestDatabase>(database);
     const lengthOf = (value: string) =>
-      db.selectNoFrom(
-        /* kysely-allow-raw: parameter-retention test measures binding size on a scalar, schema-free query. */
-        sql<number>`length(${value})`.as("value"),
-      );
+      db.selectNoFrom((eb) => eb.fn<number>("length", [eb.val(value)]).as("value"));
     const prepares = countPrepares(database);
 
     expect(executeSqliteQuerySync(database, lengthOf("small")).rows).toEqual([{ value: 5 }]);
@@ -585,10 +579,11 @@ describe("kysely sync helpers", () => {
       expect(prepares.calls()).toBe(before + 1);
     }
 
-    const oversizedSql = db.selectNoFrom(
-      /* kysely-allow-raw: admission-gate test needs an oversized SQL text, only reachable via raw. */
-      sql.raw<number>(`1 /*${"x".repeat(64 * 1024)}*/`).as("value"),
-    );
+    const oversizedExpression =
+      /* kysely-allow-raw: this fixed generated SQL comment exercises statement-text admission, not parameter size. */ sql.raw<number>(
+        `1 /*${"x".repeat(64 * 1024)}*/`,
+      );
+    const oversizedSql = db.selectNoFrom(oversizedExpression.as("value"));
     expect(executeSqliteQuerySync(database, oversizedSql).rows).toEqual([{ value: 1 }]);
     expect(executeSqliteQuerySync(database, oversizedSql).rows).toEqual([{ value: 1 }]);
     expect(prepares.calls()).toBe(6);
@@ -671,10 +666,7 @@ describe("kysely sync helpers", () => {
     database = new DatabaseSync(":memory:");
     const db = getNodeSqliteKysely<SyncHelperTestDatabase>(database);
     const jsonValue = (value: string) =>
-      db.selectNoFrom(
-        /* kysely-allow-raw: step-error test needs json() to fail at execution time, not prepare time. */
-        sql<string>`json(${value})`.as("value"),
-      );
+      db.selectNoFrom((eb) => eb.fn<string>("json", [eb.val(value)]).as("value"));
     const prepares = countPrepares(database);
 
     expect(executeSqliteQuerySync(database, jsonValue("{}")).rows).toEqual([{ value: "{}" }]);
@@ -692,9 +684,8 @@ describe("kysely sync helpers", () => {
     (mode) => {
       database = new DatabaseSync(":memory:");
       const db = getNodeSqliteKysely<SyncHelperTestDatabase>(database);
-      const malformedJson = db.selectNoFrom(
-        /* kysely-allow-raw: failure reporting needs a deterministic SQLite step error. */
-        sql<string>`json(${"{"})`.as("value"),
+      const malformedJson = db.selectNoFrom((eb) =>
+        eb.fn<string>("json", [eb.val("{")]).as("value"),
       );
       const observed: unknown[] = [];
       registerNodeSqliteKyselyQueryErrorHandler(database, (error) => {

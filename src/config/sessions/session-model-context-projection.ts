@@ -68,32 +68,37 @@ const MODEL_CONTEXT_NAVIGATION_KEYS = [
   "name",
 ] as const;
 
-function jsonMemberValue(alias: string): RawBuilder<unknown> {
-  /* kysely-allow-raw: preserve native JSON member types while retaining duplicate members in encounter order. */
-  return sql`CASE ${sql.ref(`${alias}.type`)}
-    WHEN 'object' THEN json(${sql.ref(`${alias}.value`)})
-    WHEN 'array' THEN json(${sql.ref(`${alias}.value`)})
+function jsonMemberValue(alias: "root_member" | "message_member"): RawBuilder<unknown> {
+  const type =
+    /* kysely-allow-raw: both closed aliases are JSON member cursors created below. */ sql.ref(
+      `${alias}.type`,
+    );
+  const value =
+    /* kysely-allow-raw: both closed aliases are JSON member cursors created below. */ sql.ref(
+      `${alias}.value`,
+    );
+  return sql`CASE ${type}
+    WHEN 'object' THEN json(${value})
+    WHEN 'array' THEN json(${value})
     WHEN 'true' THEN json('true') WHEN 'false' THEN json('false')
-    ELSE ${sql.ref(`${alias}.value`)} END`;
+    ELSE ${value} END`;
 }
 
 /** Stored navigation serves SQL's first-key lookup and JavaScript's last-key parse. */
 export function projectTranscriptPayloadNavigationSql(
   event: Expression<string>,
 ): RawBuilder<string> {
-  const internal = pickJsonObject(sql.ref("message_member.value"), [
-    "runId",
-    "steerTargetRunId",
-    "contextFreeCommand",
-  ]);
-  /* kysely-allow-raw: preserve each duplicate message/internal envelope rather than replacing its first occurrence. */
-  const message = sql<string>`(SELECT json_group_object(message_member.key,
+  const memberValue =
+    /* kysely-allow-raw: fixed JSON member cursor declared in the message projection below. */ sql.ref(
+      "message_member.value",
+    );
+  const internal = pickJsonObject(memberValue, ["runId", "steerTargetRunId", "contextFreeCommand"]);
+  const message = /* kysely-allow-raw: preserve duplicate message/internal envelopes in native member order. */ sql<string>`(SELECT json_group_object(message_member.key,
     CASE WHEN message_member.key = '__openclaw' AND message_member.type = 'object'
       THEN json(${internal}) ELSE ${jsonMemberValue("message_member")} END)
     FROM json_each(root_member.value) AS message_member
     WHERE message_member.key IN ('role', 'idempotencyKey', 'provenance', 'excludeFromContext', '__openclaw'))`;
-  /* kysely-allow-raw: select bounded navigation members without losing duplicate root keys or nested SQL type semantics. */
-  return sql<string>`(SELECT json_group_object(root_member.key,
+  return /* kysely-allow-raw: preserve duplicate root keys and nested SQL types while selecting bounded navigation. */ sql<string>`(SELECT json_group_object(root_member.key,
     CASE WHEN root_member.key = 'message' AND root_member.type = 'object'
       THEN json(${message}) ELSE ${jsonMemberValue("root_member")} END)
     FROM json_each(${event}) AS root_member

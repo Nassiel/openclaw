@@ -17,6 +17,7 @@ import {
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "./kysely-sync.js";
+import { readSqliteDataVersion } from "./node-sqlite.js";
 import {
   eventIdentity,
   parseTranscriptEvent,
@@ -40,7 +41,7 @@ function forEachMediaEventBatch(params: {
   const eventJson =
     params.table === "transcript_events" && !params.legacyTextStorage
       ? transcriptEventJsonSql(params.database)
-      : sql.ref<string>(`${params.table}.event_json`);
+      : sql.ref<string>(`${params.table}.event_json`); // kysely-allow-raw: private TEXT-table union.
   let cursor: { seq: number; sessionId: string } | undefined;
   while (true) {
     let query = db
@@ -215,12 +216,8 @@ export function scanTrajectoryRows(params: {
 }
 
 export function readMediaSourceVersion(database: DatabaseSync, legacyTextStorage: boolean) {
-  const dataVersionRow = database.prepare("PRAGMA data_version").get();
+  const dataVersion = readSqliteDataVersion(database);
   const db = getNodeSqliteKysely<MediaMigrationDatabase>(database);
-  /* kysely-allow-raw: native byte sums only classify data-version drift; exact CAS still compares decoded text. */
-  const eventBytes = legacyTextStorage
-    ? sql<number>`octet_length(${sql.ref("transcript_events.event_json")})`
-    : transcriptEventReadBytesSql();
   const counts = executeSqliteQueryTakeFirstSync(
     database,
     db.selectNoFrom((eb) => [
@@ -230,7 +227,18 @@ export function readMediaSourceVersion(database: DatabaseSync, legacyTextStorage
         .as("transcript_rows"),
       eb
         .selectFrom("transcript_events")
-        .select((row) => row.fn.coalesce(row.fn.sum<number>(eventBytes), row.val(0)).as("bytes"))
+        .select((row) =>
+          row.fn
+            .coalesce(
+              row.fn.sum<number>(
+                legacyTextStorage
+                  ? row.fn<number>("octet_length", ["event_json"])
+                  : transcriptEventReadBytesSql(),
+              ),
+              row.val(0),
+            )
+            .as("bytes"),
+        )
         .as("transcript_bytes"),
       eb
         .selectFrom("transcript_events")
@@ -258,13 +266,11 @@ export function readMediaSourceVersion(database: DatabaseSync, legacyTextStorage
     typeof value === "bigint" ? Number(value) : typeof value === "number" ? value : 0;
   const count = (key: keyof NonNullable<typeof counts>): number => number(counts?.[key]);
   return {
-    dataVersion: number(isRecord(dataVersionRow) ? dataVersionRow.data_version : undefined),
+    dataVersion,
     trajectoryBytes: count("trajectory_bytes"),
     trajectoryRows: count("trajectory_rows"),
     transcriptBytes: count("transcript_bytes"),
-    transcriptCreatedAt: String(
-      (isRecord(counts) ? counts.transcript_created_at : undefined) ?? "0",
-    ),
+    transcriptCreatedAt: counts?.transcript_created_at ?? "0",
     transcriptRows: count("transcript_rows"),
   };
 }

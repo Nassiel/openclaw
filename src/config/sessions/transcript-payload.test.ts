@@ -25,6 +25,10 @@ import {
 
 type PayloadDatabase = { transcript_events: TranscriptPayloadRecord & { seq: number } };
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const nativeFixtureEvent =
+  /* kysely-allow-raw: fixed identity fixture column provides the independent native comparison. */ sql.ref<string>(
+    "transcript_events.event_json",
+  );
 
 function createTable(database: DatabaseSync): void {
   // Deliberately omit production constraints so reads also exercise corrupted persisted records.
@@ -83,8 +87,8 @@ function inspectNavigation(database: DatabaseSync, event: RawBuilder<string>, se
       database,
       getNodeSqliteKysely<PayloadDatabase>(database)
         .selectFrom("transcript_events")
-        .select([
-          sql<string | null>`json_type(${event}, ${jsonPath})`.as("type"),
+        .select((eb) => [
+          eb.fn<string | null>("json_type", [event, eb.val(jsonPath)]).as("type"),
           sql`CASE WHEN json_type(${event}, ${jsonPath}) IN ('object', 'array')
             THEN json(json_extract(${event}, ${jsonPath}))
             ELSE json_extract(${event}, ${jsonPath}) END`.as("value"),
@@ -165,7 +169,7 @@ describe("transcript payload storage boundary", () => {
         expect(prepared.event_zstd).not.toBeNull();
         insert(database, 1, prepared);
         expect(inspectNavigation(database, transcriptEventNavigationSql(), 1)).toEqual(
-          inspectNavigation(database, sql.ref<string>("transcript_events.event_json"), 0),
+          inspectNavigation(database, nativeFixtureEvent, 0),
         );
         expect(readBody(database, 1)).toBe(original);
       } finally {
@@ -214,7 +218,7 @@ describe("transcript payload storage boundary", () => {
       expect(prepared.event_utf8_bytes).toBeNull();
       insert(database, 1, prepared);
       expect(inspectNavigation(database, transcriptEventNavigationSql(), 1)).toEqual(
-        inspectNavigation(database, sql.ref<string>("transcript_events.event_json"), 1),
+        inspectNavigation(database, nativeFixtureEvent, 1),
       );
       expect(readBody(database, 1)).toBe(original);
       const lengths = database
@@ -224,17 +228,14 @@ describe("transcript payload storage boundary", () => {
         .get();
       expect(lengths?.utf8).toBeNull();
       expect(lengths?.stored).not.toBe(Buffer.byteLength(original));
-      const projected = projectModelContextEventSql(
-        sql.ref<string>("transcript_events.event_json"),
-        sql.lit(0),
-      );
+      const projected = projectModelContextEventSql(nativeFixtureEvent, sql.lit(0));
       const modelSizes = executeSqliteQueryTakeFirstSync(
         database,
         getNodeSqliteKysely<PayloadDatabase>(database)
           .selectFrom("transcript_events")
-          .select([
+          .select((eb) => [
             transcriptEventModelBytesSql(sql.lit(0)).as("stored"),
-            sql<number>`octet_length(${projected})`.as("native"),
+            eb.fn<number>("octet_length", [projected]).as("native"),
           ]),
       );
       expect(modelSizes?.stored).toBe(modelSizes?.native);
@@ -262,25 +263,29 @@ describe("transcript payload storage boundary", () => {
         database,
         db
           .selectFrom("transcript_events")
-          .select([
+          .select((eb) => [
             transcriptEventNavigationSql().as("navigation"),
             transcriptEventResetNavigationSql().as("reset"),
             transcriptEventModelNavigationSql().as("model"),
-            sql<string>`json_extract(${transcriptEventNavigationSql()}, '$.type')`.as("first_type"),
-            sql<string>`json_extract(${transcriptEventNavigationSql()}, '$.message.role')`.as(
-              "first_role",
-            ),
+            eb
+              .fn<string>("json_extract", [transcriptEventNavigationSql(), eb.val("$.type")])
+              .as("first_type"),
+            eb
+              .fn<string>("json_extract", [
+                transcriptEventNavigationSql(),
+                eb.val("$.message.role"),
+              ])
+              .as("first_role"),
           ])
           .where("seq", "=", 1),
       );
-      const event = sql.ref<string>("transcript_events.event_json");
       const native = executeSqliteQueryTakeFirstSync(
         database,
         db
           .selectFrom("transcript_events")
           .select([
-            projectResetBoundaryNavigationSql(event).as("reset"),
-            projectModelContextNavigationSql(event).as("model"),
+            projectResetBoundaryNavigationSql(nativeFixtureEvent).as("reset"),
+            projectModelContextNavigationSql(nativeFixtureEvent).as("model"),
           ])
           .where("seq", "=", 0),
       );
@@ -343,12 +348,16 @@ describe("transcript payload storage boundary", () => {
       const source = sql.val(original);
       const native = executeSqliteQueryTakeFirstSync(
         database,
-        db.selectNoFrom([
-          sql<number>`octet_length(${projectModelContextEventSql(source, sql.lit(0))})`.as("model"),
-          sql<number>`octet_length(${projectModelContextEventSql(source, sql.lit(1))})`.as(
-            "withoutCheckpoint",
-          ),
-          sql<number>`octet_length(json_remove(${source}, '$.data'))`.as("withoutData"),
+        db.selectNoFrom((eb) => [
+          eb
+            .fn<number>("octet_length", [projectModelContextEventSql(source, sql.lit(0))])
+            .as("model"),
+          eb
+            .fn<number>("octet_length", [projectModelContextEventSql(source, sql.lit(1))])
+            .as("withoutCheckpoint"),
+          eb
+            .fn<number>("octet_length", [eb.fn<string>("json_remove", [source, eb.val("$.data")])])
+            .as("withoutData"),
         ]),
       );
       expect(stored).toMatchObject(native!);

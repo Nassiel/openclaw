@@ -107,7 +107,9 @@ it("rebuilds corrupt report bodies only for the exact rejected metadata snapshot
         "SELECT value_json, blob, updated_at FROM cache_entries WHERE scope = 'session-cost-usage-rollup-v3' AND key = ?",
       )
       .get(sessionFile)!;
-    if (!(stored.blob instanceof Uint8Array)) throw new Error("Expected stored usage body");
+    if (!(stored.blob instanceof Uint8Array)) {
+      throw new Error("Expected stored usage body");
+    }
     const corrupt = () =>
       db
         .prepare(
@@ -121,7 +123,9 @@ it("rebuilds corrupt report bodies only for the exact rejected metadata snapshot
       summaries: [null],
       cacheStatus: { status: "stale" },
     });
-    if (rejected.kind !== "sessions") throw new Error("Expected rejected session report");
+    if (rejected.kind !== "sessions") {
+      throw new Error("Expected rejected session report");
+    }
     expect(rejected.invalidRows).toHaveLength(1);
 
     // A valid newer writer wins before the old report's rebuild request arrives.
@@ -143,7 +147,9 @@ it("rebuilds corrupt report bodies only for the exact rejected metadata snapshot
 
     corrupt();
     const current = await runUsageCostWorker(prepared, request);
-    if (current.kind !== "sessions") throw new Error("Expected current session report");
+    if (current.kind !== "sessions") {
+      throw new Error("Expected current session report");
+    }
     await refreshCostUsageCacheForAgent({
       agentId,
       sessionFiles: [sessionFile],
@@ -323,7 +329,9 @@ it("retains the process-held incognito cache without creating its sentinel file"
         options: WorkerTaskOptions<unknown>,
       ) {
         const onRequest = options.onRequest;
-        if (!onRequest) return run.call(this, input, options);
+        if (!onRequest) {
+          return run.call(this, input, options);
+        }
         return run.call(this, input, {
           ...options,
           onRequest: (value, context) => {

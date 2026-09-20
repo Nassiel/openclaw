@@ -1,5 +1,4 @@
 import type { DatabaseSync } from "node:sqlite";
-import { sql } from "kysely";
 import {
   executeSqliteQuerySync,
   getNodeSqliteKysely,
@@ -34,8 +33,7 @@ export function createSessionTranscriptFtsInserter(db: DatabaseSync, sessionId: 
   const insertContent = prepareSqliteQuerySync<TranscriptFtsEntry>(db, (parameter) =>
     kysely.insertInto("session_transcript_fts").values({
       // Keep the allocated 64-bit identity inside SQLite, including above JS's safe integer range.
-      /* kysely-allow-raw: the immediately preceding identity insert owns this connection's rowid. */
-      rowid: sql<number>`last_insert_rowid()`,
+      rowid: kysely.fn<number>("last_insert_rowid", []),
       text: parameter((entry) => entry.text),
       session_id: sessionId,
       message_id: parameter((entry) => entry.messageId),

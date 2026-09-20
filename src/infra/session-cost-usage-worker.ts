@@ -209,7 +209,9 @@ export async function executeUsageCostWorker(
   const cacheDatabase = input.databases.find(
     (entry) => entry.path === location.databasePath && entry.agentId === location.agentId,
   );
-  if (!cacheDatabase) throw new Error("Usage cache database is not owned by this worker operation");
+  if (!cacheDatabase) {
+    throw new Error("Usage cache database is not owned by this worker operation");
+  }
   const readMetadata = async (): Promise<SessionCostUsageRollupRow[]> => {
     if (memoryCache) {
       const bytes = await host("memory-cache", { filePaths: selectedPaths });
@@ -277,11 +279,15 @@ export async function executeUsageCostWorker(
         readBody: body,
         onInvalidBody(key: string) {
           const row = byPath.get(key);
-          if (row) invalidRows.set(key, row);
+          if (row) {
+            invalidRows.set(key, row);
+          }
         },
         remainingRows: (function* () {
           for (const row of rows) {
-            if (!consumed.has(row.key)) yield row;
+            if (!consumed.has(row.key)) {
+              yield row;
+            }
           }
         })(),
       };
@@ -312,7 +318,9 @@ export async function executeUsageCostWorker(
       try {
         return await control.runNativeSection(async () => {
           const opened = openOpenClawAgentDatabaseReadOnly({ ...cacheDatabase, env });
-          if (!opened.found) return project([], () => null);
+          if (!opened.found) {
+            return project([], () => null);
+          }
           const { db } = opened.database;
           try {
             // sqlite-allow-raw: This dedicated read-only handle owns the complete report snapshot.
@@ -321,22 +329,27 @@ export async function executeUsageCostWorker(
               readSessionCostUsageRollupRowsInDatabase(db, selectedPaths),
               (row) => {
                 const body = readSessionCostUsageRollupBodyInDatabase(db, row);
-                if (!body)
+                if (!body) {
                   throw new WorkerTaskError("Usage cache snapshot is unavailable", "unavailable");
+                }
                 return body.blob;
               },
             );
           } finally {
             try {
-              // sqlite-allow-raw: End this report's read-only snapshot before closing its handle.
-              if (db.isTransaction) db.exec("ROLLBACK");
+              if (db.isTransaction) {
+                // sqlite-allow-raw: End this report's read-only snapshot before closing its handle.
+                db.exec("ROLLBACK");
+              }
             } finally {
               opened.database.close();
             }
           }
         });
       } catch (error) {
-        if (!isTransientSqliteError(error)) throw error;
+        if (!isTransientSqliteError(error)) {
+          throw error;
+        }
         return project([], () => null);
       }
     }
@@ -348,7 +361,9 @@ export async function executeUsageCostWorker(
       try {
         const result = await project(rows, async (row) => {
           const body = await readBody(row);
-          if (!body) throw changed;
+          if (!body) {
+            throw changed;
+          }
           return body.blob;
         });
         const current = new Map((await readMetadata()).map((row) => [row.key, row]));
@@ -363,7 +378,9 @@ export async function executeUsageCostWorker(
           return result;
         }
       } catch (error) {
-        if (error !== changed) throw error;
+        if (error !== changed) {
+          throw error;
+        }
       }
     }
     throw new WorkerTaskError("Usage cache changed while reading; retry the report", "unavailable");
@@ -508,7 +525,9 @@ export async function executeUsageCostWorker(
       const entry = body
         ? decodeUsageCostRollup(row.valueJson, operation.pricingFingerprint, body.blob)
         : undefined;
-      if (entry) previous = { entry };
+      if (entry) {
+        previous = { entry };
+      }
     }
     const entry = await scanUsageCostRollupInWorker({
       file,
