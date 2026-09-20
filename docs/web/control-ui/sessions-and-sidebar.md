@@ -310,6 +310,11 @@ single-line and shortened to 50 characters or fewer, or cleared. Between 51 and
 edit. Counts exclude leading and trailing whitespace. Session-creation errors and
 recovery actions remain visible in either mode.
 
+Pasted images appear as small, removable thumbnails below the text. Pasting or
+removing them leaves the input, **New session** action, and settings control in
+place; the palette grows downward. Images can start a session on their own or
+accompany text. There is no attachment picker in the palette.
+
 - **Enter** opens or runs the selected result. With no result, Enter does not send.
 - **Shift+Enter** adds a line. The field grows downward to three lines, then scrolls
   without moving the palette or its top-right controls.
@@ -327,7 +332,7 @@ the checkbox restores your usual choices immediately and leaves the prompt
 intact. One-off choices are not remembered for the next palette session.
 
 Accepted creation closes the palette and offers **Open session** without changing
-the foreground view or its draft. A failed submission retains the prompt and
+the foreground view or its draft. A failed submission retains the prompt, images, and
 choices with an error. These settings do not affect sessions opened from search,
 and the existing conversation composer keeps its own send and steer/queue
 shortcuts. Long prompts remain intact for session creation and are never sent as
@@ -402,7 +407,7 @@ For device and cloud sessions, the submitted prompt also starts background namin
 
 For a remote target, the Control UI creates the repository or managed-worktree session with an empty initial message and no `execNode`, dispatches it by exact `deviceId`, `autoDevice: true`, or `profileId` (plus an optional cloud machine class), waits for active placement, and then sends the first message and attachments with the same idempotency key used by recovery. Explicit and automatic device dispatch require `operator.write`; cloud profile dispatch requires `operator.admin`. The composer footer chooses the new session's model and reasoning level.
 
-Model and **Effort** are separate adjacent composer controls in chat and New session, on desktop and mobile. The model picker never contains Effort or Fast-mode controls. Long model labels ellipsize to leave room for the other controls; the full name remains in the picker, accessible label, and tooltip. Mobile Effort uses a gauge whose needle reflects the current level, with a lightning badge when Fast mode is active. In chat, Fast mode stays in the Effort menu, or appears as the adjacent control when reasoning is unavailable. Models with neither available control omit it.
+Model and **Effort** are separate adjacent composer controls in chat and New session, on desktop and mobile. The model picker never contains Effort or Fast-mode controls. Long model labels ellipsize to leave room for the other controls; the full name remains in the picker, accessible label, and tooltip. Narrow composers, including split panes in wider windows, use compact controls so each picker stays independently clickable. Effort uses a gauge in these layouts whose needle reflects the current level, with a lightning badge when Fast mode is active. In chat, Fast mode stays in the Effort menu, or appears as the adjacent control when reasoning is unavailable. Models with neither available control omit it.
 
 Search the model picker by model name or provider. Your search stays applied as the model catalog refreshes. Press **Escape** to clear a nonempty search while keeping the picker open; press it again to close the picker and return focus to its trigger.
 

@@ -15,6 +15,7 @@ import type { DB } from "../state/openclaw-state-db.generated.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
+import { isTruthyEnvValue } from "./env.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
 import { invalidateSuccessfulMigrationCheckpointsInTransaction } from "./startup-migration-checkpoint.js";
 import { recordLegacyMigrationRun } from "./state-migrations.receipts.js";
@@ -189,9 +190,18 @@ export function withDeferredPluginMigrationsCurrent<T>(
   });
 }
 
-export function formatDeferredPluginMigration(pending: DeferredPluginMigration): string {
+export function formatDeferredPluginMigration(
+  pending: DeferredPluginMigration,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
   const retry = pending.command === "openclaw doctor --fix" ? "" : ', then "openclaw doctor --fix"';
-  return `Plugin "${pending.pluginId}" state migration is pending: ${pending.reason} State and legacy config inputs are preserved. Run "${pending.command}"${retry}.`;
+  const updating =
+    isTruthyEnvValue(env.OPENCLAW_UPDATE_IN_PROGRESS) ||
+    isTruthyEnvValue(env.OPENCLAW_UPDATE_POST_CORE_CONVERGENCE);
+  const next = updating
+    ? `Let the current update or repair finish. If this warning remains afterward, run "${pending.command}"${retry}.`
+    : `Run "${pending.command}"${retry}.`;
+  return `Plugin "${pending.pluginId}" state migration is pending: ${pending.reason} State and legacy config inputs are preserved. ${next}`;
 }
 
 /** Only the migration owner can resolve a pending record after its work completes. */
@@ -269,7 +279,7 @@ export function recordDeferredPluginMigrations(params: {
   );
   const log = createSubsystemLogger("state-migrations");
   for (const pending of transitions.deferred) {
-    log.warn(formatDeferredPluginMigration(pending), {
+    log.warn(formatDeferredPluginMigration(pending, params.env), {
       pluginId: pending.pluginId,
       reason: pending.reason,
       action: pending.command,

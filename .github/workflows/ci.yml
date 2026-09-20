@@ -2023,7 +2023,7 @@ jobs:
               "check-docs": count(manifest.run_check_docs),
               "skills-python": count(manifest.run_skills_python_job),
               "macos-node": count(manifest.run_macos_node, manifest.macos_node_matrix.include.length),
-              "macos-swift": count(manifest.run_macos_swift),
+              "macos-swift": count(manifest.run_macos_swift, 2),
               "ios-build": count(manifest.run_ios_build),
               "docker-seed-e2e": count(manifest.run_docker_seed_e2e && eventName === "pull_request" &&
                 process.env.OPENCLAW_CI_HEAD_REPOSITORY !== process.env.OPENCLAW_CI_REPOSITORY),
@@ -4891,13 +4891,13 @@ jobs:
     name: ${{ format('macos-swift ({0})', matrix.phase) }}
     needs: [preflight]
     if: needs.preflight.outputs.run_macos_swift == 'true'
-    # Debug/coverage tests remain required; full validation adds an independent
-    # optimized build whose products are not inputs to the test graph.
+    # Independent package builds must not consume the app test job's budget.
+    # Full validation also compiles the optimized app, within the same two-job cap.
     strategy:
       fail-fast: false
       max-parallel: 2
       matrix:
-        phase: ${{ fromJSON(github.event_name == 'workflow_dispatch' && !inputs.release_gate && needs.preflight.outputs.release_scope == 'full' && '["release","tests"]' || '["tests"]') }}
+        phase: ${{ fromJSON(github.event_name == 'workflow_dispatch' && !inputs.release_gate && needs.preflight.outputs.release_scope == 'full' && '["release","tests","packages"]' || '["tests","packages"]') }}
     # Unassigned Blacksmith Mac jobs can hold both non-canceling main slots.
     # Use the existing hosted image and budget from the first attempt.
     runs-on: macos-26
@@ -5018,6 +5018,7 @@ jobs:
 
       - name: Detect Swift toolchain cache key
         id: swift-toolchain
+        if: matrix.phase != 'packages'
         run: |
           set -euo pipefail
           xcode_version="$(xcodebuild -version | tr '\n' ' ' | sed 's/  */ /g; s/ $//')"
@@ -5037,7 +5038,7 @@ jobs:
 
       - name: Restore Swift build directory cache
         id: swift-build-cache
-        if: needs.preflight.outputs.cache_mode != 'off'
+        if: matrix.phase != 'packages' && needs.preflight.outputs.cache_mode != 'off'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: apps/macos/.build
@@ -5049,6 +5050,7 @@ jobs:
 
       - name: Validate Swift build cache
         id: validate-swift-build-cache
+        if: matrix.phase != 'packages'
         run: |
           set -euo pipefail
           cache_valid=true
@@ -5115,7 +5117,7 @@ jobs:
           swift build --package-path apps/macos --product OpenClaw --configuration release
 
       - name: OpenClawKit Talk-trait opt-out (no ElevenLabsKit when default traits disabled)
-        if: matrix.phase == 'tests'
+        if: matrix.phase == 'packages'
         run: |
           set -euo pipefail
           # Guard: chat-only consumers build OpenClawKit with the Talk trait
@@ -5132,7 +5134,7 @@ jobs:
 
       # openclawkit-tests-contract-v1: the target owns an independently runnable package suite.
       - name: OpenClawKit tests
-        if: matrix.phase == 'tests' && needs.preflight.outputs.run_openclawkit_tests == 'true'
+        if: matrix.phase == 'packages' && needs.preflight.outputs.run_openclawkit_tests == 'true'
         run: |
           set -euo pipefail
           openclawkit_scratch="$(mktemp -d "$RUNNER_TEMP/openclawkit.XXXXXX")"
@@ -5149,7 +5151,7 @@ jobs:
           swift test "${openclawkit_test_args[@]}"
 
       - name: Swabble tests
-        if: matrix.phase == 'tests' && env.HISTORICAL_TARGET != 'true'
+        if: matrix.phase == 'packages' && env.HISTORICAL_TARGET != 'true'
         run: |
           set -euo pipefail
           swabble_scratch="$(mktemp -d "$RUNNER_TEMP/swabble.XXXXXX")"
@@ -5239,7 +5241,7 @@ jobs:
       # total five minutes, leaving five for runner startup, cancellation and cleanup.
       - name: Check Swift cache save budget
         id: swift-cache-budget
-        if: needs.preflight.outputs.cache_write_allowed == 'true'
+        if: matrix.phase != 'packages' && needs.preflight.outputs.cache_write_allowed == 'true'
         continue-on-error: true
         timeout-minutes: 1
         env:
