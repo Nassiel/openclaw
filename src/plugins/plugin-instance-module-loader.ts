@@ -130,17 +130,15 @@ export function bindPluginInstanceModuleLoader(params: PluginInstanceModuleLoade
     artifact,
     bindPluginInstanceModuleLoader,
   );
-  const nativeAliases = nativeHooks
-    ? undefined
-    : preparePluginLoaderAliases({
-        modulePath: params.source,
-        argv1: process.argv[1],
-        moduleUrl: import.meta.url,
-        pluginSdkResolution: params.pluginSdkResolution,
-        devSourceRoot: params.devSourceRoot,
-      });
-  if (nativeAliases?.packageRoot) {
-    artifact.linkHost(nativeAliases.packageRoot);
+  const aliases = preparePluginLoaderAliases({
+    modulePath: params.source,
+    argv1: process.argv[1],
+    moduleUrl: import.meta.url,
+    pluginSdkResolution: params.pluginSdkResolution,
+    devSourceRoot: params.devSourceRoot,
+  });
+  if (aliases.packageRoot) {
+    artifact.linkHost(aliases.packageRoot);
   }
   installOpenClawPluginSdkNativeResolver({
     moduleUrl: import.meta.url,
@@ -148,7 +146,7 @@ export function bindPluginInstanceModuleLoader(params: PluginInstanceModuleLoade
     devSourceRoot: params.devSourceRoot,
     allowedParentRoots: [artifact.boundaryRoot],
   });
-  if (nativeAliases) {
+  if (!nativeHooks) {
     const capturedSource = artifact.resolve(params.source);
     artifact.prepareModule(capturedSource);
     const bunSourceFacts =
@@ -185,7 +183,7 @@ export function bindPluginInstanceModuleLoader(params: PluginInstanceModuleLoade
       pluginSdkResolution: params.pluginSdkResolution,
       tryNative,
       aliasMap: {
-        ...nativeAliases.getAliasMap(),
+        ...aliases.getAliasMap(),
         ...artifact.sourceAliases,
       },
     });
@@ -194,7 +192,7 @@ export function bindPluginInstanceModuleLoader(params: PluginInstanceModuleLoade
       cache,
       artifact,
       loader,
-      nativeAliases.sdkRoots,
+      aliases.sdkRoots,
       !effectiveTryNative,
     );
     return;

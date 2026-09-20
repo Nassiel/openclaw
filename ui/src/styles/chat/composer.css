@@ -1408,17 +1408,23 @@
 }
 
 .chat-attachments-preview {
+  /* Ease across most of a thumbnail and clear the frame before clipping, so a
+     partially visible image does not read as a hard vertical border. */
+  --chat-attachment-fade-in:
+    transparent 4px, rgb(0 0 0 / 12%) 12px, rgb(0 0 0 / 50%) 24px, rgb(0 0 0 / 88%) 36px, black 48px;
+  --chat-attachment-fade-out:
+    black calc(100% - 48px), rgb(0 0 0 / 88%) calc(100% - 36px), rgb(0 0 0 / 50%) calc(100% - 24px),
+    rgb(0 0 0 / 12%) calc(100% - 12px), transparent calc(100% - 4px);
+
   display: flex;
   gap: calc(var(--chat-composer-editor-inset-block) * 3);
   flex-wrap: nowrap;
   flex-shrink: 0;
-  /* Extend only the scrollport's transparent bounds for the original remove
-     target and focus ring. The extra padding cancels the overlap, so the chips
-     keep the editor's visible inset without clipping the controls. */
-  width: calc(100% + var(--chat-attachment-hit-slop));
-  max-width: calc(100% + var(--chat-attachment-hit-slop));
+  /* Keep horizontal clipping inside the composer. Reserve remove-target and
+     focus-ring clearance in padding, not in a wider scrollport. */
+  width: 100%;
+  max-width: 100%;
   margin-block-start: calc(-1 * var(--chat-attachment-hit-slop));
-  margin-inline-end: calc(-1 * var(--chat-attachment-hit-slop));
   padding-block: calc(var(--chat-composer-editor-inset-block) * 2 + var(--chat-attachment-hit-slop))
     var(--chat-composer-editor-inset-block);
   padding-inline: var(--chat-composer-editor-inset-inline)
@@ -1446,31 +1452,19 @@
 }
 
 .chat-attachments-preview[data-scrollable="true"][data-at-start="true"][data-at-end="false"] {
-  mask-image: linear-gradient(
-    to right,
-    black 0,
-    black calc(100% - var(--chat-composer-editor-inset-inline)),
-    transparent 100%
-  );
+  mask-image: linear-gradient(to right, var(--chat-attachment-fade-out));
 }
 
 .chat-attachments-preview[data-scrollable="true"][data-at-start="false"][data-at-end="false"] {
   mask-image: linear-gradient(
     to right,
-    transparent 0,
-    black var(--chat-composer-editor-inset-inline),
-    black calc(100% - var(--chat-composer-editor-inset-inline)),
-    transparent 100%
+    var(--chat-attachment-fade-in),
+    var(--chat-attachment-fade-out)
   );
 }
 
 .chat-attachments-preview[data-scrollable="true"][data-at-start="false"][data-at-end="true"] {
-  mask-image: linear-gradient(
-    to right,
-    transparent 0,
-    black var(--chat-composer-editor-inset-inline),
-    black 100%
-  );
+  mask-image: linear-gradient(to right, var(--chat-attachment-fade-in));
 }
 
 .chat-attachment-thumb {
