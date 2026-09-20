@@ -6,8 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { expectDefined } from "@openclaw/normalization-core";
-import { afterEach, aroundEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { describe, expect, it, vi } from "vitest";
 import { SessionManager } from "../agents/sessions/session-manager.js";
 import {
   loadExactSessionEntry,
@@ -32,7 +31,6 @@ import * as nodeSqlite from "../infra/node-sqlite.js";
 import * as replaceFile from "../infra/replace-file.js";
 import { resolveSqliteDatabaseFilePaths } from "../infra/sqlite-files.js";
 import * as sqlitePrivateDirectory from "../infra/sqlite-private-directory.js";
-import { withSqliteReadOnlyWorkerScope } from "../infra/sqlite-readonly-worker.js";
 import * as windowsPrivateDirectory from "../infra/windows-private-directory.js";
 import { ExitError } from "../runtime.js";
 import {
@@ -84,6 +82,7 @@ import { retireSessionSqliteRecovery } from "./doctor-session-sqlite-retirement.
 import { createDoctorSessionSqliteTargetReport } from "./doctor-session-sqlite-types.js";
 import { runDoctorSessionSqlite, type DoctorSessionSqliteReport } from "./doctor-session-sqlite.js";
 import { createCompetingRestoreTarget } from "./doctor-session-sqlite.publication.test-support.js";
+import { setupDoctorSessionSqliteTest } from "./doctor-session-sqlite.test-support.js";
 import { withDoctorSqliteMaintenanceLock } from "./doctor-sqlite-maintenance-lock.js";
 import { doctorCommand } from "./doctor.js";
 
@@ -101,30 +100,11 @@ type TestStore = {
   transcriptPath: string;
 };
 
-const previousEnv = {
-  OPENCLAW_CONFIG_PATH: process.env.OPENCLAW_CONFIG_PATH,
-  OPENCLAW_STATE_DIR: process.env.OPENCLAW_STATE_DIR,
-};
-const autoCleanupTempDirs = useAutoCleanupTempDirTracker(afterEach);
+const autoCleanupTempDirs = setupDoctorSessionSqliteTest();
 // Vitest canonicalizes TMPDIR; alias coverage needs the platform's /tmp path.
 const lexicalRootTempDir = path.resolve("/tmp");
 const realRootTempDir = canonicalTestPath(lexicalRootTempDir);
 const hasPlatformRootTempAlias = lexicalRootTempDir !== realRootTempDir;
-
-// Reuse child imports within each case; every snapshot still admits and reads fresh state.
-aroundEach((runTest) => withSqliteReadOnlyWorkerScope(runTest));
-
-beforeEach(() => {
-  closeOpenClawAgentDatabasesForTest();
-  closeOpenClawStateDatabaseForTest();
-});
-
-afterEach(() => {
-  closeOpenClawAgentDatabasesForTest();
-  closeOpenClawStateDatabaseForTest();
-  restoreEnvValue("OPENCLAW_CONFIG_PATH", previousEnv.OPENCLAW_CONFIG_PATH);
-  restoreEnvValue("OPENCLAW_STATE_DIR", previousEnv.OPENCLAW_STATE_DIR);
-});
 
 describe("runDoctorSessionSqlite", () => {
   it.each(
@@ -7021,11 +7001,4 @@ function canonicalTestPath(filePath: string): string {
   }
 }
 
-function restoreEnvValue(key: keyof NodeJS.ProcessEnv, value: string | undefined): void {
-  if (value === undefined) {
-    delete process.env[key];
-    return;
-  }
-  process.env[key] = value;
-}
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
