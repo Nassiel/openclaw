@@ -288,6 +288,112 @@ suite.define(() => {
     },
   );
 
+  it.each([
+    { mode: "dark", width: 1280 },
+    { mode: "light", width: 1280 },
+    { mode: "dark", width: 390 },
+    { mode: "light", width: 390 },
+  ] as const)(
+    "aligns settings and preserves keyboard focus in $mode at $width",
+    async ({ mode, width }) => {
+      await suite.withPage(
+        {
+          ...createControlUiE2eContextOptions(),
+          colorScheme: mode,
+          viewport: { width, height: 900 },
+          deviceScaleFactor: 2,
+        },
+        async ({ page }) => {
+          await installMockGateway(page, scenario());
+          const { palette } = await openFromForeground(page);
+          const popup = palette.locator("wa-popover.palette-session-settings");
+          await changePicker(popup, "wa-after-show", () =>
+            palette.getByRole("button", { name: "New session settings", exact: true }).click(),
+          );
+          const directory =
+            process.env.OPENCLAW_CAPTURE_UI_PROOF === "1"
+              ? createControlUiE2eArtifactDir(
+                  "palette-settings-" + mode + "-" + width,
+                  suite.artifactDir,
+                )
+              : undefined;
+          const capture = async (stage: string) => {
+            if (directory) {
+              await popup.locator('[part="body"]').screenshot({
+                path: path.join(directory, stage + ".png"),
+                animations: "disabled",
+              });
+              await page.screenshot({
+                path: path.join(directory, stage + "-page.png"),
+                animations: "disabled",
+              });
+            }
+          };
+          const box = async (selector: string) => {
+            const bounds = await popup.locator(selector).boundingBox();
+            if (!bounds) throw new Error("Missing settings control: " + selector);
+            return bounds;
+          };
+          const avatar = await box(".agent-select__trigger .agent-select__avatar");
+          const folder = await box(
+            ".palette-session-settings__workspace .palette-session-settings__icon svg",
+          );
+          const agentChevron = await box(".agent-select__chevron svg");
+          const workspaceChevron = await box(".palette-session-settings__chevron svg");
+          const agentLabel = await box(".agent-select__label");
+          const workspaceLabel = await box(
+            ".palette-session-settings__workspace .palette-session-settings__label",
+          );
+          await capture("initial");
+          expect.soft(avatar.width).toBe(folder.width + 2);
+          expect.soft(avatar.x + avatar.width / 2).toBeCloseTo(folder.x + folder.width / 2, 0);
+          expect.soft(agentChevron.x).toBeCloseTo(workspaceChevron.x, 0);
+          expect.soft(agentLabel.x).toBeCloseTo(workspaceLabel.x, 0);
+          expect
+            .soft(avatar.y + avatar.height / 2)
+            .toBeCloseTo(agentChevron.y + agentChevron.height / 2, 0);
+          const remember = popup.getByRole("checkbox", { name: /Remember settings for/ });
+          expect(await remember.isVisible()).toBe(true);
+          const workspaceButton = popup.locator(".palette-session-settings__workspace");
+          const search = popup.getByRole("searchbox", { name: "Search", exact: true });
+          await workspaceButton.click();
+          await search.waitFor({ state: "visible" });
+          await capture("pointer-projects");
+          expect.soft(await remember.count()).toBe(0);
+          expect
+            .soft(await search.evaluate((element) => getComputedStyle(element).outlineStyle))
+            .toBe("none");
+          // Pointer entry keeps focus inside the nested view without summoning a
+          // text caret (or a touch keyboard). Tab still reaches its search field.
+          await page.keyboard.press("Tab");
+          expect
+            .soft(await search.evaluate((element) => document.activeElement === element))
+            .toBe(true);
+          await search.press("Escape");
+          expect(await remember.isVisible()).toBe(true);
+          expect(
+            await workspaceButton.evaluate((element) => document.activeElement === element),
+          ).toBe(true);
+          await workspaceButton.press("Enter");
+          await search.waitFor({ state: "visible" });
+          expect(await search.evaluate((element) => document.activeElement === element)).toBe(true);
+          expect(await search.evaluate((element) => getComputedStyle(element).outlineStyle)).toBe(
+            "solid",
+          );
+          await capture("keyboard-projects");
+          await search.fill("no-such-workspace");
+          expect(await popup.locator("[data-machine]").count()).toBe(0);
+          await popup.getByRole("button", { name: "Back", exact: true }).click();
+          expect(await remember.isVisible()).toBe(true);
+          await workspaceButton.press("Enter");
+          expect(await search.inputValue()).toBe("");
+          await popup.locator('[data-machine="local"][data-project=""]').click();
+          expect(await remember.isVisible()).toBe(true);
+        },
+      );
+    },
+  );
+
   it.each(["light", "dark"] as const)(
     "remembers only palette settings and restores defaults when unchecked in %s",
     async (mode) => {
