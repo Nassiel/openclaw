@@ -54,6 +54,11 @@ export const runtimeProcessEntrypoints = {
     sourceWorkerName: "../state/openclaw-state.worker",
     distWorkerPath: "state/openclaw-state.worker.js",
   },
+  authProfileInlineUsage: {
+    currentModuleUrl,
+    sourceWorkerName: "../agents/auth-profiles/inline-usage.worker",
+    distWorkerPath: "agents/auth-profiles/inline-usage.worker.js",
+  },
   agentDatabaseExecution: {
     currentModuleUrl,
     sourceWorkerName: "../state/openclaw-agent-execution.worker",

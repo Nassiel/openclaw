@@ -8,12 +8,14 @@ import {
 } from "../../infra/kysely-sync.js";
 import { resolveZstdCodec } from "../../infra/zstd-codec.js";
 import type { DB } from "../../state/openclaw-agent-db.generated.js";
+import { findSessionTranscriptHeader } from "./session-entry-codec.js";
 import {
   projectModelContextEventSql,
   projectModelContextNavigationSql,
   projectResetBoundaryNavigationSql,
   projectTranscriptPayloadNavigationSql,
 } from "./session-model-context-projection.js";
+import { projectSessionTranscriptReportFacts } from "./session-transcript-report-facts.js";
 
 export const MAX_COMPRESSED_EVENT_BYTES = 4 * 1024 * 1024;
 const MAX_NAVIGATION_BYTES = 16 * 1024;
@@ -84,13 +86,17 @@ function hasUtf8Storage(database: DatabaseSync): boolean {
   return utf8;
 }
 
-function navigationProjection(event: Expression<string>): RawBuilder<string | null> {
+function navigationProjection(
+  event: Expression<string>,
+  report: Expression<string>,
+): RawBuilder<string | null> {
   return /* kysely-allow-raw: record native projections and exact byte costs; exceptional envelopes retain identity behavior. */ sql<
     string | null
-  >`CASE WHEN json_valid(${event}) THEN CASE
+  >`CASE WHEN json_valid(${event}) AND json_valid(${report}) THEN CASE
     WHEN json_type(${event}) != 'object'
       OR coalesce(json_type(${event}, '$.message'), 'null') NOT IN ('object', 'null') THEN NULL
     ELSE json_object('version', 1,
+      'report', json(${report}),
       'navigation', json(${projectTranscriptPayloadNavigationSql(event)}),
       'reset', json(${projectResetBoundaryNavigationSql(event)}),
       'model', json(${projectModelContextNavigationSql(event)}),
@@ -100,22 +106,35 @@ function navigationProjection(event: Expression<string>): RawBuilder<string | nu
     END ELSE NULL END`;
 }
 
-type NavigationReader = (eventJson: string) => { navigation_json: string | null } | undefined;
+type NavigationInput = { eventJson: string; reportJson: string };
+type NavigationReader = (input: NavigationInput) => { navigation_json: string | null } | undefined;
 const navigationReaders = new WeakMap<DatabaseSync, NavigationReader>();
 
-function readNavigation(database: DatabaseSync, eventJson: string): string | null {
+function readNavigation(database: DatabaseSync, input: NavigationInput): string | null {
   let read = navigationReaders.get(database);
   if (!read) {
-    read = prepareSqliteQueryTakeFirstSync<string, { navigation_json: string | null }>(
+    read = prepareSqliteQueryTakeFirstSync<NavigationInput, { navigation_json: string | null }>(
       database,
       (parameter) => {
         const db = getNodeSqliteKysely<Record<string, never>>(database);
         const metadata = db
-          .selectFrom(db.selectNoFrom(parameter((value) => value).as("event_json")).as("source"))
-          .select((eb) => navigationProjection(eb.ref("source.event_json")).as("navigation_json"));
+          .selectFrom(
+            db
+              .selectNoFrom([
+                parameter((value) => value.eventJson).as("event_json"),
+                parameter((value) => value.reportJson).as("report_json"),
+              ])
+              .as("source"),
+          )
+          .select((eb) =>
+            navigationProjection(eb.ref("source.event_json"), eb.ref("source.report_json")).as(
+              "navigation_json",
+            ),
+          );
         const admitted = /* kysely-allow-raw: reject oversized metadata natively before returning its text to JavaScript. */ sql<
           string | null
-        >`CASE WHEN octet_length(metadata.navigation_json) <= ${MAX_NAVIGATION_BYTES}
+        >`CASE WHEN json_valid(metadata.navigation_json)
+          AND octet_length(metadata.navigation_json) <= ${MAX_NAVIGATION_BYTES}
           THEN metadata.navigation_json ELSE NULL END`;
         return (
           db
@@ -131,7 +150,7 @@ function readNavigation(database: DatabaseSync, eventJson: string): string | nul
     );
     navigationReaders.set(database, read);
   }
-  const navigation = read(eventJson)?.navigation_json ?? null;
+  const navigation = read(input)?.navigation_json ?? null;
   return navigation !== null && Buffer.byteLength(navigation, "utf8") <= MAX_NAVIGATION_BYTES
     ? navigation
     : null;
@@ -174,7 +193,19 @@ export function prepareTranscriptPayload(
   if (compressed.byteLength > maximumStoredBytes) {
     return identity;
   }
-  const navigation = readNavigation(database, eventJson);
+  let reportJson: string;
+  try {
+    const raw: unknown = JSON.parse(eventJson);
+    // Header discovery must keep the original version and coercion behavior.
+    if (findSessionTranscriptHeader([raw])) {
+      return identity;
+    }
+    reportJson = JSON.stringify(projectSessionTranscriptReportFacts(raw));
+  } catch {
+    // Unsupported JSON or projection nesting must not reject existing identity bytes.
+    return identity;
+  }
+  const navigation = readNavigation(database, { eventJson, reportJson });
   if (
     navigation === null ||
     compressed.byteLength + Buffer.byteLength(navigation, "utf8") > maximumStoredBytes

@@ -81,6 +81,7 @@ import {
   canReuseOpenClawAgentIntegrityVerification,
   type OpenClawAgentIntegrityVerification,
 } from "./openclaw-quarantine-store.js";
+import { getOpenClawDatabaseMaintenanceScope } from "./openclaw-state-db-async-lifecycle.js";
 import { OPENCLAW_SQLITE_BUSY_TIMEOUT_MS } from "./openclaw-state-db.js";
 
 const agentDbLog = createSubsystemLogger("state/agent-db");
@@ -221,6 +222,7 @@ function finishAgentSchemaMigration(
   targetVersion: number,
   schemaSql: string,
   requiresMaintenance: boolean,
+  assertMigration: () => void,
 ): void {
   repairCanonicalSqliteIndexes(db, pathname, schemaSql, {
     verifyPhysicalIntegrity: false,
@@ -228,12 +230,10 @@ function finishAgentSchemaMigration(
   db.exec(`PRAGMA user_version = ${targetVersion};`);
   persistAgentSchemaMetadata(db, agentId, targetVersion);
   assertAgentSchemaVersion(db, { agentId, pathname, version: targetVersion }, schemaSql);
-  if (requiresMaintenance) {
-    if (db.prepare("PRAGMA foreign_key_check").all().length > 0) {
-      throw new Error(`Agent schema migration failed foreign key validation for ${pathname}.`);
-    }
-    maintenanceAuthority.assertAgentDatabaseMaintenanceAuthority();
+  if (requiresMaintenance && db.prepare("PRAGMA foreign_key_check").all().length > 0) {
+    throw new Error(`Agent schema migration failed foreign key validation for ${pathname}.`);
   }
+  assertMigration();
 }
 
 function ensureAgentSchema(
@@ -252,13 +252,26 @@ function ensureAgentSchema(
       : targetVersion < CANONICAL_SESSION_VALIDATION_SCHEMA_VERSION
         ? withoutCanonicalSessionValidationSchema(storageSchemaSql)
         : storageSchemaSql;
-  const identityMigration =
-    targetVersion >= 18 &&
-    readSqliteUserVersion(db) < targetVersion &&
-    (readSqliteUserVersion(db) > 0 || readExistingAgentSchemaMeta(db) !== null);
-  if (identityMigration) {
-    maintenanceAuthority.assertAgentDatabaseMaintenanceAuthority();
-  }
+  const originalVersion = readSqliteUserVersion(db);
+  const schemaMigration =
+    originalVersion < targetVersion &&
+    (originalVersion > 0 || readExistingAgentSchemaMeta(db) !== null);
+  const identityMigration = targetVersion >= 18 && schemaMigration;
+  const assertMigration = () => {
+    if (!schemaMigration) {
+      return;
+    }
+    if (identityMigration) {
+      maintenanceAuthority.assertAgentDatabaseMaintenanceAuthority();
+    }
+    getOpenClawDatabaseMaintenanceScope()?.assertAgentSchemaMigration({
+      agentId,
+      path: pathname,
+      foundVersion: originalVersion,
+      supportedVersion: targetVersion,
+    });
+  };
+  assertMigration();
   // FK enforcement must be off before BEGIN: PRAGMA foreign_keys is a silent
   // no-op inside a transaction, and legacy owner-table rebuilds would otherwise
   // cascade-delete their children. Steady-state enforcement is restored below.
@@ -336,6 +349,7 @@ function ensureAgentSchema(
           targetVersion,
           schemaSql,
           identityMigration,
+          assertMigration,
         );
         return;
       }
@@ -428,6 +442,7 @@ function ensureAgentSchema(
         targetVersion,
         schemaSql,
         identityMigration,
+        assertMigration,
       );
     });
   } finally {

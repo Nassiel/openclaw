@@ -177,6 +177,61 @@ it("preserves ordered scoped tasks and their exact delivery rows", async () => {
   }
 });
 
+it("reads a large scope union in one query with exact delivery membership and binary ordering", async () => {
+  const [tasks, { OPENCLAW_STATE_SCHEMA_SQL }] = await Promise.all([
+    import("./task-registry.store.kernel.js"),
+    import("../state/openclaw-state-schema.js"),
+  ]);
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec(OPENCLAW_STATE_SCHEMA_SQL);
+    for (const [index, taskId] of ["𐀀", "\ue000", "no-delivery"].entries()) {
+      tasks.upsertTaskWithDeliveryStateInDatabase(
+        { db },
+        {
+          task: {
+            taskId,
+            runtime: "cli",
+            requesterSessionKey: "owner",
+            ownerKey: "owner",
+            scopeKind: "session",
+            task: "Synthetic scoped task",
+            runId: "shared-run",
+            childSessionKey: "shared-child",
+            status: "running",
+            deliveryStatus: "pending",
+            notifyPolicy: "silent",
+            createdAt: index + 1,
+          },
+          ...(taskId === "no-delivery" ? {} : { deliveryState: { taskId } }),
+        },
+      );
+    }
+    const scopes: TaskRegistryMutationScope[] = Array.from({ length: 40_000 }, (_, index) => ({
+      taskId: `absent-${index}`,
+      runId: `absent-run-${index}`,
+      childSessionKey: `absent-child-${index}`,
+    }));
+    scopes.push({ taskId: "𐀀", runId: "shared-run" });
+    scopes.push({ taskId: "𐀀", childSessionKey: "shared-child" });
+    const prepare = vi.spyOn(db, "prepare");
+    const exec = vi.spyOn(db, "exec");
+    const snapshot = tasks.readTaskRegistryMutationSnapshotInDatabase(db, scopes);
+    expect([...snapshot.tasks.keys()]).toEqual(["𐀀", "\ue000", "no-delivery"]);
+    expect([...snapshot.deliveryStates.values()]).toEqual([{ taskId: "\ue000" }, { taskId: "𐀀" }]);
+    expect(prepare.mock.calls.filter(([sql]) => sql.startsWith("select "))).toHaveLength(1);
+    expect(exec.mock.calls).toEqual([["BEGIN"], ["COMMIT"]]);
+    expect(tasks.readTaskRegistryMutationSnapshotInDatabase(db, [])).toEqual({
+      tasks: new Map(),
+      deliveryStates: new Map(),
+    });
+    prepare.mockRestore();
+    exec.mockRestore();
+  } finally {
+    db.close();
+  }
+});
+
 it("isolates supplied connections and rolls back compound task, flow, delivery, and binding writes", async () => {
   // Cold evaluation proves the dependency boundary even if setup previously loaded a store.
   vi.resetModules();

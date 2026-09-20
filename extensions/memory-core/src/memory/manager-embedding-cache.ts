@@ -64,6 +64,15 @@ export function loadMemoryEmbeddingCache(params: {
       const query = db
         .selectFrom("memory_embedding_cache")
         .select(["hash", "embedding"])
+        // Legacy dimensions can exceed JavaScript's safe integer range.
+        .select((eb) =>
+          eb
+            .or([
+              eb("dims", "is", null),
+              eb("dims", "=", eb(eb.fn<number>("length", ["embedding"]), "/", eb.lit(8))),
+            ])
+            .as("dimensions_match"),
+        )
         .where("provider", "=", identity.provider)
         .where("model", "=", identity.model)
         .where("provider_key", "=", identity.providerKey)
@@ -71,7 +80,10 @@ export function loadMemoryEmbeddingCache(params: {
       for (const row of iterateSqliteQuerySync(params.db, query)) {
         // The first stored row wins even when its vector needs to be regenerated.
         const embedding = decodeMemoryEmbedding(row.embedding);
-        out.set(row.hash, isValidMemoryEmbedding(embedding) ? embedding : []);
+        out.set(
+          row.hash,
+          row.dimensions_match && isValidMemoryEmbedding(embedding) ? embedding : [],
+        );
         unresolved.delete(row.hash);
       }
     }
@@ -120,6 +132,7 @@ function prepareMemoryEmbeddingCacheUpsert(db: DatabaseSync) {
   );
   // The caller owns this statement for its write loop, including large embedding bindings.
   const statement = db.prepare(compiled.sql);
+  statement.setReadBigInts(true);
   return (row: MemoryEmbeddingCacheRow) => statement.run(...bind(row));
 }
 

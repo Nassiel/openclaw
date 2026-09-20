@@ -45,8 +45,10 @@ eligible UTF-8 events from 1 KiB through 4 MiB, and only when the frame plus its
 navigation metadata saves at least 64 bytes and 10 percent. Small, oversized,
 malformed, and exceptional Unicode records retain identity storage. UTF-16
 databases retain identity storage and their existing native byte accounting.
-The metadata holds the existing navigation projections and exact context-budget
-sizes; selected body reads reconstruct the original text. No extension or new
+The metadata holds navigation projections, report-selection facts, and exact
+context-budget sizes. Report deduplication and database size statistics use these
+facts without decoding unrelated bodies; selected body reads reconstruct the
+original text. No extension or new
 SQLite file format is required. A runtime without Zstd can write identity rows,
 but refuses to decode an existing compressed row.
 
@@ -76,10 +78,13 @@ shrink the database file. Existing maintenance owns physical reclamation.
 
 Stop all writers and take a verified WAL-aware backup before upgrading. Supported
 updaters run the candidate's Doctor under the existing maintenance owner. The
-2026.9.2 updater retains its agent-bump refusal and
-[manual update path](/install/updating#updating-from-2026.9.2-across-a-schema-bump).
-Interrupted conversion rolls back; keep writers stopped and resume Doctor with
-the compatible build. Older builds refuse schema 22. Rollback requires the
+2026.9.2 package updater rehearses on private copies before its post-core Doctor
+verifies recovery-backup coverage and performs the live migration. Unverified
+authority or backup coverage retains the refusal and
+[manual recovery instructions](/install/updating#updating-from-2026.9.2-across-a-schema-bump).
+Interrupted conversion rolls back its transaction. Earlier prerequisite migrations
+can already be committed; keep writers stopped and resume Doctor with the
+compatible build. Older builds refuse schema 22. Rollback requires the
 pre-upgrade backup and matching build; lowering markers cannot restore the old
 payload representation.
 
@@ -150,9 +155,10 @@ malformed rows for Doctor and keep writers stopped if migration is interrupted.
 Older builds refuse schema 21 and do not recognize its triggers. Take and verify
 a WAL-aware backup before migration. Rollback restores that backup with its
 matching build; removing the derived objects or lowering the version markers
-does not provide a supported lossless downgrade. The 2026.9.2 updater cannot
-fence an agent-schema bump; use its
-[manual update path](/install/updating#updating-from-2026.9.2-across-a-schema-bump).
+does not provide a supported lossless downgrade. Updates driven by 2026.9.2
+require the candidate's private rehearsal and verified recovery-backup path;
+see [older updaters](/reference/database-schemas/versioning#schema-bumps-and-older-updaters)
+for supported migration and refusal conditions.
 
 ### Cold transcript storage
 
@@ -175,8 +181,10 @@ extracting any transcripts. Extraction is disabled until
 
 Take and verify a backup before upgrading. If migration fails, keep writers
 stopped and finish Doctor with the compatible build before restarting. The
-2026.9.2 updater cannot fence an agent schema bump; follow its
-[manual update path](/install/updating#updating-from-2026.9.2-across-a-schema-bump).
+2026.9.2 updater follows the candidate's private rehearsal and verified
+recovery-backup path; see
+[older updaters](/reference/database-schemas/versioning#schema-bumps-and-older-updaters)
+for supported migration and refusal conditions.
 Older builds refuse schema 20. Rollback requires the pre-upgrade backup and
 its matching build; do not lower version markers or drop the cold archive
 table. Restoring cold events alone does not make the newer schema a supported

@@ -711,8 +711,6 @@ describe("createTelegramBot channel_post media", () => {
     });
     rejectFirstTelegramAlbumDownloadWhen(testCase.partial);
     const fetchSpy = createImageFetchSpy();
-    const realSetTimeout = globalThis.setTimeout;
-    const realClearTimeout = globalThis.clearTimeout;
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const enqueueSpy = vi.spyOn(KeyedAsyncQueue.prototype, "enqueue");
     const albumWork = () =>
@@ -751,23 +749,8 @@ describe("createTelegramBot channel_post media", () => {
       expect(getFile).not.toHaveBeenCalled();
       vi.advanceTimersByTime(TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs);
       expect(albumWork()).toHaveLength(1);
-      let completionTimer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        await Promise.race([
-          Promise.all(albumWork()),
-          new Promise<never>((_resolve, reject) => {
-            completionTimer = realSetTimeout(
-              () =>
-                reject(new Error("Telegram buffered flush for the 20 ms timer did not complete")),
-              75,
-            );
-          }),
-        ]);
-      } finally {
-        if (completionTimer !== undefined) {
-          realClearTimeout(completionTimer);
-        }
-      }
+      // Queue settlement includes real state-worker writes after the controlled debounce.
+      await Promise.all(albumWork());
       expect(getFile).toHaveBeenCalledTimes(unauthorizedCommand ? 0 : 2);
       expect(fetchSpy).toHaveBeenCalledTimes(unauthorizedCommand ? 0 : testCase.partial ? 1 : 2);
       const ingestedIds = testCase.partial ? testCase.messageIds.slice(1) : testCase.messageIds;
@@ -777,7 +760,7 @@ describe("createTelegramBot channel_post media", () => {
     } finally {
       try {
         vi.advanceTimersByTime(TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs);
-        // Completion has a deadline; admitted work still owns these mocks until it settles.
+        // Admitted work still owns these mocks if an assertion fails before settlement.
         await Promise.all(albumWork());
       } finally {
         enqueueSpy.mockRestore();

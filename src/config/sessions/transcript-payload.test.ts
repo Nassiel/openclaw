@@ -184,6 +184,9 @@ describe("transcript payload storage boundary", () => {
       createTable(database);
       const originals = [
         '{"type":"custom", invalid',
+        `{"type":"custom","data":"${"x".repeat(2048)}`,
+        `{"type":"custom","data":${"[".repeat(1001)}0${"]".repeat(1001)}}`,
+        `{"type":"message","id":"nested","parentId":null,"appendMode":${"[".repeat(998)}0${"]".repeat(998)},"message":{"role":"user","content":"${"x".repeat(12 * 1024)}"}}`,
         `{"type":"custom","data":"${"x".repeat(4 * 1024 * 1024)}"}`,
         `{"type":"message","message":{"provenance":{"extra":"${"x".repeat(17 * 1024)}"}}}`,
         '{"type":"custom","id":"\\ud800","data":"a\\u0000b"}',
@@ -205,6 +208,30 @@ describe("transcript payload storage boundary", () => {
       database.close();
     }
   });
+
+  it.each([3, "3", [3], { future: true }])(
+    "keeps a genuine large header in identity storage with version %j",
+    (version) => {
+      const database = openNodeSqliteDatabase(":memory:");
+      try {
+        const original = JSON.stringify({
+          type: "session",
+          id: "header",
+          version,
+          padding: "x".repeat(4096),
+        });
+        const payload = prepareTranscriptPayload(database, original);
+        expect(payload).toEqual({
+          event_json: original,
+          event_zstd: null,
+          event_utf8_bytes: Buffer.byteLength(original),
+          navigation_json: null,
+        });
+      } finally {
+        database.close();
+      }
+    },
+  );
 
   it("retains native UTF-16 navigation and native projected byte accounting", () => {
     const database = openNodeSqliteDatabase(":memory:");

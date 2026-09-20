@@ -23,9 +23,9 @@ import {
   parseOpaqueLeafEntry,
   parseParentLinkedOpaqueEntry,
 } from "../config/sessions/session-entry-codec.js";
+import { transcriptEventReadBytesSql } from "../config/sessions/session-transcript-read-bytes.js";
 import type { SessionStoreTarget as ResolvedSessionStoreTarget } from "../config/sessions/targets.js";
 import { resolveAllAgentSessionStoreCandidateTargetsSync } from "../config/sessions/targets.js";
-import { transcriptEventJsonSql } from "../config/sessions/transcript-payload.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import { readAgentDatabaseAdmissionRefusal } from "../state/agent-database-admission.js";
@@ -501,16 +501,17 @@ export function readOnlySqliteDbStats(target: SessionStoreTarget): ReadOnlySqlit
         },
       };
     }
-    const eventJson = tableHasColumn(database, "transcript_events", "event_zstd")
-      ? transcriptEventJsonSql(database).compile(getSessionKysely(database)).sql
-      : "event_json";
+    // Logical payload bytes exclude JSONL separators; identity rows retain the database's encoding.
+    const eventBytes = tableHasColumn(database, "transcript_events", "event_zstd")
+      ? transcriptEventReadBytesSql().compile(getSessionKysely(database)).sql
+      : "octet_length(event_json)";
     const totalRow = database
-      .prepare(`SELECT COALESCE(SUM(LENGTH(${eventJson})), 0) AS row_bytes FROM transcript_events`)
+      .prepare(`SELECT COALESCE(SUM(${eventBytes}), 0) AS row_bytes FROM transcript_events`)
       .get() as { row_bytes?: unknown } | undefined;
     const largestRows = database
       .prepare(
         `
-          SELECT session_id, COUNT(*) AS events, COALESCE(SUM(LENGTH(${eventJson})), 0) AS row_bytes
+          SELECT session_id, COUNT(*) AS events, COALESCE(SUM(${eventBytes}), 0) AS row_bytes
           FROM transcript_events
           GROUP BY session_id
           ORDER BY row_bytes DESC, events DESC, session_id ASC

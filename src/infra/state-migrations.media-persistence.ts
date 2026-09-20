@@ -38,6 +38,7 @@ import {
 import { withLegacySessionParticipantsSchema } from "../state/openclaw-agent-participants-migration.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "../state/openclaw-agent-schema.js";
 import { withLegacyAgentStorageSchema } from "../state/openclaw-agent-storage-schema.js";
+import { getOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
 import { OPENCLAW_SQLITE_BUSY_TIMEOUT_MS } from "../state/openclaw-state-db.js";
 import { VERSION } from "../version.js";
 import { formatErrorMessage } from "./errors.js";
@@ -162,6 +163,20 @@ async function migrateAgentDatabase(params: {
       });
       userVersion = readSqliteUserVersion(database);
     }
+    const mediaSchemaUpgrade = userVersion === PREVIOUS_MEDIA_SCHEMA_VERSION;
+    const assertMediaSchemaMigration = () => {
+      if (!mediaSchemaUpgrade) {
+        return;
+      }
+      assertAgentDatabaseMaintenanceAuthority();
+      getOpenClawDatabaseMaintenanceScope()?.assertAgentSchemaMigration({
+        agentId: params.agentId,
+        path: params.pathname,
+        foundVersion: userVersion,
+        supportedVersion: AGENT_MEDIA_SCHEMA_VERSION,
+      });
+    };
+    assertMediaSchemaMigration();
     const schemaMode = userVersion < OPENCLAW_AGENT_SCHEMA_VERSION ? "legacy" : "current";
     const schemaSql =
       schemaMode === "legacy"
@@ -177,7 +192,6 @@ async function migrateAgentDatabase(params: {
       });
     }
     assertOpenClawAgentSchemaContains(database, params.pathname, schemaSql, schemaMode);
-    const mediaSchemaUpgrade = userVersion === PREVIOUS_MEDIA_SCHEMA_VERSION;
     const legacyTextStorage = userVersion < AGENT_STORAGE_SCHEMA_VERSION;
     if (!mediaSchemaUpgrade) {
       const detected = runSqliteDeferredTransactionSync(
@@ -210,6 +224,7 @@ async function migrateAgentDatabase(params: {
     const rewritten = runSqliteImmediateTransactionSync(
       database,
       () => {
+        assertMediaSchemaMigration();
         const currentSourceVersion = readMediaSourceVersion(database, legacyTextStorage);
         if (currentSourceVersion.dataVersion !== sourceVersion.dataVersion) {
           throw new Error(
@@ -247,6 +262,7 @@ async function migrateAgentDatabase(params: {
               .where("meta_key", "=", "primary"),
           );
         }
+        assertMediaSchemaMigration();
         return { rewrittenSessions, rewrittenTrajectoryRows };
       },
       {

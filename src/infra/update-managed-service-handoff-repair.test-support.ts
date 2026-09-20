@@ -256,7 +256,7 @@ function writeEffects(response: ServerResponse, second: boolean) {
   ]);
 }
 
-export async function runManagedRepairAuthorityBoundary(
+async function runManagedRepairAuthorityBoundary(
   runBoundary: ManagedServiceManagerBoundaryRunner,
   phase: ManagedRepairBoundary["phase"],
   revoke: boolean,
@@ -321,4 +321,48 @@ export async function runManagedRepairAuthorityBoundary(
     throw new Error("Repair boundary did not run.");
   }
   return result;
+}
+
+export function registerManagedRepairAuthorityTests(
+  runManagedServiceManagerBoundary: ManagedServiceManagerBoundaryRunner,
+  repairPhase: ManagedRepairBoundary["phase"],
+  itUnix: ReturnType<typeof import("vitest").it.runIf>,
+): void {
+  itUnix.each([false, true].map((revoke) => ({ phase: repairPhase, revoke })))(
+    "guards $phase repair effects with the current chat requester (revoked=$revoke)",
+    async ({ phase, revoke }) => {
+      const { commands, parentSignal, repairEffects, helperExitCode, log, run } =
+        await runManagedRepairAuthorityBoundary(runManagedServiceManagerBoundary, phase, revoke);
+      expect(commands).toEqual([]);
+      expect(parentSignal).toBeNull();
+      expect(repairEffects, log).toEqual({
+        packagedReadOnly: true,
+        firstSpawn: true,
+        secondSpawn: !revoke,
+        firstExec: true,
+        secondExec: !revoke,
+        secondWrite: !revoke,
+      });
+      expect(helperExitCode, log).toBe(revoke ? 1 : 0);
+      expect(run?.repair).toHaveLength(1);
+      if (revoke) {
+        expect(run?.steps).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              step: "repairing",
+              status: "failed",
+              detail: expect.stringContaining("requester-revoked"),
+            }),
+          ]),
+        );
+        expect(
+          run?.steps.find((step) => step.step === "repairing" && step.status === "failed")?.detail,
+        ).toContain(phase === "validating" ? "update checks" : "installed version");
+        expect(run?.repair[0]?.reason).toBe("requester-revoked");
+      } else {
+        expect(run?.repair[0]).toMatchObject({ status: "succeeded" });
+      }
+    },
+    120_000,
+  );
 }

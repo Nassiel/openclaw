@@ -541,6 +541,8 @@ CREATE TABLE IF NOT EXISTS transcript_events (
       octet_length(navigation_json) <= 16384
       AND json_type(navigation_json, '$.version') = 'integer'
       AND json_extract(navigation_json, '$.version') = 1
+      AND json_type(navigation_json, '$.report') = 'object'
+      AND json_extract(navigation_json, '$.report.kind') IN ('canonical', 'leaf', 'link', 'ignored')
       AND json_type(navigation_json, '$.navigation') = 'object'
       AND json_type(navigation_json, '$.reset') = 'object'
       AND json_type(navigation_json, '$.model') = 'object'

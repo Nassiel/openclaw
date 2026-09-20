@@ -11,6 +11,7 @@ import { AGENT_DATABASE_MAINTENANCE_LEASE } from "./openclaw-agent-db-lease.js";
 import { withAgentDatabaseMaintenanceLease } from "./openclaw-agent-db-maintenance-lease.js";
 import { ensureOpenClawAgentDatabaseSchema } from "./openclaw-agent-db-schema.js";
 import { seedOpenClawAgentSchemaV21 } from "./openclaw-agent-schema-v21.test-support.js";
+import { createOpenClawDatabaseMaintenanceScope } from "./openclaw-state-db-async-lifecycle.js";
 import { runOpenClawStateWriteTransaction } from "./openclaw-state-db.js";
 import { OpenClawStateLeaseError } from "./openclaw-state-lease-error.js";
 
@@ -145,6 +146,49 @@ function legacySnapshot(db: DatabaseSync) {
 }
 
 describe("agent schema 21 storage cutover", () => {
+  it("rolls back converted storage when the maintenance scope rejects publication", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const pathname = state.path("revoked-coverage21.sqlite");
+      const db = new DatabaseSync(pathname);
+      const scope = createOpenClawDatabaseMaintenanceScope();
+      const refusal = new Error("Recovery backup coverage is no longer current");
+      let reachedPublication = false;
+      try {
+        seedOpenClawAgentSchemaV21(db);
+        seedHistoricalData(db);
+        const before = legacySnapshot(db);
+        scope.addAgentSchemaMigrationCheck((migration) => {
+          if (
+            migration.path === pathname &&
+            db.prepare("PRAGMA user_version").get()?.user_version === OPENCLAW_AGENT_SCHEMA_VERSION
+          ) {
+            reachedPublication = true;
+            throw refusal;
+          }
+        });
+        await expect(
+          scope.run(() =>
+            withAgentDatabaseMaintenanceLease({ env: state.env }, async () => {
+              ensureOpenClawAgentDatabaseSchema(db, {
+                agentId: "main",
+                path: pathname,
+                env: state.env,
+              });
+            }),
+          ),
+        ).rejects.toBe(refusal);
+        expect(reachedPublication).toBe(true);
+        expect(legacySnapshot(db)).toEqual(before);
+      } finally {
+        try {
+          await scope.close();
+        } finally {
+          db.close();
+        }
+      }
+    });
+  });
+
   it.each(["UTF-8", "UTF-16le"] as const)(
     "atomically publishes all new formats from a genuine %s schema21 database",
     async (encoding) => {

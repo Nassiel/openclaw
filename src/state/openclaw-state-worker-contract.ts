@@ -52,6 +52,7 @@ import type {
 import type { SessionUpstreamLink } from "../sessions/session-upstream-links.kernel.js";
 import type { DeviceAuthEntry } from "../shared/device-auth.js";
 import type { commitSkillUploadInDatabase } from "../skills/lifecycle/upload-store-commit.js";
+import type { listStoredSkillProposalEventsInDatabase } from "../skills/workshop/store-sqlite-event.js";
 import type { SkillProposalEvent, SkillProposalRecord } from "../skills/workshop/types.js";
 import type { TaskRegistryWorkerOperations } from "../tasks/task-registry.worker-contract.js";
 import type { TranscriptReadOperations } from "../transcripts/store-worker-contract.js";
@@ -165,6 +166,7 @@ export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
     "subagents.persistChanges": { input: SubagentRegistryWrite; output: { writeId: string } };
     "sessionUpstream.listWatched": { input: undefined; output: SessionUpstreamLink[] };
     "backup.recordOutcome": { input: PreparedBackupRunRecord; output: void };
+    "sessionGroups.register": { input: { name: string }; output: boolean };
     "projects.findRoot": { input: { repoRoot: string }; output: string | undefined };
     "projects.list": { input: undefined; output: ProjectRegistryRecord[] };
     "worktrees.list": { input: undefined; output: ManagedWorktreeRecord[] };
@@ -180,6 +182,10 @@ export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
     "projects.resolveRefreshOwner": {
       input: { project: ProjectRegistryIdentity; lease: OpenClawStateLeaseIdentity };
       output: ProjectRegistryRecord | undefined;
+    };
+    "workshop.events.list": {
+      input: Parameters<typeof listStoredSkillProposalEventsInDatabase>[1];
+      output: ReturnType<typeof listStoredSkillProposalEventsInDatabase>;
     };
     "doctor.workshopMigrationRecords.read": {
       input: { includeEvents: boolean };
