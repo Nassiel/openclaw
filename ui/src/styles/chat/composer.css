@@ -1885,16 +1885,22 @@ html[dir="rtl"] .chat-attachment-loading > span {
   gap: 2px;
 }
 
-/* Model text gives up width before the independent effort and action targets. */
+.chat-controls__inline-select {
+  min-width: 0;
+}
+
+/* Model text can shrink, but its flex item must still reserve the hit target. */
 .chat-controls__model-picker {
   flex: 0 1 auto;
+  min-width: 44px;
 }
 
 .chat-controls__effort-picker {
   flex: 0 0 auto;
 }
 
-.chat-controls__model-settings .chat-controls__inline-select-trigger {
+/* The model trigger fills its shrinkable wrapper; effort keeps its content width. */
+.chat-controls__model-settings .chat-controls__effort-trigger {
   width: auto;
 }
 
@@ -1908,10 +1914,6 @@ html[dir="rtl"] .chat-attachment-loading > span {
 .chat-controls__model-settings:not(:has(.chat-controls__model-picker[open]))
   .chat-controls__effort-picker--reserved {
   display: none;
-}
-
-.chat-controls__inline-select {
-  min-width: 0;
 }
 
 .chat-controls__inline-select summary {
@@ -3127,7 +3129,7 @@ html[dir="rtl"] .chat-attachment-loading > span {
     display: none;
   }
 }
-@media (max-width: 560px) {
+@container chat-composer (max-width: 560px) {
   .agent-chat__input--mobile-toolbar .chat-controls__inline-select-chevron,
   .agent-chat__input--mobile-toolbar .chat-controls__inline-select-chevron svg {
     width: var(--chat-mobile-row-chevron-size);

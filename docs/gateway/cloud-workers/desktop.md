@@ -105,6 +105,8 @@ OPENCLAW_MAC_CLOUD_WORKER_HOST=1 scripts/package-mac-app.sh
 
 Install the resulting `dist/OpenClawCloudWorker.app` in the image. Grant **OpenClaw Cloud Worker** Accessibility and Screen Recording access for the intended worker account, install Google Chrome, and sign in to an unlocked desktop. The cloud app has its own bundle identity and permission grants, separate from the ordinary OpenClaw app. Provisioning verifies the signed cloud-host capability before starting it; an older or ordinary app does not satisfy this requirement.
 
+The app uses the existing [local CUA trust boundary](/nodes/computer-use#trust-model): processes running as the worker account can discover and use its desktop resources. Desktop profile and tool-policy settings govern managed OpenClaw entry points; they do not sandbox authorized shell code. Use a separate account or image without these desktop grants when isolation from that code is required.
+
 Keep Crabbox's passwordless `sudo` access enabled for the worker account. Desktop launch uses it to enter the GUI session, then runs the app, browser, and terminal as that worker account.
 
 The app owns both CUA and the ephemeral cloud node. While its GUI session remains unlocked, it renews a short-lived idle assertion to keep the desktop active between turns. An explicit or managed lock still ends the cloud host. The app releases the assertion and stops the node before retiring CUA if its desktop session or daemon becomes unavailable. Reprovision an unavailable desktop after restoring the image prerequisites. Existing cloud placement, enrollment, and teardown owners continue to govern the lease.
