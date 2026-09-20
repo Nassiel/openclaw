@@ -25,6 +25,7 @@ import { holdStateDatabaseCoordinator as holdCoordinator } from "../test-utils/s
 import { createTaskFlowForTask, getTaskFlowById } from "./task-flow-registry.js";
 import { getTaskFlowRegistryStore } from "./task-flow-registry.store.js";
 import { captureTaskDeliveryWork } from "./task-registry-delivery.test-support.js";
+import { captureTaskRegistryReadFence } from "./task-registry-listener-state.js";
 import { updateTask } from "./task-registry-mutation.js";
 import { publishTaskRecordAfterAtomicStore } from "./task-registry-publication.js";
 import { prepareTaskRegistryRead } from "./task-registry-read.js";
@@ -951,6 +952,10 @@ describe("task agent event persistence", () => {
         });
         emitTool(task.runId!, "stale");
         await entered.promise;
+        // Retirement may reject the event; join it before checking for leaked root work.
+        const settlement = Promise.allSettled([
+          captureTaskRegistryReadFence(captureOpenClawStateWorkerContext().admission),
+        ]);
         try {
           if (replacement === "task replacement") {
             const next = { ...task, runId: "replacement-run" };
@@ -961,6 +966,7 @@ describe("task agent event persistence", () => {
           }
         } finally {
           release.resolve();
+          await settlement;
         }
         await joinEvents();
         expect(
