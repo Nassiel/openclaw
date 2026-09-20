@@ -145,7 +145,9 @@ ${desktopTarget === "windows/normal" ? createCrabboxWindowsDesktopNodeLauncher()
   try {
     const nodeArgs = [cli, ...args, "--ephemeral", "--display-name", displayName];
     if (desktopTarget === "macos") {
-      child = spawn("/bin/bash", ["-c", macosGuiLaunchScript, "openclaw-gui", macosHostPath, ...macosHostArgs(mode)], { cwd: runtimeDir, env: nodeEnv, detached: true, stdio: ["ignore", log, log] });
+      // LaunchServices makes the signed host its own TCC responsibility owner.
+      // open is only a waiter; the host's inspected receipt identifies the actual processes.
+      child = spawn("/bin/bash", ["-c", macosGuiLaunchScript, "openclaw-gui", "/usr/bin/open", "-n", "-g", "-W", "-a", ${JSON.stringify(CRABBOX_MACOS_APP_PATH)}, "--stdin", "/dev/null", "--stdout", logPath, "--stderr", logPath, "--args", ...macosHostArgs(mode)], { cwd: runtimeDir, env: nodeEnv, detached: true, stdio: ["ignore", log, log] });
       await once(child, "spawn");
       const deadline = Date.now() + 90000;
       while (Date.now() < deadline) {

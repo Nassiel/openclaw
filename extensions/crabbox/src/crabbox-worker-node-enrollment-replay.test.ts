@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { runInNewContext } from "node:vm";
@@ -14,6 +15,7 @@ async function replay(
   desktop = false,
   displayName = "Replay fixture",
   home = "/Users/worker",
+  launch?: "ready" | "waiter-exit",
 ) {
   const stateDir = path.join(home, ".openclaw", "cloud-workers", leaseId);
   const runtimeDir = path.join(home, ".openclaw-worker", "node-runtimes", "a".repeat(64));
@@ -41,8 +43,22 @@ async function replay(
         : "openclaw-connect";
   const environment = `PATH=/usr/bin OPENCLAW_STATE_DIR=${stateDir}${failure === "state" ? "-other" : ""}`;
   const output: string[] = [];
+  let launched = false;
+  const waiter = Object.assign(new EventEmitter(), {
+    pid: 777,
+    exitCode: launch === "waiter-exit" ? 0 : null,
+    signalCode: null,
+    unref: vi.fn(),
+  });
   const spawn = vi.fn(() => {
-    throw new Error("Replay must not spawn another node");
+    if (!launch) {
+      throw new Error("Replay must not spawn another node");
+    }
+    queueMicrotask(() => {
+      launched = true;
+      waiter.emit("spawn");
+    });
+    return waiter;
   });
   const processFixture = {
     platform,
@@ -56,13 +72,28 @@ async function replay(
   const fs = {
     mkdirSync: vi.fn(),
     chmodSync: vi.fn(),
-    existsSync: (file: string) => file === path.join(stateDir, "node.pid"),
+    symlinkSync: vi.fn(),
+    writeFileSync: vi.fn<(...args: unknown[]) => void>(),
+    openSync: vi.fn(() => 11),
+    closeSync: vi.fn(),
+    lstatSync: (file: string) => {
+      if (file === runtimeDir) {
+        return { isDirectory: () => true };
+      }
+      throw Object.assign(new Error("Missing runtime pointer"), { code: "ENOENT" });
+    },
+    existsSync: (file: string) =>
+      file === runtimeDir ||
+      (file === path.join(stateDir, "node.pid") && (!launch || (launched && launch === "ready"))),
     readFileSync: (file: string) => {
+      if (file === path.join(runtimeDir, "node_modules", "openclaw", "package.json")) {
+        return JSON.stringify({ name: "openclaw", version: "2026.8.1" });
+      }
       if (file === path.join(stateDir, "node.pid")) {
         return "123\n";
       }
       if (file === path.join(stateDir, "node-launch.json")) {
-        if (failure === "missing-record") {
+        if (failure === "missing-record" || launch === "waiter-exit") {
           throw new Error("ENOENT");
         }
         if (failure === "invalid-record") {
@@ -124,11 +155,21 @@ async function replay(
     "connect",
   ];
   const spawnSync = vi.fn((binary: string, args: string[]) => {
+    if (binary === "/usr/bin/node") {
+      if (args[0] !== cli) {
+        throw new Error("Unexpected runtime executable");
+      }
+      return { status: 0, stdout: args[1] === "--version" ? "OpenClaw 2026.8.1" : "" };
+    }
     if (failure === "unavailable") {
       return { status: 1, stdout: "" };
     }
     if (binary === hostArguments[0]) {
-      if (args[0] !== "--cloud-worker-inspect-process" || args[1] !== "456" || args[2] !== "123") {
+      if (
+        args[0] !== "--cloud-worker-inspect-process" ||
+        args[1] !== "456" ||
+        (args[2] !== "123" && !(launch && args.length === 2))
+      ) {
         throw new Error("Unexpected native process inspection");
       }
       if (
@@ -211,7 +252,40 @@ async function replay(
     process: processFixture,
     console: { error: (line: string) => output.push(line) },
   });
-  expect(spawn).not.toHaveBeenCalled();
+  if (launch) {
+    const logPath = path.join(stateDir, "node.log");
+    expect(spawn).toHaveBeenCalledExactlyOnceWith(
+      "/bin/bash",
+      [
+        "-c",
+        expect.any(String),
+        "openclaw-gui",
+        "/usr/bin/open",
+        "-n",
+        "-g",
+        "-W",
+        "-a",
+        "/Applications/OpenClawCloudWorker.app",
+        "--stdin",
+        "/dev/null",
+        "--stdout",
+        logPath,
+        "--stderr",
+        logPath,
+        "--args",
+        ...hostArguments.slice(1),
+      ],
+      expect.objectContaining({ cwd: runtimeDir, detached: true, stdio: ["ignore", 11, 11] }),
+    );
+    expect(fs.openSync).toHaveBeenCalledWith(logPath, "a", 0o600);
+    expect(fs.closeSync).toHaveBeenCalledWith(11);
+    const writtenFiles = fs.writeFileSync.mock.calls.map((call) => call[0]);
+    expect(writtenFiles).not.toContain(path.join(stateDir, "node.pid"));
+    expect(writtenFiles).not.toContain(path.join(stateDir, "node-launch.json"));
+    expect(processFixture.kill).not.toHaveBeenCalled();
+  } else {
+    expect(spawn).not.toHaveBeenCalled();
+  }
   return { code: processFixture.exitCode, output: output.join("\n") };
 }
 
@@ -258,6 +332,36 @@ it.each(["lsof-fallback"])("uses the available macOS %s probe", async (variant) 
 });
 
 describe("macOS desktop host enrollment replay", () => {
+  it.each([
+    { launch: "ready" as const, failure: undefined, code: 0, message: "bootstrap-complete" },
+    {
+      launch: "waiter-exit" as const,
+      failure: undefined,
+      code: 1,
+      message: "lease teardown is required",
+    },
+    {
+      launch: "ready" as const,
+      failure: "host-pid-reuse",
+      code: 1,
+      message: "mismatched process receipt",
+    },
+  ])(
+    "launches through LaunchServices and requires the host receipt: $launch / $failure",
+    async ({ launch, failure, code, message }) => {
+      expect(
+        await replay(
+          "darwin",
+          failure,
+          true,
+          "Cloud worker Développement 👨‍👩‍👧‍👦",
+          "/Users/worker",
+          launch,
+        ),
+      ).toMatchObject({ code, output: expect.stringContaining(message) });
+    },
+  );
+
   it("reuses the verified host and Node child despite a different SSH locale", async () => {
     expect(await replay("darwin", undefined, true)).toMatchObject({ code: 0 });
   });

@@ -135,6 +135,10 @@ enum CloudWorkerHost {
             configuration = try CloudWorkerHostConfiguration(arguments: Array(arguments.dropFirst(2)))
             try configuration.validateFiles()
             try self.verifySignature()
+            // LaunchServices owns app launch; the host owns the cwd bound into its process receipt.
+            guard FileManager.default.changeCurrentDirectoryPath(configuration.runtimeDirectory.path) else {
+                throw CloudWorkerHostError("could not enter the prepared Node runtime; reprovision this worker")
+            }
         } catch {
             fputs("\(error.localizedDescription)\n", stderr)
             return 2
