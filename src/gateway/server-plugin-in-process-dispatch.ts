@@ -9,6 +9,7 @@ import {
 import type { PluginSubagentRequesterContext } from "../plugins/runtime/subagent-requester-context.js";
 import type { RuntimePluginToolGrant } from "../plugins/runtime/tool-grant.js";
 import { roleScopesAllow } from "../shared/operator-scope-compat.js";
+import type { RequesterSettleWakeReplay } from "./agent-turn/internal-facade.types.js";
 import { readInProcessAgentRuntimeIdentity } from "./in-process-agent-runtime-identity.js";
 import {
   bindInProcessSubagentResume,
@@ -95,6 +96,7 @@ export function runWithOperatorToolGatewayCleanupContext<T>(run: () => T): T {
 
 type DispatchGatewayMethodInProcessOptions = {
   privateCompletion?: true;
+  settleWakeReplay?: RequesterSettleWakeReplay;
   allowSyntheticModelOverride?: boolean;
   allowSyntheticCronRunContinuation?: boolean;
   agentToolCaller?: TrustedAgentToolCaller;
@@ -479,6 +481,7 @@ export async function dispatchGatewayMethodInProcess<T>(
         ? await facade.dispatch<T>(params as AgentRunRequest, {
             assertAdmissionCurrent: options?.sessionMutationCommitGuard,
             privateCompletion: options?.privateCompletion,
+            settleWakeReplay: options?.settleWakeReplay,
             cancelOnDeadline: options?.cancelOnDeadline,
             expectFinal: options?.expectFinal,
             onAccepted: options?.onAccepted,
