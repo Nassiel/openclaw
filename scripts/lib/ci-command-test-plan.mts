@@ -115,6 +115,32 @@ export function estimateLegacyCommandStripeSeconds(
   );
 }
 
+// Admission uses the hosted/retry allocation. Reprice only the test portion
+// after placement; an indivisible file and a direct parallel sample remain floors.
+export function estimateCommandWorkerSeconds(
+  group: CommandGroup & { timing_key?: string },
+  fallbackSeconds: number,
+  maxWorkers: number,
+  runnerBackend: string | undefined,
+): { seconds: number; timingKey: string | undefined } {
+  const files = group.includePatterns ?? [];
+  const timingKey = group.timing_key?.replace(
+    COMMANDS_PARALLEL_TIMING_SUFFIX,
+    `#file-parallel-${maxWorkers}`,
+  );
+  const profile = runnerBackend === "github" ? "github" : "blacksmith";
+  const measured = timingKey ? (readCompactGroupTimings(profile)[timingKey] ?? 0) : 0;
+  return {
+    timingKey,
+    seconds: Math.max(
+      (fallbackSeconds * Math.max(1, Math.min(2, files.length))) /
+        Math.max(1, Math.min(maxWorkers, files.length)),
+      commandFileSecondsFloor(files, runnerBackend),
+      measured * (runnerBackend === "hybrid" ? COMPACT_HYBRID_GROUP_SECONDS_SCALE : 1),
+    ),
+  };
+}
+
 // Keep the split corpus with its measured parent; independent SQLite siblings
 // retain their existing sessions/cron timing owner.
 const doctorSessionSqliteCorpusFiles = new Set([

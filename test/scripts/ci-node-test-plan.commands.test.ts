@@ -1,4 +1,7 @@
+import os from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { resolveShardPlans, runShardPlans } from "../../scripts/ci-run-node-test-shard.mts";
+import { estimateCommandWorkerSeconds } from "../../scripts/lib/ci-command-test-plan.mts";
 import {
   createNodeTestShardBundles,
   createNodeTestShards,
@@ -8,14 +11,109 @@ import {
   createCompactSplitTimingGeneration,
   parseCompactSplitTimingKey,
 } from "../../scripts/lib/vitest-shard-metadata.mts";
+import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 import { createCommandsVitestConfig } from "../vitest/vitest.commands.config.ts";
 import { fullSuiteVitestShards } from "../vitest/vitest.test-shards.mjs";
 import { listMatchedTestFiles } from "./ci-node-test-plan.test-support.js";
 
 const DEFAULT_NODE_TEST_RUNNER = "blacksmith-8vcpu-ubuntu-2404";
 afterEach(() => vi.restoreAllMocks());
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 describe("command CI ownership and parallel timing", () => {
+  it.each(["hybrid", "blacksmith", "github"])(
+    "delivers each %s command row's allocation through the shard executor",
+    async (runnerBackend) => {
+      const plan = createNodeTestShardBundles({
+        compactMode: "pull-request",
+        runnerBackend,
+        includeReleaseOnlyPluginShards: false,
+      });
+      let measuredGroups = 0;
+      let fallbackGroups = 0;
+      for (const job of plan) {
+        const commands = job.groups.filter((group) =>
+          group.configs.includes("test/vitest/vitest.commands.config.ts"),
+        );
+        if (!commands.length) {
+          continue;
+        }
+        const roomy = job.runner === "blacksmith-32vcpu-ubuntu-2404";
+        vi.spyOn(os, "availableParallelism").mockReturnValue(roomy ? 8 : 2);
+        vi.spyOn(os, "totalmem").mockReturnValue((roomy ? 31 : 8) * 1024 ** 3);
+        const expected = runnerBackend !== "github" && roomy && job.planConcurrency === 1 ? 8 : 2;
+        const seen = new Map<string, string | undefined>();
+        const plans = resolveShardPlans({
+          OPENCLAW_NODE_TEST_GROUPS_JSON: JSON.stringify(job.groups),
+        });
+        await expect(
+          runShardPlans(plans, {
+            env: {
+              CI: "true",
+              RUNNER_ENVIRONMENT: runnerBackend === "github" ? "github-hosted" : "self-hosted",
+              OPENCLAW_VITEST_MAX_WORKERS: "8",
+              OPENCLAW_NODE_TEST_PLAN_CONCURRENCY: String(job.planConcurrency),
+              OPENCLAW_NODE_TEST_ENV_JSON: JSON.stringify(job.env ?? {}),
+            },
+            scratchDir: tempDirs.make("command-worker-plan-"),
+            runChild: async (_args, env, label) => {
+              seen.set(label, env.OPENCLAW_VITEST_MAX_WORKERS);
+              return 0;
+            },
+          }),
+        ).resolves.toBe(0);
+        for (const group of commands) {
+          expect(seen.get(group.shard_name), group.shard_name).toBe(String(expected));
+          expect(group.timing_key).toContain(`#file-parallel-${expected}`);
+          if (expected === 8) {
+            measuredGroups += 1;
+          } else {
+            fallbackGroups += 1;
+          }
+        }
+      }
+      expect(fallbackGroups).toBeGreaterThan(0);
+      expect(measuredGroups > 0).toBe(runnerBackend !== "github");
+    },
+  );
+
+  it("scales command work by usable forks while preserving file and direct-sample floors", () => {
+    const group = {
+      configs: ["test/vitest/vitest.commands.config.ts"],
+      includePatterns: Array.from(
+        { length: 12 },
+        (_, index) => `src/commands/fixture-${index}.test.ts`,
+      ),
+      timing_key: "fixture#file-parallel-2",
+    };
+    const observations = vi.spyOn(testTimings, "readCompactGroupTimings").mockReturnValue({});
+    expect(estimateCommandWorkerSeconds(group, 120, 8, "blacksmith")).toEqual({
+      timingKey: "fixture#file-parallel-8",
+      seconds: 30,
+    });
+    expect(
+      estimateCommandWorkerSeconds(
+        { ...group, includePatterns: group.includePatterns.slice(0, 3) },
+        120,
+        8,
+        "blacksmith",
+      ).seconds,
+    ).toBe(80);
+    expect(
+      estimateCommandWorkerSeconds(
+        {
+          ...group,
+          includePatterns: ["src/commands/doctor-config-preflight.refusal.process.test.ts"],
+        },
+        194.3,
+        8,
+        "blacksmith",
+      ).seconds,
+    ).toBe(194.3);
+    observations.mockReturnValue({ "fixture#file-parallel-8": 45 });
+    expect(estimateCommandWorkerSeconds(group, 120, 8, "blacksmith").seconds).toBe(45);
+  });
+
   it("projects serial timings once, retaining complete history and indivisible files", async () => {
     const config = "test/vitest/vitest.commands.config.ts";
     const owner = "agentic-commands-agent-channel";
@@ -67,7 +165,8 @@ describe("command CI ownership and parallel timing", () => {
         .flatMap((job) => job.groups)
         .find((group) => group.shard_name === owner)!;
       expect(projectedGroup.timing_key).toBe(timingKey);
-      expect(projectedGroup.env).toEqual({ OPENCLAW_VITEST_MAX_WORKERS: "2" });
+      expect(projectedGroup.env?.OPENCLAW_VITEST_MAX_WORKERS).toBeUndefined();
+      expect(projectedGroup.fallbackMaxWorkers).toBe(2);
       const memoryJob = projected.find((job) =>
         job.groups.some((group) => group.shard_name === memoryOwner),
       )!;

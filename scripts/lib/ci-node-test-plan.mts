@@ -48,6 +48,7 @@ import {
   commandFileSecondsFloor,
   createAgenticCommandSplitShards,
   isParallelCommandsGroup,
+  estimateCommandWorkerSeconds,
 } from "./ci-command-test-plan.mts";
 import { isCiProofTestFile } from "./ci-proof-test-inventory.mts";
 import { rebalanceRuntimeTestJobs } from "./ci-runtime-test-placement.mts";
@@ -878,6 +879,7 @@ function usesMeasuredCompactWorkers(group: NodeTestShardGroup, runnerBackend: st
   return (
     (runnerBackend === undefined || runnerBackend === "blacksmith" || runnerBackend === "hybrid") &&
     (group.shard_name === "agentic-cli" ||
+      isParallelCommandsGroup(group) ||
       /^agentic-gateway-core-2(?:-hosted-\d+)?$/u.test(group.shard_name))
   );
 }
@@ -973,7 +975,7 @@ function applyCompactGroupWorkerPins(
   if (isParallelCommandsGroup(group)) {
     return {
       ...group,
-      env: { ...group.env, ...PINNED_COMPACT_GROUP_ENV },
+      fallbackMaxWorkers: 2,
       // Refit must not fold parallel spans back into the serial observations.
       timing_key: `${group.shard_name}${COMMANDS_PARALLEL_TIMING_SUFFIX}`,
     };
@@ -2991,7 +2993,7 @@ function splitOversizedCompactGroup(
     (group.includePatterns?.length ?? 0) > storageStateFileLimit;
   const measuredProfileSeconds = estimateCompactGroupSeconds(group, runnerBackend);
   const measuredHostedSeconds = estimateCompactGroupSeconds(group, "github");
-  // These consumers share one prepared runtime and the same two file workers.
+  // These consumers share one prepared runtime; admission retains the retry budget.
   if (group.shard_name === COMMANDS_RUNTIME_GROUP && isParallelCommandsGroup(group)) {
     return [{ group, seconds: measuredProfileSeconds }];
   }
@@ -3179,23 +3181,25 @@ function splitOversizedCompactGroup(
           ),
         );
   };
+  const timingEnv = parallelCommands ? { ...group.env, ...PINNED_COMPACT_GROUP_ENV } : group.env;
   let stripes = createStripes(splitSeconds);
   let timingGeneration = createCompactSplitTimingGeneration({
     configs: group.configs,
-    env: group.env,
+    env: timingEnv,
     parentShardName: splitTimingParent,
     stripes,
   });
   // The measured worker cutover changes timing identity, not admission budgets.
   // Retain the previous two-worker observations as floors until timing refits retire them.
-  const previousWorkerGeneration = usesMeasuredCompactWorkers(group, runnerBackend)
-    ? createCompactSplitTimingGeneration({
-        configs: group.configs,
-        env: { ...group.env, ...PINNED_COMPACT_GROUP_ENV },
-        parentShardName: splitTimingParent,
-        stripes,
-      })
-    : undefined;
+  const previousWorkerGeneration =
+    !parallelCommands && usesMeasuredCompactWorkers(group, runnerBackend)
+      ? createCompactSplitTimingGeneration({
+          configs: group.configs,
+          env: { ...group.env, ...PINNED_COMPACT_GROUP_ENV },
+          parentShardName: splitTimingParent,
+          stripes,
+        })
+      : undefined;
   const selectors = (
     isTooling ? [] : [timingGeneration.selectorKey, previousWorkerGeneration?.selectorKey]
   ).filter((selector): selector is string => selector !== undefined);
@@ -3241,7 +3245,7 @@ function splitOversizedCompactGroup(
     stripes = createStripes(completeMeasuredSeconds);
     timingGeneration = createCompactSplitTimingGeneration({
       configs: group.configs,
-      env: group.env,
+      env: timingEnv,
       parentShardName: splitTimingParent,
       stripes,
     });
@@ -4064,7 +4068,7 @@ function createCompactNodeTestShardBundles(
             total +
             Math.max(
               estimateStripeSeconds(group),
-              measured(group) === undefined
+              isParallelCommandsGroup(group) || measured(group) === undefined
                 ? estimateCompactGroupSeconds(group, "hybrid")
                 : Math.round(measured(group)! * COMPACT_HYBRID_GROUP_SECONDS_SCALE),
             ),
@@ -4080,6 +4084,7 @@ function createCompactNodeTestShardBundles(
           job.groups.some(
             (group) =>
               group.env?.OPENCLAW_VITEST_MAX_WORKERS === undefined &&
+              !isParallelCommandsGroup(group) &&
               !isRuntimePlacementIncludePatterns(group.includePatterns),
           )
         ) {
@@ -4088,7 +4093,7 @@ function createCompactNodeTestShardBundles(
         // Preserve the executed allowance and its prepared timing identity.
         // Re-keying an equivalent cap would break a complete parent generation.
         return job.groups.map((group) =>
-          group.env?.OPENCLAW_VITEST_MAX_WORKERS !== undefined
+          group.env?.OPENCLAW_VITEST_MAX_WORKERS !== undefined || isParallelCommandsGroup(group)
             ? group
             : Object.assign({}, group, { env: { ...group.env, ...PINNED_COMPACT_GROUP_ENV } }),
         );
@@ -4188,5 +4193,36 @@ function createCompactNodeTestShardBundles(
       job.runner = DEFAULT_NODE_TEST_RUNNER;
     }
   }
+
+  // Split/packing admission retains the two-worker retry budget. Once placement
+  // settles, price commands at the allocation that the executor can actually use.
+  // The observed 32-class supplies 8 CPUs / 30.95 GiB; smaller classes and
+  // overlapping plans take H2's two-worker fallback. Live pressure can reduce it.
+  for (const job of finalJobs) {
+    const workers =
+      job.runner === EXTRA_LARGE_NODE_TEST_RUNNER &&
+      job.planConcurrency === 1 &&
+      job.env?.OPENCLAW_VITEST_MAX_WORKERS === undefined &&
+      options.runnerBackend !== "github"
+        ? 8
+        : 2;
+    let savedSeconds = 0;
+    job.groups = job.groups.map((group) => {
+      if (!isParallelCommandsGroup(group)) {
+        return group;
+      }
+      const previousSeconds = estimateStripeSeconds(group);
+      const adjusted = estimateCommandWorkerSeconds(
+        group,
+        previousSeconds,
+        workers,
+        options.runnerBackend,
+      );
+      savedSeconds += previousSeconds - adjusted.seconds;
+      return { ...group, timing_key: adjusted.timingKey };
+    });
+    job.predictedSeconds = Math.ceil(job.predictedSeconds! - savedSeconds);
+  }
+
   return finalJobs.toSorted((a, b) => a.checkName.localeCompare(b.checkName));
 }
