@@ -69,6 +69,7 @@ export function executeTaskRegistryCommand(
     return observeTaskAgentEventInDatabase(open(), command.input);
   }
   if (
+    command.type === "tasks.updateNotificationDelivery" ||
     command.type === "tasks.acknowledgeStateChange" ||
     command.type === "tasks.createRecord" ||
     command.type === "tasks.finalizeActive" ||

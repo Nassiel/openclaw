@@ -616,8 +616,13 @@ the current delivery origin and newest event watermark, with separate best-effor
 watermark and task timestamp writes. A committed acknowledgement is not replayed
 when projection publication fails; the existing read and flow owners retain recovery.
 Preparation cleanup joins any acknowledgement it already started. Terminal delivery
-status writes and native notification preparation retain their existing owners.
-Storage representation, schemas, retention, and update behavior are unchanged.
+and missing-owner status writes use that same worker, rereading the selected task's
+run scope, notification policy, and current delivery metadata inside the write.
+Each terminal delivery retains its own pending claim; a retired delivery cannot
+release a successor's claim. After an accepted or ambiguous transport result, that invocation does not enqueue
+fallback because follow-up preparation or persistence failed. Native notification
+preparation retains its existing owner. Storage representation, schemas, retention,
+and update behavior are unchanged.
 
 Agent-event task progress uses the same shared-state worker and publication owner.
 Ingestion retains exact task, run, and backing identities without waiting for a native

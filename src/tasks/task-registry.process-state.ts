@@ -122,7 +122,7 @@ type TaskRegistryProcessState = {
   taskIdsByOwnerKey: Map<string, Set<string>>;
   taskIdsByParentFlowId: Map<string, Set<string>>;
   taskIdsByRelatedSessionKey: Map<string, Set<string>>;
-  tasksWithPendingDelivery: Set<string>;
+  tasksWithPendingDelivery: Map<string, symbol>;
   /** Ephemeral live activity is intentionally discarded on gateway restart. */
   taskActivityByTaskId: Map<string, TaskActivityOverlayState>;
   /** Bounded presentation work; completion and restart recovery never depend on it. */
@@ -159,7 +159,7 @@ export function getTaskRegistryProcessState(): TaskRegistryProcessState {
     taskIdsByOwnerKey: new Map<string, Set<string>>(),
     taskIdsByParentFlowId: new Map<string, Set<string>>(),
     taskIdsByRelatedSessionKey: new Map<string, Set<string>>(),
-    tasksWithPendingDelivery: new Set<string>(),
+    tasksWithPendingDelivery: new Map<string, symbol>(),
     taskActivityByTaskId: new Map<string, TaskActivityOverlayState>(),
     taskProgressBatches: new Map<string, TaskProgressBatch>(),
     runOwners: new Map<string, TaskRunOwner>(),

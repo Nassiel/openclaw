@@ -105,6 +105,7 @@ export function isTaskRegistryWorkerCommand(command: {
   input: unknown;
 }): command is SqliteWorkerCommand<TaskRegistryWorkerOperations> {
   switch (command.type) {
+    case "tasks.updateNotificationDelivery":
     case "tasks.acknowledgeStateChange":
     case "tasks.observeAgentEvent":
     case "tasks.createRecord":

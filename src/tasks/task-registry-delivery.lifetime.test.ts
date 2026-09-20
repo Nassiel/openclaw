@@ -20,7 +20,7 @@ import type { TaskDeliveryState, TaskEventRecord, TaskRecord } from "./task-regi
 const storage = vi.hoisted(() => ({
   tasks: new Map<string, TaskRecord>(),
   delivery: new Map<string, TaskDeliveryState>(),
-  pending: new Set<string>(),
+  pending: new Map<string, symbol>(),
   ensureReady: vi.fn(),
   update: vi.fn<(taskId: string, patch: Partial<TaskRecord>) => TaskRecord | null>(),
   upsertDelivery: vi.fn<(state: TaskDeliveryState) => TaskDeliveryState>(),
@@ -53,11 +53,40 @@ vi.mock("./task-registry-mutation.js", () => ({
 }));
 vi.mock("./task-notification-mutation.async.js", async () => {
   const { sameTaskRunScope } = await import("./task-registry-records.js");
+  const { captureTaskNotificationTarget, updateTaskNotificationDelivery } =
+    await import("./task-notification.operation.js");
   return {
     captureTaskNotificationMutationOwner: (assertCurrent: () => void) => ({
       async prepare<T>(consume: () => T): Promise<T> {
         assertCurrent();
         return consume();
+      },
+      async updateDelivery(
+        task: TaskRecord,
+        outcome: import("./task-notification.operation.js").TaskNotificationDeliveryOutcome,
+      ): Promise<TaskRecord | null> {
+        assertCurrent();
+        const receipt = updateTaskNotificationDelivery(
+          { taskId: task.taskId, expectedTask: captureTaskNotificationTarget(task), ...outcome },
+          {
+            readCurrent: () => ({
+              task: storage.tasks.get(task.taskId),
+              deliveryState: storage.delivery.get(task.taskId),
+            }),
+            write: (operation) => operation(),
+            assertCurrent,
+            upsertDelivery: storage.upsertDelivery,
+            upsertTask: (updated) => {
+              storage.update(updated.taskId, updated);
+            },
+            deferCommit: (publish) => publish(),
+            onCommitted: () => {},
+            onFailure: (_stage, error) => {
+              throw error;
+            },
+          },
+        );
+        return receipt?.task ?? null;
       },
       bindStateChange(task: TaskRecord, eventAt: number) {
         assertCurrent();

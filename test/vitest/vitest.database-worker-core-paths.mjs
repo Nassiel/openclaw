@@ -254,6 +254,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/tasks/task-registry-agent-events.test.ts",
   "src/tasks/task-registry-agent-events.lineage.test.ts",
   "src/tasks/task-registry-state-notification.test.ts",
+  "src/tasks/task-registry-terminal-notification.test.ts",
   "src/tasks/task-registry-owner-read.test.ts",
   "src/tasks/task-registry-read.test.ts",
   "src/tasks/task-registry-projection-read.test.ts",

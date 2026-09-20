@@ -1,7 +1,10 @@
 import { captureTaskMutationContext } from "./task-executor-mutation-effects.async.js";
 import type { TaskMutationContext } from "./task-executor.types.js";
 import type { TaskInitialWorkerCommand } from "./task-initial-worker.types.js";
-import { captureTaskNotificationTarget } from "./task-notification.operation.js";
+import {
+  captureTaskNotificationTarget,
+  type TaskNotificationDeliveryOutcome,
+} from "./task-notification.operation.js";
 import { cloneTaskRecord } from "./task-registry-records.js";
 import { assertTaskRegistryOwnerCurrent } from "./task-registry-state.js";
 import type { TaskRegistryStore } from "./task-registry.store.js";
@@ -9,7 +12,7 @@ import type { TaskRecord } from "./task-registry.types.js";
 
 type NotificationMutation = Extract<
   TaskInitialWorkerCommand,
-  { type: "tasks.acknowledgeStateChange" }
+  { type: "tasks.acknowledgeStateChange" | "tasks.updateNotificationDelivery" }
 >;
 const pendingNotificationMutations = new WeakMap<
   TaskRegistryStore,
@@ -90,6 +93,15 @@ export function captureTaskNotificationMutationOwner(assertDeliveryCurrent: () =
         return acknowledgement;
       };
     },
+    updateDelivery: (task: TaskRecord, outcome: TaskNotificationDeliveryOutcome) =>
+      startMutation({
+        type: "tasks.updateNotificationDelivery",
+        input: {
+          taskId: task.taskId,
+          expectedTask: captureTaskNotificationTarget(task),
+          ...outcome,
+        },
+      }),
   };
 }
 
