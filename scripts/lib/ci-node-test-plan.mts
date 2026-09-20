@@ -336,14 +336,14 @@ const COMPACT_NODE_TEST_OWNER_RUNNERS = new Map([
       ["agentic-commands-doctor-config-state", DEFAULT_NODE_TEST_RUNNER],
       ["agentic-commands-doctor-platform", DEFAULT_NODE_TEST_RUNNER],
       ["agentic-control-plane-runtime-shared-token", DEFAULT_NODE_TEST_RUNNER],
-      ["core-runtime-cron-service", DEFAULT_NODE_TEST_RUNNER],
+      ["core-runtime-cron-parallel-service", DEFAULT_NODE_TEST_RUNNER],
     ]),
   ],
   [
     "github",
     new Map([
       ["agentic-agents-tools", DEFAULT_NODE_TEST_RUNNER],
-      ["core-runtime-cron-service", DEFAULT_NODE_TEST_RUNNER],
+      ["core-runtime-cron-parallel-service", DEFAULT_NODE_TEST_RUNNER],
       ["core-runtime-infra-storage-state", DEFAULT_NODE_TEST_RUNNER],
     ]),
   ],
@@ -448,9 +448,9 @@ const COMPACT_GROUP_SECONDS_HINTS = new Map<string, number>([
   ["auto-reply-reply-state-routing", 63],
   // Apportioned from the split infra-process trio (see below).
   ["core-runtime-config", 113],
-  ["core-runtime-cron-core", 25],
-  ["core-runtime-cron-isolated-agent", 105],
-  ["core-runtime-cron-service", 58],
+  ["core-runtime-cron-parallel-core", 13],
+  ["core-runtime-cron-parallel-isolated-agent", 53],
+  ["core-runtime-cron-parallel-service", 29],
   ["core-runtime-hooks", 19],
   ["core-runtime-infra-approval-exec", 28],
   ["core-runtime-infra-channel-plugin", 19],
@@ -644,9 +644,9 @@ const COMPACT_GITHUB_GROUP_SECONDS_HINTS = new Map<string, number>([
   ["auto-reply-reply-state-routing", 34],
   // Measured per config inside run 31814517685's combined 175s infra wall.
   ["core-runtime-config", 157],
-  ["core-runtime-cron-core", 44],
-  ["core-runtime-cron-isolated-agent", 154],
-  ["core-runtime-cron-service", 131],
+  ["core-runtime-cron-parallel-core", 22],
+  ["core-runtime-cron-parallel-isolated-agent", 77],
+  ["core-runtime-cron-parallel-service", 66],
   ["core-runtime-hooks", 31],
   ["core-runtime-infra-approval-exec", 45],
   ["core-runtime-infra-channel-plugin", 30],
@@ -715,7 +715,7 @@ const COMPACT_HYBRID_GROUP_SECONDS_HINTS = new Map<string, number>([
   ["agentic-cli-process", 110],
   ["agentic-commands-doctor", 83],
   ["agentic-gateway-core-3", 140],
-  ["core-runtime-cron-service", 108],
+  ["core-runtime-cron-parallel-service", 54],
   ["core-runtime-infra-process", 35],
 ]);
 
@@ -786,9 +786,29 @@ function applyCompactGroupWorkerPins(
   return { ...group, env: { ...group.env, ...PINNED_COMPACT_GROUP_ENV } };
 }
 
+function readCompactGroupSeconds(
+  group: NodeTestShardGroup,
+  profile: "blacksmith" | "github",
+): number | undefined {
+  const timings = readCompactGroupTimings(profile);
+  const measured = timings[compactGroupTimingKey(group)];
+  if (measured !== undefined) {
+    return measured;
+  }
+  const cronOwner = /^core-runtime-cron-parallel-(core|isolated-agent|service)$/u.exec(
+    compactGroupTimingKey(group),
+  )?.[1];
+  const serialSeconds =
+    cronOwner === undefined ? undefined : timings[`core-runtime-cron-${cronOwner}`];
+  // Compact overlap and inherited Gateway caps allow two workers; hosted serial
+  // rows allow at least three. New names let parallel samples replace this
+  // conservative serial-cost fallback without dividing those samples again.
+  return serialSeconds === undefined ? undefined : serialSeconds / 2;
+}
+
 function estimateDefaultCompactGroupSeconds(group: NodeTestShardGroup): number {
   const hint =
-    readCompactGroupTimings("blacksmith")[compactGroupTimingKey(group)] ??
+    readCompactGroupSeconds(group, "blacksmith") ??
     COMPACT_GROUP_SECONDS_HINTS.get(group.shard_name);
   if (hint !== undefined) {
     return hint;
@@ -815,7 +835,7 @@ function readUnmeasuredCompactHint(
   group: NodeTestShardGroup,
   hints: ReadonlyMap<string, number>,
 ): number | undefined {
-  return readCompactGroupTimings("blacksmith")[compactGroupTimingKey(group)] === undefined
+  return readCompactGroupSeconds(group, "blacksmith") === undefined
     ? hints.get(group.shard_name)
     : undefined;
 }
@@ -846,7 +866,7 @@ function estimateCompactGroupSeconds(
     return defaultSeconds;
   }
   return (
-    readCompactGroupTimings("github")[compactGroupTimingKey(group)] ??
+    readCompactGroupSeconds(group, "github") ??
     COMPACT_GITHUB_GROUP_SECONDS_HINTS.get(group.shard_name) ??
     Math.round(defaultSeconds * COMPACT_GITHUB_GROUP_SECONDS_SCALE)
   );
@@ -1470,12 +1490,12 @@ function createGatewayServerSplitShards(): NodeTestSplitShard[] {
 function resolveCronShardName(file: string): string {
   const name = relative("src/cron", file).replaceAll("\\", "/");
   if (name.startsWith("isolated-agent")) {
-    return "core-runtime-cron-isolated-agent";
+    return "core-runtime-cron-parallel-isolated-agent";
   }
   if (name.startsWith("service")) {
-    return "core-runtime-cron-service";
+    return "core-runtime-cron-parallel-service";
   }
-  return "core-runtime-cron-core";
+  return "core-runtime-cron-parallel-core";
 }
 
 function createCronSplitShards(): NodeTestSplitShard[] {
@@ -1485,7 +1505,11 @@ function createCronSplitShards(): NodeTestSplitShard[] {
     groups.set(shardName, [...(groups.get(shardName) ?? []), file]);
   }
 
-  return ["core-runtime-cron-core", "core-runtime-cron-isolated-agent", "core-runtime-cron-service"]
+  return [
+    "core-runtime-cron-parallel-core",
+    "core-runtime-cron-parallel-isolated-agent",
+    "core-runtime-cron-parallel-service",
+  ]
     .map((shardName) => ({
       configs: ["test/vitest/vitest.cron.config.ts"],
       includePatterns: groups.get(shardName) ?? [],

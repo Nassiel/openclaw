@@ -45,6 +45,7 @@ jobs:
           node-compile-cache: ${{ matrix.platform == 'linux' && 'true' || 'false' }}
           node-compile-cache-scope: "test"
           vitest-fs-cache: ${{ matrix.platform == 'linux' && 'true' || 'false' }}
+          vitest-worker-cache: ${{ matrix.platform == 'linux' && 'true' || 'false' }}
 
       # Setup owns the completed toolchain and dependency trees. Publish them
       # before build and transform warming delay unrelated readers.
@@ -77,6 +78,22 @@ jobs:
         with:
           path: ${{ steps.setup-node-env.outputs.pnpm-store-cache-path }}
           key: ${{ steps.setup-node-env.outputs.pnpm-store-cache-key }}
+
+      # Match source-only shards before SDK/runtime builds change resolution topology.
+      - name: Prepare compiled Vitest workers
+        if: ${{ matrix.platform == 'linux' }}
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+          OPENCLAW_VITEST_WORKER_CACHE: "1"
+        run: node scripts/prepare-vitest-worker-cache.mts
+
+      - name: Save compiled Vitest workers
+        if: ${{ matrix.platform == 'linux' && steps.setup-node-env.outputs.cache-mode == 'read-write' && steps.setup-node-env.outputs.vitest-worker-cache-key != '' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .artifacts/vitest-worker-cache
+          key: ${{ steps.setup-node-env.outputs.vitest-worker-cache-key }}
 
       # Seal this owner before the full build creates sibling package dist trees.
       # Those trees are resolution topology, but intentionally are not in this payload.
