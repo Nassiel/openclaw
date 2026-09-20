@@ -276,8 +276,7 @@ export function transcriptEventJsonSql(
     compressed,
     bytes,
   ]);
-  return /* kysely-allow-raw: lazy payload selection keeps giant identity TEXT out of the bounded JS decoder. */ sql<string>`CASE WHEN ${identity} IS NOT NULL THEN ${identity}
-    ELSE ${decode} END`;
+  return /* kysely-allow-raw: lazy selection evaluates identity expressions once and keeps giant TEXT out of the bounded JS decoder. */ sql<string>`coalesce(${identity}, ${decode})`;
 }
 
 export function transcriptEventNavigationSql(

@@ -1,3 +1,4 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
@@ -667,4 +668,19 @@ export function readTranscriptEventId(event: TranscriptEvent): string | undefine
   }
   const id = (event as { id?: unknown }).id;
   return typeof id === "string" && id.trim() ? id : undefined;
+}
+
+export function readEventTimestamp(event: unknown): number | undefined {
+  if (!isRecord(event)) {
+    return undefined;
+  }
+  const value = event.timestamp;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value !== "string" || !value.trim()) {
+    return undefined;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }

@@ -9,7 +9,8 @@ const base = { id: "entry", parentId: "parent", timestamp: "2026-01-01T00:00:00.
 
 function roundTrip(raw: unknown) {
   const facts = projectSessionTranscriptReportFacts(raw);
-  const stored: unknown = JSON.parse(JSON.stringify(facts));
+  const serializedFacts = JSON.stringify(facts);
+  const stored: unknown = JSON.parse(serializedFacts);
   const decoded = decodeSessionTranscriptReportFacts(stored);
   expect(decoded).toStrictEqual(stored);
   return decoded;

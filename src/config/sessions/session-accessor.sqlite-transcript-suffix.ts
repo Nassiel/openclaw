@@ -6,6 +6,7 @@ import {
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import type { TranscriptEvent } from "./session-accessor.sqlite-contract.js";
 import {
+  readEventTimestamp,
   readTranscriptEventId,
   readTranscriptStorageRows,
   type SqliteTranscriptStorageRow,
@@ -19,7 +20,6 @@ import {
 import {
   canonicalizeTranscriptEventMedia,
   insertTranscriptRowsWithoutProjectionInTransaction,
-  readEventTimestamp,
   readMessageIdempotencyKey,
   scheduleTranscriptProjectionReconcile,
 } from "./session-accessor.sqlite-transcript-store.js";

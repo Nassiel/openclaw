@@ -94,7 +94,13 @@ describe("GitHub publication transcript reporting", () => {
         count: 2,
       },
     ].flatMap((scenario) =>
-      ["identity", "compressed"].map((encoding) => ({ ...scenario, encoding })),
+      ["identity", "compressed"].map((encoding) => ({
+        label: scenario.label,
+        beforeTail: scenario.beforeTail,
+        tail: scenario.tail,
+        count: scenario.count,
+        encoding,
+      })),
     ),
   )(
     "preserves canonical report visibility after $label ($encoding)",

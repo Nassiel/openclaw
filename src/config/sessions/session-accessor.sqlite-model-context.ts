@@ -1,6 +1,6 @@
 import type { AgentMessage, SessionTreeEntry } from "@openclaw/agent-core";
 import { isCompactionReplayCheckpoint } from "@openclaw/ai/transports";
-import { sql } from "kysely";
+import { sql, type AliasableExpression } from "kysely";
 import {
   iterateSessionContextEntries,
   iterateSessionContextMessages,
@@ -540,7 +540,7 @@ function withTranscriptContextSnapshot<T>(
                     const storedBytes = transcriptEventModelBytesSql(omitCheckpoint);
                     const omission = modelToolResultOmissionSql(batch);
                     // Stored costs describe the original model view, not a transient omission notice.
-                    const bytes = omission
+                    const bytes: AliasableExpression<number> = omission
                       ? eb
                           .case()
                           .when(omission, "is not", null)
