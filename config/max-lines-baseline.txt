@@ -335,7 +335,6 @@ src/agents/embedded-agent-subscribe.handlers.tools.test.ts
 src/agents/embedded-agent-subscribe.subscribe-embedded-agent-session.subscribeembeddedagentsession.test.ts
 src/agents/harness/native-hook-relay.test.ts
 src/agents/harness/selection.test.ts
-src/agents/harness/selection.ts
 src/agents/main-session-recovery/main-session-restart-recovery.test.ts
 src/agents/model-auth-availability.ts
 src/agents/model-auth.profiles.test.ts
@@ -396,7 +395,6 @@ src/auto-reply/reply/agent-runner-payloads.test.ts
 src/auto-reply/reply/agent-runner.misc.runreplyagent.test.ts
 src/auto-reply/reply/agent-runner.runreplyagent.e2e.test.ts
 src/auto-reply/reply/commands-acp.test.ts
-src/auto-reply/reply/commands-models.ts
 src/auto-reply/reply/commands-status.test.ts
 src/auto-reply/reply/directive-handling.model.test.ts
 src/auto-reply/reply/dispatch-acp.test.ts

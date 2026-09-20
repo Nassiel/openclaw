@@ -12,7 +12,10 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
-import { IMAGE_GENERATION_TASK_KIND } from "./media-generation-task-status.js";
+import {
+  buildMediaTaskRuntimeContext,
+  IMAGE_GENERATION_TASK_KIND,
+} from "./media-generation-task-status.js";
 import {
   createImageGenerateDuplicateGuardResult,
   createImageGenerateStatusActionResult,
@@ -67,6 +70,15 @@ describe("cold media generation task status", () => {
     await closeOpenClawStateDatabaseAsync();
     const mainSql = observeMainThreadSql();
     expect(getRuntimeConfigSnapshot()).toBeNull();
+    expect(
+      await buildMediaTaskRuntimeContext({
+        capabilityToolNames: new Set(["image_generate"]),
+        sessionKey: "global",
+        agentId: "ops",
+      }),
+    ).toBe(
+      '## Media Generation Tasks\n- tool=image_generate; task=legacy-media; status=running; provider_json="synthetic"',
+    );
     await withPluginCache(createPluginCache(), async () => {
       expect((await createImageGenerateStatusActionResult("global", "ops")).details).toMatchObject({
         active: true,

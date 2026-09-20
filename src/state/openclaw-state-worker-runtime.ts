@@ -38,6 +38,7 @@ import {
   listManagedImageRecordEntriesInDatabase,
   listManagedImageOriginalMediaIdsInDatabase,
 } from "../gateway/managed-image-record-store.kernel.js";
+import { registerSessionGroupInDatabase } from "../gateway/session-group-registration.kernel.js";
 import { readDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
 import {
   countFailedDeliveryQueueEntriesInDatabase,
@@ -305,10 +306,14 @@ export function executeSharedStateCommand(
     return readDeferredPluginMigrations({
       path: context.databasePath,
       env: getSqliteWorkerStateContext().environment,
+      artifactPreservingReadOnly: command.input.artifactPreservingReadOnly,
     });
   }
   if (command.type === "claws.install-schema-versions") {
-    return withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(
+    const read = command.input.artifactPreservingReadOnly
+      ? withExistingOpenClawStateDatabaseArtifactPreservingReadOnly
+      : withExistingOpenClawStateDatabaseReadOnly;
+    return read(
       ({ db, path: pathname }) => {
         assertOpenClawStateDatabaseOwner(db, { pathname });
         return readClawInstallSchemaVersionRows(db);
@@ -479,6 +484,9 @@ export function executeSharedStateCommand(
     path: context.databasePath,
     env: getSqliteWorkerStateContext().environment,
   };
+  if (command.type === "sessionGroups.register") {
+    return registerSessionGroupInDatabase(database, command.input.name, writeOptions.env);
+  }
   if (command.type === "deliveryQueue.ack") {
     return executeDeliveryQueueAck(command.input, writeOptions);
   }

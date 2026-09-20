@@ -120,11 +120,10 @@ function resolveMediaGenerationTaskRequesterAgentId(
   }
 }
 
-async function prepareMediaGenerationTaskLookup(params: {
+export async function prepareMediaGenerationTaskLookup(params: {
   sessionKey: string;
   agentId?: string;
-  taskKind: string;
-  sourcePrefix: string;
+  taskIdentities: readonly { taskKind: string; sourcePrefix: string }[];
   includeTerminalTasks?: boolean;
 }) {
   const context = captureOpenClawStateWorkerContext();
@@ -135,7 +134,6 @@ async function prepareMediaGenerationTaskLookup(params: {
     : undefined;
   let tasks = await listFreshTasksForOwnerKey(params.sessionKey);
   assertCurrent();
-  const sourcePrefix = normalizeOptionalString(params.sourcePrefix);
   let config: OpenClawConfig | undefined;
   if (
     readConfig &&
@@ -143,9 +141,12 @@ async function prepareMediaGenerationTaskLookup(params: {
       (task) =>
         task.runtime === "cli" &&
         task.scopeKind === "session" &&
-        task.taskKind === params.taskKind &&
         (params.includeTerminalTasks || isTaskStillBlockingDuplicateGuard(task)) &&
-        (!sourcePrefix || mediaGenerationSourceMatches(task, sourcePrefix)) &&
+        params.taskIdentities.some(
+          ({ taskKind, sourcePrefix }) =>
+            task.taskKind === taskKind &&
+            (!sourcePrefix || mediaGenerationSourceMatches(task, sourcePrefix)),
+        ) &&
         Boolean(normalizeOptionalString(task.ownerKey ?? task.requesterSessionKey)) &&
         !resolveMediaGenerationTaskRequesterAgentId(task),
     )
@@ -415,7 +416,11 @@ async function listActiveMediaGenerationTasksForSession(params: {
   if (!sessionKey) {
     return [];
   }
-  const lookup = await prepareMediaGenerationTaskLookup({ ...params, sessionKey });
+  const lookup = await prepareMediaGenerationTaskLookup({
+    sessionKey,
+    agentId: params.agentId,
+    taskIdentities: [params],
+  });
   lookup.assertCurrent();
   return selectActiveMediaGenerationTasks(params, lookup.tasks, lookup.config);
 }
@@ -477,8 +482,9 @@ async function findDuplicateGuardMediaGenerationTaskForSession(params: {
     return undefined;
   }
   const lookup = await prepareMediaGenerationTaskLookup({
-    ...params,
     sessionKey,
+    agentId: params.agentId,
+    taskIdentities: [params],
     includeTerminalTasks: true,
   });
   lookup.assertCurrent();
@@ -572,19 +578,18 @@ function buildMediaGenerationTaskStatusListText(params: {
 }
 
 /** Builds bounded current-turn facts without instructions or elapsed-time fields. */
-async function buildActiveMediaGenerationTaskPromptContextForSession(params: {
-  sessionKey?: string;
+export function buildActiveMediaGenerationTaskPromptContext(params: {
+  tasks: readonly TaskRecord[];
+  config?: OpenClawConfig;
   agentId?: string;
   taskKind: string;
   sourcePrefix: string;
-}): Promise<string | undefined> {
-  const tasks = await listActiveMediaGenerationTasksForSession({
-    sessionKey: params.sessionKey,
-    agentId: params.agentId,
-    taskKind: params.taskKind,
-    sourcePrefix: params.sourcePrefix,
-    excludeDeliveringCompletion: true,
-  });
+}): string | undefined {
+  const tasks = selectActiveMediaGenerationTasks(
+    { ...params, excludeDeliveringCompletion: true },
+    params.tasks,
+    params.config,
+  );
   if (tasks.length === 0) {
     return undefined;
   }
@@ -674,13 +679,6 @@ export function createMediaGenerationTaskStatusOwner(params: {
         ...taskPresentation,
         tasks,
         completionLabel: params.promptCompletionLabel,
-      });
-    },
-    buildActiveTaskPromptContextForSession(this: void, sessionKey?: string, agentId?: string) {
-      return buildActiveMediaGenerationTaskPromptContextForSession({
-        ...taskIdentity,
-        sessionKey,
-        agentId,
       });
     },
   };

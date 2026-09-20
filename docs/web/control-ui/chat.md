@@ -35,8 +35,8 @@ button deletes the comment. Hover, keyboard-focus, or click the composer's comme
 count to open its preview. Deleting one comment keeps the remaining list open;
 Escape, a click outside, or moving the pointer away dismisses it. The count's
 **Remove all comments** action clears pending comments in one click and returns
-focus to the composer. **Undo** in the removal notification restores them. The
-clear action appears on hover or keyboard focus and stays visible on touch.
+focus to the composer without showing a notification. Cleared comments cannot
+be undone. The clear action appears on hover or keyboard focus and stays visible on touch.
 Clearing pending comments preserves ordinary attachments, the message draft,
 and comments already sent in the conversation.
 Archiving another split pane leaves the current comment editor and keyboard focus in place.
@@ -552,6 +552,8 @@ Focusing a marker also shows its preview without jumping to the message.
 The chat transcript uses a centered readable frame aligned with the composer. Assistant and tool output stay left-aligned while your own messages stay right-aligned inside that frame. In multi-user sessions (for example a group chat relayed from a channel plugin), messages from other attributed participants render left-aligned with the author's avatar, name, and a stable per-identity color, so only the signed-in viewer's messages read as "mine". When two or more attributed participants are present, assistant replies carry a small "Replying to name" marker naming the participant whose message triggered the turn. System entries such as local slash-command output render as centered notice rows without an avatar.
 
 Images and video previews in your own messages appear above any accompanying text, without a surrounding bubble background. Videos use a still frame with a play icon; select the preview to open the video in the Files panel. If a preview cannot load, the attachment card remains available. Hovering media leaves that layout unchanged, and the text keeps its normal bubble color, including any per-identity tint. Assistant videos retain their inline player.
+
+Images use a plain, lightly tinted shimmer while their availability or preview is loading. An image that needs explicit permission keeps a compact **Allow image** card until you choose to allow it; unavailable images retain their status and retry controls.
 
 Managed image previews retain enough detail for high-density displays. Open an image tile
 to inspect it immediately in the image viewer; the cached preview stays visible

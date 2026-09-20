@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 import path from "node:path";
 import { valid as validSemver } from "semver";
-import { UPDATE_RUN_PHASES } from "../../packages/gateway-protocol/src/update-run-vocabulary.js";
 import { resolveStateDir } from "../config/paths.js";
 import {
   redactPublicSupportDiagnosticLine,
@@ -16,6 +15,7 @@ import { truncateUtf8Prefix } from "../utils/utf8-truncate.js";
 import { VERSION } from "../version.js";
 import { prepareGithubIssue, type PreparedGithubIssue } from "./github-issue.js";
 import { normalizeUpdateChannel } from "./update-channels.js";
+import { normalizeUpdateDoctorLintFindings } from "./update-doctor-lint.js";
 import {
   formatUpdateFailureFact,
   selectUpdateFailureReportSteps,
@@ -30,7 +30,10 @@ import {
 import type { UpdateRunRecord } from "./update-run-record.js";
 import { readUpdateRunReportHealth } from "./update-run-report-health.js";
 import { formatUpdateRunCurrentHealth, formatUpdateRunIdentity } from "./update-run-report.js";
+import { updateRunStepKey } from "./update-run-step-key.js";
+import { isFailedUpdateStep } from "./update-run-step.js";
 import type { UpdateRunResult, UpdateStepResult } from "./update-runner.js";
+import { resolvePublicUpdateStepId } from "./update-step-identity.js";
 
 const UPDATE_REPORT_BODY_MAX_BYTES = 16_000;
 const UPDATE_REPORT_FIELD_MAX_BYTES = 512;
@@ -99,8 +102,9 @@ function sanitizeReportField(
 }
 
 function sanitizeFactIdentifier(value: string, context: UpdateFailureReportContext): string {
-  if (REPORTABLE_RECORDED_PHASES.has(value)) {
-    return value.replace(/\s+/gu, "-");
+  const stepId = resolvePublicUpdateStepId(value);
+  if (stepId) {
+    return stepId;
   }
   // DNS names are not check/reason/plugin identifiers. Numeric versions remain public facts.
   return isIP(value) ||
@@ -121,32 +125,24 @@ function sanitizeFactConfigKey(value: string): string {
   return anchor ? (value === anchor ? anchor : `${anchor}.*`) : "[redacted-key]";
 }
 
-const REPORTABLE_RECORDED_PHASES = new Set<string>([
-  ...UPDATE_RUN_PHASES,
-  "package rollback",
-  "global install verify",
-  "global install swap",
-  "npm lifecycle policy preflight",
-]);
 type ReportedFailedStep = Pick<
   UpdateStepResult,
   "name" | "exitCode" | "termination" | "failureFacts" | "stderrTail"
 > & { detail?: string };
 
 function resolveFailedSteps(input: UpdateFailureReportInput): ReportedFailedStep[] {
-  const direct = new Map(input.result.steps.map((step) => [step.name, step]));
+  const direct = new Map(input.result.steps.map((step) => [updateRunStepKey(step.name), step]));
   const recorded = input.recordedRun?.runId === input.attemptId ? input.recordedRun.steps : [];
-  const recordedNames = new Set(recorded.map((step) => step.step));
-  const failed = (step: UpdateStepResult) =>
-    !step.advisory &&
-    (step.exitCode !== 0 || step.killed === true || step.termination === "timeout");
+  const recordedNames = new Set(recorded.map((step) => updateRunStepKey(step.step)));
   // The ledger orders recovery after the initial failure; measured results enrich it in place.
   return [
-    ...Array.from(direct.values()).filter((step) => failed(step) && !recordedNames.has(step.name)),
+    ...Array.from(direct.values()).filter(
+      (step) => isFailedUpdateStep(step) && !recordedNames.has(updateRunStepKey(step.name)),
+    ),
     ...recorded.flatMap((step): ReportedFailedStep[] => {
-      const measured = direct.get(step.step);
+      const measured = direct.get(updateRunStepKey(step.step));
       if (measured) {
-        return failed(measured)
+        return isFailedUpdateStep(measured)
           ? [{ ...measured, failureFacts: measured.failureFacts ?? step.failureFacts }]
           : [];
       }
@@ -258,6 +254,20 @@ async function renderBoundedDiagnostics(
   ];
   if (input.result.reason === LEGACY_UPDATE_RUN_EXPIRED_REASON) {
     diagnostics.push(`Advisory: ${LEGACY_UPDATE_RUN_ADVISORY}`);
+  }
+  for (const finding of normalizeUpdateDoctorLintFindings(
+    input.result.steps.flatMap((step) => step.doctorLintFindings ?? []),
+    context.env,
+  )) {
+    const { check } = await projectPublicUpdateFailureIdentifiers({
+      check: finding.checkId,
+      code: "doctor-failed",
+    });
+    const severity =
+      finding.severity === "warning" || finding.severity === "info" ? finding.severity : "error";
+    diagnostics.push(
+      `Doctor lint ${severity} [${check}]: ${redactPublicSupportDiagnosticLine([finding.requirement, finding.message].filter(Boolean).join(": "), context)}`,
+    );
   }
   // Reviewed identity facts also bind consent when the run ID stays the same.
   for (const [label, identity] of [

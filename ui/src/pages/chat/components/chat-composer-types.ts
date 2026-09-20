@@ -96,12 +96,14 @@ export type ChatComposerProps = ChatAttachmentControlsProps & {
   progressCard?: ProgressCard | null;
   progressCardIdentity?: string;
   progressCardInitialLoading?: boolean;
+  gatewayScope?: object;
   runActive?: boolean;
   collapseTaskProgress?: boolean;
   readingHistory?: boolean;
   onProgressManipulate?: () => void;
   runId?: string | null;
   onDismissProgressCard?: (card: ProgressCard) => void;
+  /** The pane scopes Gateway questions to this conversation's agent and session. */
   gatewayQuestionPrompts?: readonly QuestionPrompt[];
   asyncQuestions?: AsyncQuestionPresentation;
   messages: unknown[];

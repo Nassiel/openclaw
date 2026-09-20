@@ -4,11 +4,13 @@ import type { CapturedRuntimeConfigRead } from "../config/runtime-config-capture
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 import type { TaskRecord } from "../tasks/task-registry.types.js";
 import {
+  buildActiveMediaGenerationTaskPromptContext,
   createMediaGenerationTaskStatusOwner,
   MEDIA_GENERATION_DELIVERING_COMPLETION_PROGRESS,
   recordRecentMediaGenerationTaskStartForSession,
 } from "./media-generation-task-status-shared.js";
 import { resetRecentMediaGenerationDuplicateGuardsForTests } from "./media-generation-task-status-shared.test-support.js";
+import { buildMediaTaskRuntimeContext } from "./media-generation-task-status.js";
 
 const taskRuntimeInternalMocks = vi.hoisted(() => ({
   listFreshTasksForOwnerKey: vi.fn(),
@@ -97,31 +99,39 @@ beforeEach(() => {
 });
 
 describe("media generation delivery-phase prompt guard", () => {
-  it("does not warn about a task waiting only for completion delivery", async () => {
-    taskRuntimeInternalMocks.listFreshTasksForOwnerKey.mockReturnValue([
-      makeTask({ progressSummary: MEDIA_GENERATION_DELIVERING_COMPLETION_PROGRESS }),
-    ]);
+  it("does not warn about a task waiting only for completion delivery", () => {
+    const tasks = [makeTask({ progressSummary: MEDIA_GENERATION_DELIVERING_COMPLETION_PROGRESS })];
 
     expect(
-      await videoTaskStatusOwner.buildActiveTaskPromptContextForSession("session/A"),
+      buildActiveMediaGenerationTaskPromptContext({
+        tasks,
+        taskKind: "video_generation",
+        sourcePrefix: "video_generate",
+      }),
     ).toBeUndefined();
   });
 
-  it("carries only bounded single-line facts while media generation is running", async () => {
-    taskRuntimeInternalMocks.listFreshTasksForOwnerKey.mockReturnValue([
+  it("carries only bounded single-line facts while media generation is running", () => {
+    const tasks = [
       makeTask({
         taskId: `task-${"t".repeat(150)}`,
         sourceId: `video_generate:${"p".repeat(150)}`,
         progressSummary: `Generating\nvideo\u2028${"x".repeat(400)}`,
       }),
-    ]);
+    ];
 
-    expect(await videoTaskStatusOwner.buildActiveTaskPromptContextForSession("session/A")).toBe(
+    expect(
+      buildActiveMediaGenerationTaskPromptContext({
+        tasks,
+        taskKind: "video_generation",
+        sourcePrefix: "video_generate",
+      }),
+    ).toBe(
       `- tool=video_generate; task=task-${"t".repeat(123)}; status=running; provider_json="${"p".repeat(128)}"; progress_json="Generatingvideo${"x".repeat(305)}"`,
     );
   });
 
-  it("keeps a bounded task snapshot stable across registry order and elapsed time", async () => {
+  it("keeps a bounded task snapshot stable across registry order and elapsed time", () => {
     const tasks = Array.from({ length: 10 }, (_, index) =>
       makeTask({
         taskId: `task-${index}`,
@@ -129,9 +139,11 @@ describe("media generation delivery-phase prompt guard", () => {
         status: index % 2 === 0 ? "queued" : "running",
       }),
     );
-    taskRuntimeInternalMocks.listFreshTasksForOwnerKey.mockReturnValue(tasks.toReversed());
-
-    const context = await videoTaskStatusOwner.buildActiveTaskPromptContextForSession("session/A");
+    const context = buildActiveMediaGenerationTaskPromptContext({
+      tasks,
+      taskKind: "video_generation",
+      sourcePrefix: "video_generate",
+    });
     expect(context).toBe(
       [
         "- tool=video_generate; task=task-0; status=queued",
@@ -149,10 +161,13 @@ describe("media generation delivery-phase prompt guard", () => {
     for (const task of tasks) {
       task.lastEventAt = task.createdAt + 60_000;
     }
-    taskRuntimeInternalMocks.listFreshTasksForOwnerKey.mockReturnValue(tasks);
-    expect(await videoTaskStatusOwner.buildActiveTaskPromptContextForSession("session/A")).toBe(
-      context,
-    );
+    expect(
+      buildActiveMediaGenerationTaskPromptContext({
+        tasks: tasks.toReversed(),
+        taskKind: "video_generation",
+        sourcePrefix: "video_generate",
+      }),
+    ).toBe(context);
   });
 
   it("keeps delivery-phase tasks available to duplicate/status lookups", async () => {
@@ -218,6 +233,29 @@ describe("media generation delivery-phase prompt guard", () => {
     ]);
   });
 
+  it("includes restored legacy media in the shared prompt only for its requester", async () => {
+    taskRuntimeInternalMocks.listFreshTasksForOwnerKey.mockResolvedValue([
+      makeTask({ ownerKey: "global", agentId: "research" }),
+      makeTask({
+        taskId: "music-1",
+        ownerKey: "global",
+        taskKind: "music_generation",
+        sourceId: "music_generate",
+      }),
+    ]);
+    const params = {
+      capabilityToolNames: new Set(["video_generate", "music_generate"]),
+      sessionKey: "global",
+    };
+    expect(await buildMediaTaskRuntimeContext({ ...params, agentId: "ops" })).toBe(
+      '## Media Generation Tasks\n- tool=music_generate; task=music-1; status=running\n- tool=video_generate; task=task-1; status=running; provider_json="byteplus"',
+    );
+    expect(configMocks.readConfig).toHaveBeenCalledTimes(1);
+    expect(await buildMediaTaskRuntimeContext({ ...params, agentId: "research" })).toBe(
+      "## Media Generation Tasks\n- tool=music_generate; none\n- tool=video_generate; none",
+    );
+  });
+
   it.each(["succeeded", "failed"] as const)(
     "skips requester config for terminal-only %s status and prompt lookups",
     async (status) => {
@@ -227,8 +265,12 @@ describe("media generation delivery-phase prompt guard", () => {
 
       expect(await videoTaskStatusOwner.listActiveTasksForSession("global", "ops")).toEqual([]);
       expect(
-        await videoTaskStatusOwner.buildActiveTaskPromptContextForSession("global", "ops"),
-      ).toBeUndefined();
+        await buildMediaTaskRuntimeContext({
+          capabilityToolNames: new Set(["video_generate"]),
+          sessionKey: "global",
+          agentId: "ops",
+        }),
+      ).toBe("## Media Generation Tasks\n- tool=video_generate; none");
       expect(configMocks.readConfig).not.toHaveBeenCalled();
     },
   );
@@ -259,7 +301,7 @@ describe("media generation delivery-phase prompt guard", () => {
   );
 
   it.each(
-    (["active", "duplicate"] as const).flatMap((lookup) =>
+    (["active", "duplicate", "prompt"] as const).flatMap((lookup) =>
       (["completed", "deleted"] as const).flatMap((change) =>
         (["resolves", "rejects"] as const).map((completion) => ({ lookup, change, completion })),
       ),
@@ -280,7 +322,13 @@ describe("media generation delivery-phase prompt guard", () => {
       const pending =
         lookup === "active"
           ? videoTaskStatusOwner.listActiveTasksForSession("global", "ops")
-          : videoTaskStatusOwner.findDuplicateGuardTaskForSession("global", { agentId: "ops" });
+          : lookup === "prompt"
+            ? buildMediaTaskRuntimeContext({
+                capabilityToolNames: new Set(["video_generate"]),
+                sessionKey: "global",
+                agentId: "ops",
+              })
+            : videoTaskStatusOwner.findDuplicateGuardTaskForSession("global", { agentId: "ops" });
       await started.promise;
       records =
         change === "deleted"
@@ -292,7 +340,13 @@ describe("media generation delivery-phase prompt guard", () => {
         config.reject(new Error("config unavailable"));
       }
 
-      expect(await pending).toEqual(lookup === "active" ? [] : undefined);
+      expect(await pending).toEqual(
+        lookup === "active"
+          ? []
+          : lookup === "prompt"
+            ? "## Media Generation Tasks\n- tool=video_generate; none"
+            : undefined,
+      );
     },
   );
 
@@ -357,7 +411,7 @@ describe("media generation delivery-phase prompt guard", () => {
     expect(await pending).toMatchObject({ taskId: "recent-start", status: "running" });
   });
 
-  it.each(["active", "duplicate"])(
+  it.each(["active", "duplicate", "prompt"] as const)(
     "rejects %s selection after ownership retires between preparation and continuation",
     async (lookup) => {
       let settled = false;
@@ -382,7 +436,13 @@ describe("media generation delivery-phase prompt guard", () => {
       const pending =
         lookup === "active"
           ? videoTaskStatusOwner.listActiveTasksForSession("global", "ops")
-          : videoTaskStatusOwner.findDuplicateGuardTaskForSession("global", { agentId: "ops" });
+          : lookup === "prompt"
+            ? buildMediaTaskRuntimeContext({
+                capabilityToolNames: new Set(["video_generate"]),
+                sessionKey: "global",
+                agentId: "ops",
+              })
+            : videoTaskStatusOwner.findDuplicateGuardTaskForSession("global", { agentId: "ops" });
 
       await expect(pending).rejects.toBe(retirement);
     },

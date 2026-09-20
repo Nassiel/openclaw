@@ -174,3 +174,28 @@ export async function withTaskRegistryTempDir<T>(
     });
   });
 }
+
+export async function flushAsyncWork(times = 4) {
+  for (let index = 0; index < times; index += 1) {
+    await Promise.resolve();
+  }
+}
+
+export function createStoredTask(): TaskRecord {
+  return {
+    taskId: "task-restored",
+    runtime: "acp",
+    sourceId: "run-restored",
+    requesterSessionKey: "agent:main:main",
+    ownerKey: "agent:main:main",
+    scopeKind: "session",
+    childSessionKey: "agent:codex:acp:restored",
+    runId: "run-restored",
+    task: "Restored task",
+    status: "running",
+    deliveryStatus: "pending",
+    notifyPolicy: "done_only",
+    createdAt: 100,
+    lastEventAt: 100,
+  };
+}

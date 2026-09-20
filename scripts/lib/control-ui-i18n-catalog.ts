@@ -30,6 +30,7 @@ import { registerNewSessionSetupEnglish } from "../../ui/src/i18n/locales/en-new
 import { registerPluginConsentEnglish } from "../../ui/src/i18n/locales/en-plugin-consent.ts";
 import { registerPluginManagementEnglish } from "../../ui/src/i18n/locales/en-plugin-management.ts";
 import { registerPortalsEnglish } from "../../ui/src/i18n/locales/en-portals.ts";
+import { registerSessionPeopleEnglish } from "../../ui/src/i18n/locales/en-session-people.ts";
 import { registerSessionPlacementEnglish } from "../../ui/src/i18n/locales/en-session-placement.ts";
 import { registerSettingsEnglish } from "../../ui/src/i18n/locales/en-settings.ts";
 import { registerSidebarAttentionEnglish } from "../../ui/src/i18n/locales/en-sidebar-attention.ts";
@@ -79,6 +80,7 @@ const sourceFiles = [
   "en-model-accounts.ts",
   "en-model-controls.ts",
   "en-model-setup.ts",
+  "en-session-people.ts",
   "en-session-placement.ts",
   "en-new-session-setup.ts",
   "en-plugin-consent.ts",
@@ -114,6 +116,9 @@ export function loadControlUiSourceCatalog(): TranslationMap {
     sessionsView[key] = value;
     if (key === "searchPlaceholder") {
       Object.assign(sessionsView, registerCommandPaletteEnglish.catalog.sessionsView);
+    }
+    if (key === "assignToMe") {
+      Object.assign(sessionsView, registerSessionPeopleEnglish.catalog.sessionsView);
     }
   }
   const boardWidget: TranslationMap = {};
