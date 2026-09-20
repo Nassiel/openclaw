@@ -319,6 +319,7 @@ suite.define(() => {
               : undefined;
           const capture = async (stage: string) => {
             if (directory) {
+              await page.mouse.move(0, 0);
               await popup.locator('[part="body"]').screenshot({
                 path: path.join(directory, stage + ".png"),
                 animations: "disabled",
@@ -331,7 +332,9 @@ suite.define(() => {
           };
           const box = async (selector: string) => {
             const bounds = await popup.locator(selector).boundingBox();
-            if (!bounds) throw new Error("Missing settings control: " + selector);
+            if (!bounds) {
+              throw new Error("Missing settings control: " + selector);
+            }
             return bounds;
           };
           const avatar = await box(".agent-select__trigger .agent-select__avatar");
@@ -345,6 +348,18 @@ suite.define(() => {
             ".palette-session-settings__workspace .palette-session-settings__label",
           );
           await capture("initial");
+          const typography = (selector: string) =>
+            popup.locator(selector).evaluate((element) => {
+              const style = getComputedStyle(element);
+              return [style.fontSize, style.fontWeight, style.lineHeight, style.fontFamily];
+            });
+          expect
+            .soft(await typography(".agent-select__label"))
+            .toEqual(
+              await typography(
+                ".palette-session-settings__workspace .palette-session-settings__label",
+              ),
+            );
           expect.soft(avatar.width).toBe(folder.width + 2);
           expect.soft(avatar.x + avatar.width / 2).toBeCloseTo(folder.x + folder.width / 2, 0);
           expect.soft(agentChevron.x).toBeCloseTo(workspaceChevron.x, 0);
@@ -359,6 +374,35 @@ suite.define(() => {
           await workspaceButton.click();
           await search.waitFor({ state: "visible" });
           await capture("pointer-projects");
+          const groups = await popup
+            .locator(".palette-session-settings__choices > section")
+            .evaluateAll((sections) =>
+              sections.map((section) => {
+                const heading = section.querySelector(".palette-session-settings__machine");
+                const labels = section.querySelectorAll(".palette-session-settings__label");
+                const firstLabel = labels[0];
+                const lastLabel = labels[labels.length - 1];
+                if (!heading || !firstLabel || !lastLabel) {
+                  throw new Error("Missing project group content");
+                }
+                const range = document.createRange();
+                range.selectNodeContents(heading);
+                const title = range.getBoundingClientRect();
+                return {
+                  top: title.top,
+                  bottom: lastLabel.getBoundingClientRect().bottom,
+                  headingGap: firstLabel.getBoundingClientRect().top - title.bottom,
+                };
+              }),
+            );
+          expect(groups.length).toBeGreaterThan(1);
+          let previous: (typeof groups)[number] | undefined;
+          for (const current of groups) {
+            if (previous) {
+              expect.soft(current.top - previous.bottom).toBeGreaterThan(current.headingGap * 2);
+            }
+            previous = current;
+          }
           expect.soft(await remember.count()).toBe(0);
           expect
             .soft(await search.evaluate((element) => getComputedStyle(element).outlineStyle))
