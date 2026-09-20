@@ -987,10 +987,11 @@
   line-height: var(--code-block-line-height);
 }
 
-/* The preview lines plus the code element's own 4px/8px/6px vertical box. */
-.code-block-wrapper.is-collapsible:not(.is-expanded) .code-block-viewport {
-  max-height: calc(var(--code-block-line-height) * var(--code-block-preview-lines) + 18px);
-  overflow-y: hidden;
+/* Clip the code itself so surrounding spacing cannot reveal another line.
+   The element-relative line height also preserves compact block-art previews. */
+.code-block-wrapper.is-collapsible:not(.is-expanded) .code-block-viewport :where(pre code) {
+  max-height: calc(1lh * var(--code-block-preview-lines));
+  overflow: hidden;
 }
 
 .code-block-wrapper.is-collapsible:not(.is-expanded) .code-block-wrap {

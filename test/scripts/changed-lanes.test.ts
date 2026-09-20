@@ -2193,10 +2193,12 @@ describe("scripts/changed-lanes", () => {
         includes: ["tsgo:ui", "tsgo:core:test"],
         excludes: ["tsgo:core"],
         coreTestChecks: ["checkBoundary", "checkTypes"],
+        // The merge ref may contain this TS fixture even when the branch does not.
         stylelintTargets: [
+          "ui/src/e2e/chat-composer-picker-layout.e2e.test.ts",
           "ui/src/styles/chat/composer-surface.css",
           "ui/src/styles/chat/composer.css",
-        ],
+        ].filter(existsSync),
       },
     },
     ...["ui/src/app.ts", "tsconfig.ui.json", "ui/src/e2e/chat-flow.test-support.ts"].map(
