@@ -22,13 +22,15 @@ to reconstruct history; selecting `event_json` alone omits compressed events.
 Memory chunk/cache embeddings are little-endian Float64 BLOBs. See
 [compact agent payload storage](/reference/database-schemas/agent-schema-history#compact-agent-payload-storage).
 
-Task registry restore normalizes legacy task run and child-session identifiers
-before hydrating records, so scoped mutations can use their existing indexes.
-The repair runs in the existing write transaction once per registry restore;
-ordinary database opens and read-only inspection do not rewrite these rows.
-Doctor uses the same repair. New task records normalize these identifiers before
-persistence and receipt publication. Schema versions and retention are unchanged;
-after an older writer is used, the next registry restore repairs its padded rows again.
+Doctor normalizes historical task run and child-session identifiers together
+with their related subagent bindings, so scoped mutations can use the existing
+indexes. Legacy sidecar imports use the same transactional repair. Gateway
+restore and reads consume stored identifiers without repairing them. New task
+records and explicit identifier changes normalize before persistence and receipt
+publication; unrelated patches preserve the existing identity. Schema versions
+and retention are unchanged. `openclaw update` runs Doctor before activation;
+after a direct binary replacement or using an older writer, run
+`openclaw doctor --fix` before starting the new Gateway.
 
 ### Activity session recaps
 

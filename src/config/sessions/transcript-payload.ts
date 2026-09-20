@@ -51,8 +51,8 @@ export function createTranscriptEventInserter(database: DatabaseSync, sessionId:
         created_at: parameter((row) => row.createdAt),
       }),
   );
-  return (row: { seq: number; eventJson: string; createdAt: number }) =>
-    insert({ ...row, ...prepareTranscriptPayload(database, row.eventJson) });
+  return (row: { seq: number; eventJson: string; createdAt: number; parsedEvent?: unknown }) =>
+    insert({ ...row, ...prepareTranscriptPayload(database, row.eventJson, row.parsedEvent) });
 }
 
 export function createTranscriptPayloadUpdater(database: DatabaseSync, sessionId: string) {
@@ -160,6 +160,7 @@ function readNavigation(database: DatabaseSync, input: NavigationInput): string 
 export function prepareTranscriptPayload(
   database: DatabaseSync,
   eventJson: string,
+  parsedEvent?: unknown,
 ): TranscriptPayloadRecord {
   const rawBytes = Buffer.byteLength(eventJson, "utf8");
   const utf8 = hasUtf8Storage(database);
@@ -195,7 +196,8 @@ export function prepareTranscriptPayload(
   }
   let reportJson: string;
   try {
-    const raw: unknown = JSON.parse(eventJson);
+    // Prepared appends already decoded these exact bytes before taking the writer lock.
+    const raw: unknown = parsedEvent === undefined ? JSON.parse(eventJson) : parsedEvent;
     // Header discovery must keep the original version and coercion behavior.
     if (findSessionTranscriptHeader([raw])) {
       return identity;

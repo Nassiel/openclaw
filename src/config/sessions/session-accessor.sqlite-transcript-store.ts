@@ -62,6 +62,8 @@ import {
 } from "./transcript-payload.js";
 
 type TranscriptAppendOptions = {
+  /** Exact event bytes, including canonical media, prepared by the message append owner. */
+  eventJson?: string;
   allowStoredAlias?: boolean;
   idempotencyKeyMode?: "dedupe" | "preserve-owner" | "relocate-owner";
   onProjectionReconcileNeeded?: () => void;
@@ -161,7 +163,8 @@ function appendTranscriptEvent(
   options: TranscriptAppendOptions,
   cursor: TranscriptAppendCursor = {},
 ): string | false {
-  const persistedEvent = canonicalizeTranscriptEventMedia(event);
+  const persistedEvent =
+    options.eventJson === undefined ? canonicalizeTranscriptEventMedia(event) : event;
   const db = getSessionKysely(database.db);
   const createdAt = readEventTimestamp(persistedEvent) ?? Date.now();
   if (cursor.initialized) {
@@ -197,8 +200,13 @@ function appendTranscriptEvent(
   }
   const seq = cursor.nextSeq ?? readNextTranscriptSeq(database, scope.sessionId);
   cursor.insertEvent ??= createTranscriptEventInserter(database.db, scope.sessionId);
-  const eventJson = JSON.stringify(persistedEvent);
-  cursor.insertEvent({ seq, eventJson, createdAt });
+  const eventJson = options.eventJson ?? JSON.stringify(persistedEvent);
+  cursor.insertEvent({
+    seq,
+    eventJson,
+    createdAt,
+    parsedEvent: options.eventJson === undefined ? undefined : persistedEvent,
+  });
   cursor.nextSeq = seq + 1;
   if (options.touchMutation !== false) {
     touchTranscriptMutationInTransaction(database, scope.sessionId);
