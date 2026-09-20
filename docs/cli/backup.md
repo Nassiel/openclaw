@@ -335,6 +335,12 @@ sources. A custom agent root becomes a distinct `agent` asset only when no
 existing asset covers it; the manifest still records its agent id and root when
 another asset contains it. Missing paths are reported as skipped.
 
+A workspace can contain the state directory, including when the workspace is
+your home directory. A `covered` skip means that the enclosing asset includes
+those files. Repeated registrations of the same agent database resolve to one
+physical owner; distinct owners sharing one database still refuse the backup.
+This also applies with `--no-include-workspace`.
+
 Legacy audit raw archives, import claims, and scrub journals are excluded as raw
 files; recoverable audit sources receive sanitized backup replacements. Their
 `.quarantined-*` variants remain excluded and are retained locally without being

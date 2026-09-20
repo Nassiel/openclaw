@@ -173,10 +173,10 @@ async function discoverBackupSqliteSources(params: {
     await visit(sourcePath);
   }
 
-  for (const database of params.inventory.coreDatabases) {
-    if (database.identity && params.inventory.isIncluded(database.sourcePath)) {
-      snapshotPaths.add(database.sourcePath);
-      discoveredSourcePaths.add(database.sourcePath);
+  for (const sourcePath of params.inventory.coreDatabaseSourcePaths) {
+    if (params.inventory.isIncluded(sourcePath)) {
+      snapshotPaths.add(sourcePath);
+      discoveredSourcePaths.add(sourcePath);
     }
   }
 
@@ -398,7 +398,7 @@ export async function createBackupSqliteSnapshotPlan(params: {
   for (const { archiveSourcePath, canonicalSource } of sources) {
     await captureSource(archiveSourcePath, canonicalSource, genericGroups.get(archiveSourcePath));
   }
-  for (const source of inventory.coreDatabases) {
+  for (const source of coreDatabases) {
     if (source.identity && !sameFileIdentity(source.identity, await fs.stat(source.sourcePath))) {
       throw new Error(`Canonical SQLite path changed after discovery: ${source.sourcePath}`);
     }
