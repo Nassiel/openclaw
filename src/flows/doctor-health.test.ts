@@ -3,7 +3,7 @@ import "./doctor-health.test-support.js";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, aroundEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { assertNoUnmigratedWorkspaceState } from "../agents/workspace-legacy-state.js";
 import { readWorkspaceStateSnapshot } from "../agents/workspace-state-store.js";
 import { runCommandWithRuntime } from "../cli/cli-utils.js";
@@ -20,6 +20,7 @@ import {
 } from "../infra/exec-approvals-sqlite.js";
 import { loadExecApprovalsReadOnly } from "../infra/exec-approvals-store.js";
 import { acquireGatewayLock } from "../infra/gateway-lock.js";
+import { withSqliteReadOnlyWorkerScope } from "../infra/sqlite-readonly-worker.js";
 import {
   resolveStateDatabaseCoordinatorPath,
   resolveStateLifecycleRuntimeDirectory,
@@ -54,6 +55,11 @@ import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import type { DoctorHealthFlowContext } from "./doctor-health-contributions.js";
 import { runDoctorHealthFlow } from "./doctor-health.js";
 
+// Approval migration exercises core security findings, not channel discovery.
+vi.mock("../channels/plugins/read-only.js", () => ({
+  listReadOnlyChannelPluginsForConfig: () => [],
+}));
+
 const postInstallAdvisory: NonNullable<DoctorHealthFlowContext["postInstallDoctorResult"]> = {
   status: "advisory",
   advisory: {
@@ -68,6 +74,7 @@ const support = await import("./doctor-health.test-support.js");
 const { mocks, registerDoctorConfigReceiptTests } = support;
 
 describe("runDoctorHealthFlow", () => {
+  aroundEach((runTest) => withSqliteReadOnlyWorkerScope(runTest));
   afterEach(() => vi.unstubAllEnvs());
 
   beforeEach(() => {

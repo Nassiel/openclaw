@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { expectDefined } from "@openclaw/normalization-core";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, aroundEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { SessionManager } from "../agents/sessions/session-manager.js";
 import {
@@ -32,6 +32,7 @@ import * as nodeSqlite from "../infra/node-sqlite.js";
 import * as replaceFile from "../infra/replace-file.js";
 import { resolveSqliteDatabaseFilePaths } from "../infra/sqlite-files.js";
 import * as sqlitePrivateDirectory from "../infra/sqlite-private-directory.js";
+import { withSqliteReadOnlyWorkerScope } from "../infra/sqlite-readonly-worker.js";
 import * as windowsPrivateDirectory from "../infra/windows-private-directory.js";
 import { ExitError } from "../runtime.js";
 import {
@@ -109,6 +110,9 @@ const autoCleanupTempDirs = useAutoCleanupTempDirTracker(afterEach);
 const lexicalRootTempDir = path.resolve("/tmp");
 const realRootTempDir = canonicalTestPath(lexicalRootTempDir);
 const hasPlatformRootTempAlias = lexicalRootTempDir !== realRootTempDir;
+
+// Reuse child imports within each case; every snapshot still admits and reads fresh state.
+aroundEach((runTest) => withSqliteReadOnlyWorkerScope(runTest));
 
 beforeEach(() => {
   closeOpenClawAgentDatabasesForTest();
