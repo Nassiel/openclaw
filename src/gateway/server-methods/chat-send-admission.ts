@@ -23,6 +23,10 @@ import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { claimAgentRunContext, clearAgentRunContext } from "../../infra/agent-run-registry.js";
 import { retainGatewayRootWorkAdmissionContinuation } from "../../process/gateway-work-admission.js";
 import {
+  isProgressCardRefreshInputProvenance,
+  progressCardRefreshRunProjection,
+} from "../../sessions/input-provenance.js";
+import {
   beginSessionWorkAdmission,
   interruptSessionWorkAdmissions,
   isCompetingSessionWorkAdmissionActive,
@@ -390,6 +394,9 @@ export async function admitChatSend(params: {
       isAbortable: (active) => isReplyRunAbortableForSignal(active.controller.signal),
       kind: "chat-send",
       turnKind,
+      ...(isProgressCardRefreshInputProvenance(request.systemInputProvenance)
+        ? { controlUiVisible: false, projectSessionActive: false }
+        : {}),
       lifecycleGeneration,
     });
   };
@@ -664,6 +671,7 @@ export async function admitChatSend(params: {
     sessionKey,
     sessionId: admittedSessionId,
     lifecycleGeneration,
+    ...progressCardRefreshRunProjection(request.systemInputProvenance),
   });
 
   return {

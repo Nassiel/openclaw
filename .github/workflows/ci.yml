@@ -2259,7 +2259,7 @@ jobs:
       - name: Audit production dependencies
         run: node scripts/pre-commit/pnpm-audit-prod.mjs --audit-level=high
 
-  # Build dist once for Node-relevant changes and share it with downstream jobs.
+  # Build dist once for the built-artifact checks in this job.
   # Keep this overlapping with the fast correctness lanes so green PRs get heavy
   # test/build feedback sooner instead of waiting behind a full `check` pass.
   build-artifacts:
@@ -2331,26 +2331,6 @@ jobs:
             # Their own build remains the available asset validation surface.
             echo "Selected release candidate predates plugins:assets:check; skipping unavailable check."
           fi
-
-      - name: Pack built runtime artifacts
-        run: tar --posix -cf dist-runtime-build.tar.zst --use-compress-program zstdmt dist dist-runtime packages/*/dist
-
-      - name: Upload built runtime artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: dist-runtime-build
-          path: dist-runtime-build.tar.zst
-          retention-days: 1
-
-      - name: Upload bundled plugin asset artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: bundled-plugin-assets
-          path: |
-            extensions/*/src/host/**/.bundle.hash
-            extensions/*/src/host/**/*.bundle.js
-          include-hidden-files: true
-          retention-days: 1
 
       - name: Smoke test CLI launcher help
         run: node openclaw.mjs --help
@@ -3677,6 +3657,7 @@ jobs:
           # The trusted warmer seeds Node 24; other versions use the store.
           dependency-cache: ${{ (matrix.node_version == null || matrix.node_version == '24.x') && vars.OPENCLAW_CI_RUNNER_BACKEND != 'github' && runner.environment == 'self-hosted' && github.event_name != 'workflow_dispatch' && github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'openclaw/openclaw') && 'true' || 'false' }}
           vitest-fs-cache: "true"
+          vitest-worker-cache: ${{ needs.preflight.outputs.frozen_target != 'true' && matrix.pretest_build_mode == null && (matrix.node_version == null || matrix.node_version == '24.x') && 'true' || 'false' }}
           node-compile-cache: "true"
           node-compile-cache-scope: "test"
 
