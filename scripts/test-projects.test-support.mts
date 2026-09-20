@@ -795,6 +795,10 @@ const SOURCE_TEST_TARGETS = new Map([
   ["src/plugins/runtime-sidecar-paths-baseline.ts", RUNTIME_SIDECAR_BASELINE_OWNER_TEST_TARGETS],
   ["src/plugins/runtime-sidecar-paths.ts", RUNTIME_SIDECAR_PATH_CONSUMER_TEST_TARGETS],
   ["ui/config/control-ui-chunking.ts", ["ui/src/app/control-ui-chunking.test.ts"]],
+  [
+    "ui/config/control-ui-boot-modules.json",
+    ["ui/src/app/control-ui-chunking.test.ts", "ui/src/app/vite-config.node.test.ts"],
+  ],
   ["ui/config/control-ui-locales.ts", ["ui/src/app/vite-config.node.test.ts"]],
   [
     "src/plugin-sdk/test-helpers/directory-ids.ts",
@@ -1973,21 +1977,22 @@ function resolveAffectedTestsFromTargetedImportScan(
   return [...new Set(targets)].toSorted((left, right) => left.localeCompare(right));
 }
 
-function getImportGraph(cwd: string) {
-  if (cachedImportGraph && cachedImportGraphCwd === cwd) {
+function getImportGraph(cwd: string, options: ImportGraphOptions = {}) {
+  const cacheKey = `${cwd}\0${options.tooling === true}`;
+  if (cachedImportGraph && cachedImportGraphCwd === cacheKey) {
     return cachedImportGraph;
   }
 
-  const files = listImportGraphFilesForCwd(cwd);
+  const files = listImportGraphFilesForCwd(cwd, options);
   const fileSet = new Set(files);
   const reverseImports = new Map<string, string[]>();
   const testFiles = new Set(
     files.filter((file) => isTestFileTarget(file) && !file.endsWith(".live.test.ts")),
   );
 
-  readImportGraphEdges(cwd, files, fileSet);
+  readImportGraphEdges(cwd, files, fileSet, options.tooling);
   for (const file of files) {
-    const edges = cachedImportGraphEdges.get(`${cwd}\0false\0${file}`);
+    const edges = cachedImportGraphEdges.get(`${cwd}\0${options.tooling === true}\0${file}`);
     if (!edges) {
       continue;
     }
@@ -1999,7 +2004,7 @@ function getImportGraph(cwd: string) {
   }
 
   cachedImportGraph = { reverseImports, testFiles };
-  cachedImportGraphCwd = cwd;
+  cachedImportGraphCwd = cacheKey;
   return cachedImportGraph;
 }
 
@@ -2052,19 +2057,19 @@ export function hasImportGraphImpactOnTargets(
 }
 
 function resolveAffectedTestsFromImportGraph(
-  changedPath: string,
+  changedPath: string | string[],
   cwd: string,
-  options: { forceFull?: boolean } = {},
+  options: ImportGraphOptions & { forceFull?: boolean } = {},
 ) {
-  if (options.forceFull !== true) {
-    const targetedTargets = resolveAffectedTestsFromTargetedImportScan(changedPath, cwd);
+  if (options.forceFull !== true && typeof changedPath === "string") {
+    const targetedTargets = resolveAffectedTestsFromTargetedImportScan(changedPath, cwd, options);
     if (targetedTargets !== null) {
       return targetedTargets;
     }
   }
 
-  const { reverseImports, testFiles } = getImportGraph(cwd);
-  const queue = [changedPath];
+  const { reverseImports, testFiles } = getImportGraph(cwd, options);
+  const queue = typeof changedPath === "string" ? [changedPath] : [...changedPath];
   const seen = new Set(queue);
   const targets = [];
 
@@ -2082,6 +2087,15 @@ function resolveAffectedTestsFromImportGraph(
   }
 
   return [...new Set(targets)].toSorted((left, right) => left.localeCompare(right));
+}
+
+/** Whole-area UI fallback also owns host tests importing UI and changed-source readers. */
+export function resolveControlUiTestConsumers(changedPaths: string[], cwd = process.cwd()) {
+  const uiFiles = listImportGraphFilesForCwd(cwd, { tooling: true }).filter(isControlUiSourcePath);
+  return uniqueOrdered([
+    ...resolveAffectedTestsFromImportGraph(uiFiles, cwd, { forceFull: true, tooling: true }),
+    ...resolveDirectToolingReferenceTests(changedPaths, cwd),
+  ]).filter((file) => !isControlUiSourcePath(file));
 }
 
 function resolveVitestConfigTargetKind(relative: string) {
@@ -3296,20 +3310,23 @@ function resolveGithubYamlGuardTargets(changedPath: string) {
   return null;
 }
 
-function resolveDirectToolingReferenceTests(changedPath: string, cwd: string) {
-  return (
-    listImportGraphGrepMatches(cwd, [changedPath], { tooling: true, testFilesOnly: true }).get(
-      changedPath,
-    ) ?? []
-  )
-    .filter(
-      ({ file, references }) =>
-        file !== "test/scripts/test-projects.test.ts" &&
-        !file.endsWith(".live.test.ts") &&
-        isTestFileTarget(file) &&
-        references.has(changedPath),
-    )
-    .map(({ file }) => file);
+function resolveDirectToolingReferenceTests(changedPath: string | string[], cwd: string) {
+  const changedPaths = typeof changedPath === "string" ? [changedPath] : changedPath;
+  const matches = listImportGraphGrepMatches(cwd, changedPaths, {
+    tooling: true,
+    testFilesOnly: true,
+  });
+  return changedPaths.flatMap((filePath) =>
+    (matches.get(filePath) ?? [])
+      .filter(
+        ({ file, references }) =>
+          file !== "test/scripts/test-projects.test.ts" &&
+          !file.endsWith(".live.test.ts") &&
+          isTestFileTarget(file) &&
+          references.has(filePath),
+      )
+      .map(({ file }) => file),
+  );
 }
 
 function resolveToolingTestTargets(changedPath: string, cwd = process.cwd()) {

@@ -1670,6 +1670,7 @@ jobs:
             }
             changedNodeTestShards = changedNodeTestPlan.createChangedNodeTestShards(changedPaths, {
               runnerBackend: runnerProfile,
+              onFallback: (reason) => console.log(`Node test plan broad fallback: ${reason}`),
               dedicatedContractShards: [...pluginContractShards, ...channelContractShards],
               dedicatedUiE2e: runUiE2e && !compatibilityTarget,
               dedicatedMaxLinesRatchet: checksFastCoreTasks.some(({ task }) => task === "baseline-ratchets"),
@@ -1677,6 +1678,8 @@ jobs:
             if (changedNodeTestShards === null) {
               changedExtensionFallbackShards =
                 changedNodeTestPlan.createChangedExtensionFallbackShards(changedPaths);
+            } else {
+              console.log(`Node test plan changed-set: ${changedNodeTestShards.filter((shard) => !shard.requiresDist).length} rows`);
             }
           }
           // Heavy packaging lanes run only when the diff touches surfaces they
