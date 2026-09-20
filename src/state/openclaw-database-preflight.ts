@@ -3,7 +3,6 @@ import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { listAgentIds } from "../agents/agent-scope-config.js";
 import { resolveStateDir } from "../config/paths.js";
-import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import { resolveConfiguredAgentDatabaseCandidatePaths } from "../config/sessions/targets.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
@@ -23,10 +22,7 @@ import {
   hasStateDatabaseSourceExclusion,
   prepareStateDatabaseCanonicalMutation,
 } from "../infra/state-database-coordinator.js";
-import {
-  discoverAgentDatabaseMigrationTargets,
-  type PreparedAgentDatabaseMigrationDiscovery,
-} from "../infra/state-migrations.media-persistence-targets.js";
+import type { PreparedAgentDatabaseMigrationDiscovery } from "../infra/state-migrations.media-persistence-targets.js";
 import {
   AgentDatabaseAdmissionError,
   canIsolateAgentDatabase,
@@ -34,14 +30,18 @@ import {
   recordAgentDatabaseAdmissions,
 } from "./agent-database-admission.js";
 import { getAgentDatabaseStartupAdmission } from "./agent-database-startup.js";
+import {
+  readRetainedAgentDeletionsFromDatabase,
+  type RetainedAgentDeletion,
+} from "./agent-deletion-journal.read.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "./openclaw-agent-db-contract.js";
-import { isPersistentOpenClawAgentDatabasePath } from "./openclaw-agent-db-registry.js";
 import { readAgentDatabasePreflightTargets } from "./openclaw-agent-db-registry.read.js";
 import type { AgentSchemaInspection } from "./openclaw-agent-schema-inspection.js";
 import {
   preflightAgentDatabasesBounded,
   type AgentDatabasePreflightStats,
 } from "./openclaw-database-preflight-agent-scheduler.js";
+import { collectAgentDatabasePreflightTargets } from "./openclaw-database-preflight-targets.js";
 import {
   describeDeferredStateSchemaPublication,
   formatIndeterminateDatabaseReadiness,
@@ -352,6 +352,7 @@ export async function preflightOpenClawDatabaseSchemas(options: {
   const priorRefusals = startup?.captureRefusals(options.env);
   const statePath = path.resolve(resolveOpenClawStateSqlitePath(options.env));
   let registeredDatabases: ReturnType<typeof readAgentDatabasePreflightTargets> = [];
+  let retainedDeletions: RetainedAgentDeletion[] = [];
   let stateDatabase: DatabaseSync | undefined;
   let closeStateSchemaReadAdmission: (() => void) | undefined;
   let stateSnapshot: Awaited<ReturnType<typeof prepareSqliteReadOnlyLocation>> | undefined;
@@ -465,6 +466,7 @@ export async function preflightOpenClawDatabaseSchemas(options: {
       }
       try {
         registeredDatabases = readAgentDatabasePreflightTargets(stateDatabase, statePath);
+        retainedDeletions = readRetainedAgentDeletionsFromDatabase(stateDatabase);
       } catch (error) {
         result.indeterminate.push({
           kind: "state",
@@ -504,49 +506,17 @@ export async function preflightOpenClawDatabaseSchemas(options: {
   if (options.scope === "state") {
     return result;
   }
-  let agentTargets = registeredDatabases;
-  if (options.configuredAgentDatabaseTargets !== undefined) {
-    // Doctor must resolve configured paths from these read-only facts: the
-    // runtime registry reader rejects the very legacy schema Doctor repairs.
-    const configuredTargets =
-      typeof options.configuredAgentDatabaseTargets === "function"
-        ? options.configuredAgentDatabaseTargets(registeredDatabases)
-        : options.configuredAgentDatabaseTargets;
-    const discovery = discoverAgentDatabaseMigrationTargets({
-      env: options.env,
-      configuredAgentDatabaseTargets: configuredTargets,
-      registeredAgentDatabases: registeredDatabases,
-    });
-    options.onAgentDatabaseDiscovery?.({
-      stateDir: resolveStateDir(options.env),
-      configuredAgentDatabaseTargets: configuredTargets,
-      registeredAgentDatabases: registeredDatabases,
-      discovery,
-    });
-    agentTargets = discovery.targets;
-    for (const failure of discovery.failures) {
-      result.indeterminate.push({ kind: "agent", ...failure });
-    }
+  const { candidates, isRetainedPath, failures } = collectAgentDatabasePreflightTargets({
+    ...options,
+    registeredDatabases,
+    retainedDeletions,
+    inspectCandidateOwners: Boolean(
+      options.requireStartupMigrationReadiness || options.agentAdmissionConfig,
+    ),
+  });
+  for (const failure of failures) {
+    result.indeterminate.push({ kind: "agent", ...failure });
   }
-  // An occupied custom-store candidate can have a newer, unreadable owner.
-  // Check its version without promoting it into an owned migration target.
-  const candidates: Array<{ agentId?: string; path: string }> = [
-    ...agentTargets,
-    // Migration discovery intentionally declines ownership of foreign registry
-    // paths. Preflight remains read-only, so preserve their downgrade guard.
-    ...(options.configuredAgentDatabaseTargets !== undefined
-      ? registeredDatabases.filter((database) =>
-          isPersistentOpenClawAgentDatabasePath(database.path, options.env),
-        )
-      : []),
-    ...(options.configuredAgentDatabaseCandidatePaths ?? []).map((candidatePath) => ({
-      agentId:
-        options.requireStartupMigrationReadiness || options.agentAdmissionConfig
-          ? resolveUnsuffixedSqliteTargetFromSessionStorePath(candidatePath).agentId
-          : undefined,
-      path: candidatePath,
-    })),
-  ];
   const inspectionTargets = candidates
     .map((row) => ({
       agentId: row.agentId,
@@ -579,6 +549,9 @@ export async function preflightOpenClawDatabaseSchemas(options: {
       try {
         // Preserve SQLite's filesystem traversal through symlink/.. locators.
         const realAgentPath = realpathSync.native(agentPath);
+        if (row.agentId === undefined && isRetainedPath(realAgentPath)) {
+          return;
+        }
         if (!claimAgentTarget(realAgentPath, row.agentId)) {
           return;
         }
