@@ -175,10 +175,16 @@ export function createMainRefreshFixture(
     author: { login: "fixture" },
     baseRefName: "main",
     baseRefOid: main,
+    baseRepository: {
+      id: "fixture-repo",
+      databaseId: 123,
+      nameWithOwner: "fixture/repo",
+      url: "https://github.com/fixture/repo",
+    },
     headRefName: "topic",
     headRefOid: head,
     headRepository: { name: "repo", nameWithOwner: "fixture/repo", url: origin },
-    headRepositoryOwner: { login: "fixture" },
+    headRepositoryOwner: { login: "fixture", is_bot: false },
     changedFiles: 1,
     additions: 1,
     deletions: 1,
@@ -303,6 +309,7 @@ function runGit(args, input) {
     instrumentedGit,
     prelude +
       `
+event({ kind: 'git-runtime', args });
 const prFetch = args.includes('fetch') && args.some(arg =>
   arg.startsWith('pull/42/head') ||
   arg.replace(/^\\+/, '').split(':')[0] === control.metadata.headRefOid
@@ -379,17 +386,25 @@ if (mainFetch && result.status === 0) {
 process.exit(result.status ?? 1);
 `,
   );
-  // Scan every argument like the Node shim, including values after -C/-c prefixes.
-  // Unobserved queries can execute real Git directly without starting another Node process.
+  // Only stateful faults need Node. Record observation-only decisions in the
+  // shell so repeated diff/ref guards do not boot another runtime for real Git.
   writeFileSync(
     join(bin, "git"),
     `#!/bin/sh
+instrument=false
+decision=false
 for arg in "$@"; do
   case "$arg" in
-    fetch|merge-base|diff|checkout|update-ref|push)
-      exec ${shellQuote(process.execPath)} ${shellQuote(instrumentedGit)} "$@" ;;
+    fetch|checkout|push) instrument=true ;;
+    merge-base|diff|update-ref) decision=true ;;
   esac
 done
+if [ "$instrument" = true ]; then
+  exec ${shellQuote(process.execPath)} ${shellQuote(instrumentedGit)} "$@"
+fi
+if [ "$decision" = true ]; then
+  jq -cn --args '{kind:"git-decision",args:$ARGS.positional}' -- "$@" >> ${shellQuote(eventsFile)} || exit
+fi
 exec ${shellQuote(realGit)} "$@"
 `,
   );
@@ -416,8 +431,11 @@ let value;
 if (args[0] === 'auth') process.exit(1);
 if (args[0] === 'pr' && args[1] === 'view') {
   value = control.metadata;
-} else if (args[0] === 'pr' && args[1] === 'merge') {
-  if (!args.includes('--match-head-commit') || !args.includes(control.metadata.headRefOid)) {
+} else if (args[0] === 'api' && args.includes('graphql') && args.includes('--input')) {
+  const payload = JSON.parse(readFileSync(0, 'utf8'));
+  const input = payload.variables.input;
+  if (input.expectedHeadOid !== control.metadata.headRefOid || input.pullRequestId !== control.metadata.id ||
+      input.mergeMethod !== 'SQUASH' || Object.hasOwn(input, 'commitHeadline')) {
     throw new Error('Unpinned synthetic merge');
   }
   if (args.includes('--auto')) {
@@ -428,8 +446,7 @@ if (args[0] === 'pr' && args[1] === 'view') {
   }
   const parent = runGit(['-C', origin, 'rev-parse', 'refs/heads/main']);
   const tree = runGit(['-C', origin, 'merge-tree', '--write-tree', parent, control.metadata.headRefOid]);
-  const bodyIndex = args.indexOf('--body-file');
-  const body = bodyIndex < 0 ? '' : readFileSync(args[bodyIndex + 1], 'utf8');
+  const body = input.commitBody;
   const landed = runGit(['-C', origin, '-c', 'user.name=Fixture', '-c',
     'user.email=fixture@example.invalid', 'commit-tree', tree, '-p', parent], 'Fixture squash\\n\\n' + body);
   runGit(['-C', origin, 'update-ref', 'refs/heads/main', landed, parent]);
@@ -571,15 +588,7 @@ if (args[0] === 'pr' && args[1] === 'view') {
       status: file.changeType === 'DELETED' ? 'removed' : file.changeType.toLowerCase(),
     }))];
   } else if (endpoint === 'repos/fixture/repo/pulls/' + control.metadata.number) {
-    let baseSha = control.metadata.baseRefOid;
-    // The hosted verifier's explicit GET follows the two preparation snapshots.
-    const hostedGateRead = JSON.stringify(args) === JSON.stringify(['api', endpoint, '--method', 'GET']);
-    if (control.remoteOnlyBase && hostedGateRead) {
-      baseSha = control.remoteOnlyBase;
-      runGit(['-C', origin, 'update-ref', 'refs/heads/main', baseSha]);
-      const localObject = spawnSync(git, ['-C', canonical, 'cat-file', '-e', baseSha]);
-      event({ kind: 'remote-only-base', sha: baseSha, localObject: localObject.status === 0 });
-    }
+    const baseSha = control.remoteOnlyBase || control.metadata.baseRefOid;
     value = {
       number: control.metadata.number,
       node_id: control.metadata.id,
@@ -608,7 +617,7 @@ if (args[0] === 'pr' && args[1] === 'view') {
       } },
       base: { ref: control.metadata.baseRefName, sha: baseSha, repo: {
         id: control.metadata.isCrossRepository ? 456 : 123,
-        node_id: 'fixture-repo', full_name: 'fixture/repo',
+        node_id: 'fixture-repo', full_name: 'fixture/repo', html_url: 'https://github.com/fixture/repo',
       } },
     };
   } else if (endpoint.endsWith('/actions/workflows/ci.yml/runs')) {
@@ -622,6 +631,13 @@ if (args[0] === 'pr' && args[1] === 'view') {
   } else if (endpoint === 'repos/fixture/repo/actions/runs/1') {
     value = { run_attempt: 1, status: 'in_progress', conclusion: null };
   } else if (/^repos\\/(fixture\\/repo|openclaw\\/openclaw)\\/actions\\/runs\\?/.test(endpoint)) {
+    if (control.remoteOnlyBase && !control.remoteOnlyBaseMoved) {
+      runGit(['-C', origin, 'update-ref', 'refs/heads/main', control.remoteOnlyBase]);
+      const localObject = spawnSync(git, ['-C', canonical, 'cat-file', '-e', control.remoteOnlyBase]);
+      event({ kind: 'remote-only-base', sha: control.remoteOnlyBase, localObject: localObject.status === 0 });
+      control.remoteOnlyBaseMoved = true;
+      writeFileSync(controlFile, JSON.stringify(control));
+    }
     if (control.moveAtGate) {
       runGit(['-C', origin, 'update-ref', 'refs/heads/main', ${JSON.stringify(gateMain)}]);
     }

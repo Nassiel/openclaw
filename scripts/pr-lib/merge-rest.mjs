@@ -163,6 +163,7 @@ function readPullRequest(repo, authority, pr) {
       record.base.ref === "main" &&
       OID.test(record.base.sha ?? "") &&
       OID.test(record.head?.sha ?? "") &&
+      nonemptyString(record.head?.ref) &&
       ["open", "closed"].includes(record.state) &&
       typeof record.merged === "boolean" &&
       typeof record.draft === "boolean" &&
@@ -191,6 +192,7 @@ function pullRequest(record) {
     url: record.html_url,
     state: record.merged ? "MERGED" : record.state.toUpperCase(),
     headRefOid: record.head.sha,
+    headRefName: record.head.ref,
     baseRefName: record.base.ref,
     isDraft: record.draft,
     mergeCommit: record.merged ? { oid: record.merge_commit_sha } : null,
