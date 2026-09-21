@@ -1,6 +1,7 @@
 import { DatabaseSync, StatementSync } from "node:sqlite";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { describe, expect, it, vi } from "vitest";
+import { observeSqliteReadSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { getRuntimeConfig } from "../config/io.js";
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { deleteSessionEntryLifecycle } from "../config/sessions.js";
@@ -485,19 +486,13 @@ it.each(["local", "repository"] as const)(
         await f.subscribe([sessionKey], f.addReader(`warm-reader-${index}`).client);
       }
       await f.subscriptions.pollNow();
-      const statements = (["get", "all", "iterate"] as const).map((method) =>
-        vi.spyOn(StatementSync.prototype, method),
-      );
+      const statements = observeSqliteReadSql(StatementSync.prototype);
       f.load.mockClear();
       try {
         for (let index = 0; index < 3; index++) {
           await f.subscriptions.pollNow();
         }
-        const queries = statements.flatMap((statement) =>
-          statement.mock.contexts.map((context) =>
-            context instanceof StatementSync ? context.sourceSQL.toLowerCase() : "",
-          ),
-        );
+        const queries = statements.queries.map((sql) => sql.toLowerCase());
         expect({
           sessionReads: queries.filter((sql) => sql.includes("session_nodes")).length,
           repositoryReads: queries.filter((sql) => sql.includes("session_repository_workspaces"))
@@ -509,9 +504,7 @@ it.each(["local", "repository"] as const)(
         expect(f.load).toHaveBeenCalledTimes(3);
         expect(frames(f.socket)).toEqual([expectedFrame(sessionKey)]);
       } finally {
-        for (const statement of statements) {
-          statement.mockRestore();
-        }
+        statements.restore();
       }
       if (repository) {
         const previousCache = f.load.mock.calls[0]?.[1];
@@ -562,19 +555,13 @@ it("keeps warm default-loader SQL constant as readers join without a native row 
       await f.subscribe();
       await f.subscriptions.pollNow();
       const measure = async () => {
-        const statements = (["get", "all", "iterate"] as const).map((method) =>
-          vi.spyOn(StatementSync.prototype, method),
-        );
+        const statements = observeSqliteReadSql(StatementSync.prototype);
         const executions = vi.spyOn(DatabaseSync.prototype, "exec");
         try {
           for (let index = 0; index < 3; index++) {
             await f.subscriptions.pollNow();
           }
-          const queries = statements.flatMap((statement) =>
-            statement.mock.contexts.map((context) =>
-              context instanceof StatementSync ? context.sourceSQL.toLowerCase() : "",
-            ),
-          );
+          const queries = statements.queries.map((sql) => sql.toLowerCase());
           return {
             sessionReads: queries.filter((sql) => sql.includes("session_nodes")).length,
             repositoryReads: queries.filter((sql) => sql.includes("session_repository_workspaces"))
@@ -583,9 +570,7 @@ it("keeps warm default-loader SQL constant as readers join without a native row 
           };
         } finally {
           executions.mockRestore();
-          for (const statement of statements) {
-            statement.mockRestore();
-          }
+          statements.restore();
         }
       };
       const oneReader = await measure();
