@@ -50,6 +50,7 @@ import {
   readGitHubPublicationRequest,
   type GitHubPublicationRow as PublicationRow,
 } from "./github-publication-store.js";
+import { assertGitHubPublicationWorkflowChangesAllowed } from "./github-publication-workflows.js";
 import { createRepositoryGitHubPublicationCoordinator } from "./github-repository-publication.js";
 import { loadGatewaySessionEntryReadOnly } from "./session-utils.js";
 import type {
@@ -327,24 +328,27 @@ export function createGitHubPublicationCoordinator(params: {
           let effect: SessionGitHubPublicationResult["effect"];
           let dispatched = false;
           let requester: GitHubPublicationRequester | undefined;
+          const getRequester = () =>
+            (requester ??= restoreGitHubPublicationRequester(
+              readGitHubPublicationSessionLifecycle({
+                publicationKind: "shared",
+                requestId: claimed.request_id,
+              })?.requester_authority_json,
+              { sessionKey: claimed.session_key, agentId: claimed.agent_id },
+              params.getCommittedRuntimeConfig,
+            ));
           try {
             assertOwned();
             return await executeGitHubPublication({
               initial: claimed,
               validateCustody,
+              assertWorkflowChangesAllowed: () =>
+                assertGitHubPublicationWorkflowChangesAllowed(getRequester()),
               validateAuthority: () => {
                 if (!validateCustody()) {
                   return false;
                 }
-                requester ??= restoreGitHubPublicationRequester(
-                  readGitHubPublicationSessionLifecycle({
-                    publicationKind: "shared",
-                    requestId: claimed.request_id,
-                  })?.requester_authority_json,
-                  { sessionKey: claimed.session_key, agentId: claimed.agent_id },
-                  params.getCommittedRuntimeConfig,
-                );
-                requester.assertCurrent();
+                getRequester().assertCurrent();
                 assertRequester?.();
                 return true;
               },

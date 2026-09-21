@@ -37,6 +37,7 @@ import {
   matchesGitHubPublicationIdentityRow,
   projectGitHubPublicationResult,
 } from "./github-publication-store.js";
+import { assertGitHubPublicationWorkflowChangesAllowed } from "./github-publication-workflows.js";
 import {
   executeRepositoryGitHubPublication,
   prepareRepositoryGitHubPublicationTarget,
@@ -195,17 +196,18 @@ export function createRepositoryGitHubPublicationCoordinator(params: {
       throw new Error("My GitHub publication owner changed.");
     }
     let requester: GitHubPublicationRequester | undefined;
+    const getRequester = () =>
+      (requester ??= restoreGitHubPublicationRequester(
+        row.requester_authority_json,
+        { sessionKey: row.session_key, agentId: row.agent_id },
+        getCommittedRuntimeConfig,
+      ));
     const assertExecution = () => {
       // Classify source loss before personal preparation can turn it into a retryable error.
       assertReceiptOwner(row);
       assertCustody();
       if (row.owner_profile_id === null) {
-        requester ??= restoreGitHubPublicationRequester(
-          row.requester_authority_json,
-          { sessionKey: row.session_key, agentId: row.agent_id },
-          getCommittedRuntimeConfig,
-        );
-        requester.assertCurrent();
+        getRequester().assertCurrent();
       }
       context.assertCurrent?.();
       bound?.assertCurrent();
@@ -234,6 +236,9 @@ export function createRepositoryGitHubPublicationCoordinator(params: {
         snapshot: captured.snapshot,
         snapshotRoot: captured.snapshotRoot,
         storePath: loaded.storePath,
+        assertWorkflowChangesAllowed: bound
+          ? assertExecution
+          : () => assertGitHubPublicationWorkflowChangesAllowed(getRequester()),
         assertWorkspace: () => {
           assertReceiptOwner(row);
         },
