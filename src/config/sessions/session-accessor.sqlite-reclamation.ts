@@ -267,6 +267,7 @@ export function reclaimSqliteSessionInTransaction(
         maxPages: plan.maxPages,
         beforeMutation: callbacks.beforeMutation,
         onCommit: () => callbacks.onCommit?.(database),
+        onCommitted: callbacks.settleCommit,
       }),
     };
   }
@@ -392,6 +393,7 @@ export function reclaimSqliteSessionInTransaction(
     return { archivedTranscripts: deleted ? archivedTranscripts : [], deleted };
   }, plan.databaseOptions);
   if (plan.kind === "history-eviction" && value.deleted) {
+    callbacks.settleCommit?.();
     reclaimSqliteFreePagesBestEffort(plan.databaseOptions);
   }
   return { kind: plan.kind, value };

@@ -142,7 +142,11 @@ test.each(["reclaim", "worker-close"] as const)(
             if (recovery === "reclaim") {
               reader.exec("ROLLBACK");
               const completed = await reclaim(7);
-              expect(completed.vacuumPagesRequested).toBe(7);
+              expect(completed).toMatchObject({
+                checkpointCompleted: true,
+                checkpointIncomplete: 0,
+                vacuumPagesRequested: 7,
+              });
               expect(original - freePages()).toBeGreaterThan(0);
               expect(original - freePages()).toBeLessThanOrEqual(7);
             }

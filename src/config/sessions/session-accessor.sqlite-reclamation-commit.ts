@@ -15,6 +15,7 @@ const REJECTED = 2;
 const COMMITTING = 3;
 const SETTLED = 4;
 const REQUESTED = 5;
+const PARENT_RELEASED = 6;
 
 /** Preserve the reclamation owner's context when an unrelated synchronous writer helps. */
 export async function withSqliteReclamationAuthorization<T>(
@@ -98,8 +99,29 @@ export function waitForSqliteReclamationCommit(
 export function markSqliteReclamationSettled(buffer: SharedArrayBuffer | undefined): void {
   if (buffer) {
     const shared = new Int32Array(buffer);
-    Atomics.store(shared, 0, SETTLED);
+    let state = Atomics.load(shared, 0);
+    while (state !== PARENT_RELEASED) {
+      const previous = Atomics.compareExchange(shared, 0, state, SETTLED);
+      if (previous === state) {
+        break;
+      }
+      state = previous;
+    }
     Atomics.notify(shared, 0);
+  }
+}
+
+/** A joining parent writer can outlive COMMIT and would block the next checkpoint. */
+export function waitForSqliteReclamationSettlement(buffer: SharedArrayBuffer): void {
+  const shared = new Int32Array(buffer);
+  markSqliteReclamationSettled(buffer);
+  const deadline = performance.now() + COMMIT_DECISION_TIMEOUT_MS;
+  while (Atomics.load(shared, 0) !== PARENT_RELEASED) {
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) {
+      throw new Error("SQLite session reclamation parent did not release its settlement barrier");
+    }
+    Atomics.wait(shared, 0, SETTLED, remaining);
   }
 }
 
@@ -177,6 +199,11 @@ function authorizeSqliteReclamationCommit(
       // Worker's result owns success and all postcommit publication must continue.
       if (settled) {
         recoveredErrors.push(error);
+      }
+    } finally {
+      if (settled && (!database?.isOpen || !database.isTransaction)) {
+        Atomics.store(shared, 0, PARENT_RELEASED);
+        Atomics.notify(shared, 0);
       }
     }
   }
