@@ -5,28 +5,19 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { createWorkspaceStateIdentity } from "../agents/workspace-state-identity.js";
 import type { ExecutionIdentityInspectionQuery } from "../audit/execution-identity-inspection.types.js";
 import { acquireStateDatabaseHandleExclusion } from "../infra/state-database-coordinator.js";
-import type {
-  OwnedWorkerTask,
-  WorkerTaskInput,
-  WorkerTaskOptions,
-} from "../infra/worker-task-pool.types.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { createOpenClawStateReadTransport } from "./openclaw-state-read-worker.js";
-import type {
-  OpenClawStateReadReply,
-  OpenClawStateReadRequest,
-} from "./openclaw-state-read.types.js";
+import {
+  createStateReadTaskQueue,
+  type StateReadTaskRunner,
+} from "./openclaw-state-read-worker.test-support.js";
+import type { OpenClawStateReadReply } from "./openclaw-state-read.types.js";
 import { captureOpenClawStateWorkerContext } from "./openclaw-state-worker-context.js";
 import { encodeOpenClawStateWorkerError } from "./openclaw-state-worker-error.js";
 
-type ReadTask = OwnedWorkerTask<OpenClawStateReadReply>;
-type RunTask = (
-  input: WorkerTaskInput<OpenClawStateReadRequest>,
-  options: WorkerTaskOptions<OpenClawStateReadRequest>,
-) => ReadTask;
 const mock = vi.hoisted(() => ({
   create: vi.fn(),
-  runTask: vi.fn<RunTask>(),
+  runTask: vi.fn<StateReadTaskRunner>(),
   closePool: vi.fn<() => Promise<void>>(),
   closeResources: vi.fn<(key?: string) => Promise<void>>(),
   selectSqlite:
@@ -87,41 +78,7 @@ function source(name = "source.sqlite") {
   return { root, pathname, options: { path: pathname, env: { OPENCLAW_STATE_DIR: root } } };
 }
 
-function queueTask(dispatchReady: Promise<void> = Promise.resolve()) {
-  const result = createDeferredCore<OpenClawStateReadReply>();
-  const submitted = createDeferredCore<WorkerTaskOptions<OpenClawStateReadRequest>>();
-  const captured = createDeferredCore<OpenClawStateReadRequest>();
-  const close = vi.fn<ReadTask["close"]>().mockResolvedValue();
-  const handle: ReadTask = { result: result.promise, close };
-  let detach = () => {};
-  mock.runTask.mockImplementationOnce((input, options) => {
-    const signal = options.signal;
-    const abort = () => result.reject(signal?.reason);
-    signal?.addEventListener("abort", abort, { once: true });
-    detach = () => signal?.removeEventListener("abort", abort);
-    if (signal?.aborted) {
-      abort();
-    }
-    submitted.resolve(options);
-    void dispatchReady
-      .then(async () => {
-        const request = typeof input === "function" ? await input() : input;
-        captured.resolve(request);
-      })
-      .catch((error: unknown) => {
-        captured.reject(error);
-        result.reject(error);
-      });
-    return handle;
-  });
-  void captured.promise.catch(() => undefined);
-  taskCleanups.push(() => {
-    detach();
-    close.mockReset().mockResolvedValue();
-    result.reject(new Error("test task cleanup"));
-  });
-  return { result, submitted: submitted.promise, captured: captured.promise, close };
-}
+const queueTask = createStateReadTaskQueue(mock.runTask, taskCleanups);
 
 const emptyReply: OpenClawStateReadReply = {
   ok: true,
@@ -759,6 +716,66 @@ it.each(["skills.library.descriptions", "skills.library.manifests"] as const)(
       expect((await task.captured).command).toEqual({ type, input: expected });
       task.result.resolve(returned);
       expect(await result).toEqual(returned);
+    } finally {
+      dispatch.resolve();
+      task.result.resolve(returned);
+      await Promise.allSettled([result]);
+    }
+  },
+);
+
+it.each(["single", "union"] as const)(
+  "captures and charges %s task selectors while retaining original admission",
+  async (shape) => {
+    const { options } = source();
+    const context = captureOpenClawStateWorkerContext(options);
+    const selector = "任务🦞".repeat(512);
+    const scope = {
+      taskId: selector,
+      flowId: selector,
+      runId: selector,
+      childSessionKey: selector,
+    };
+    const input = shape === "single" ? scope : [scope, { taskId: selector }];
+    const expected = structuredClone(input);
+    const dispatch = createDeferredCore();
+    const task = queueTask(dispatch.promise);
+    const result = executeExistingOpenClawStateRead(
+      {},
+      { type: "tasks.mutationSnapshot", input },
+      { context },
+    );
+    const returned: OpenClawStateReadReply = {
+      ok: true,
+      type: "tasks.mutationSnapshot",
+      sourceAdmitted: true,
+      snapshot: { tasks: new Map(), deliveryStates: new Map() },
+    };
+    try {
+      const submitted = await task.submitted;
+      scope.taskId = "changed task";
+      scope.flowId = "changed flow";
+      scope.runId = "changed run";
+      scope.childSessionKey = "changed child";
+      if (Array.isArray(input)) {
+        input.push({ taskId: "added while queued" });
+      }
+      options.env.OPENCLAW_STATE_DIR = "/changed-after-capture";
+      expect(submitted.inputBytes).toBeGreaterThanOrEqual(
+        Buffer.byteLength(selector) * (shape === "single" ? 4 : 5),
+      );
+      dispatch.resolve();
+      const request = await task.captured;
+      expect(request.command).toEqual({ type: "tasks.mutationSnapshot", input: expected });
+      expect(request.databasePath).toBe(context.admission.databasePath);
+      expect(request.context.environment).toEqual(context.environment);
+      const failure = new Error("Original task admission retired");
+      vi.spyOn(context.admission, "assertCurrent").mockImplementation(() => {
+        throw failure;
+      });
+      const rejected = expect(result).rejects.toThrow(failure.message);
+      task.result.resolve(returned);
+      await rejected;
     } finally {
       dispatch.resolve();
       task.result.resolve(returned);

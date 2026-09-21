@@ -19,6 +19,7 @@ import type {
   TaskExecutionRestoreStore,
   TaskRegistryMutationScope,
   TaskRegistryObserverEvent,
+  TaskRegistryStoreSnapshot,
 } from "./task-registry.store.types.js";
 import type { TaskDeliveryState, TaskRecord, TaskRuntime } from "./task-registry.types.js";
 
@@ -130,7 +131,7 @@ type TaskRegistryProcessState = {
   taskIdsByOwnerKey: Map<string, Set<string>>;
   taskIdsByParentFlowId: Map<string, Set<string>>;
   taskIdsByRelatedSessionKey: Map<string, Set<string>>;
-  tasksWithPendingDelivery: Set<string>;
+  tasksWithPendingDelivery: Map<string, symbol>;
   /** Ephemeral live activity is intentionally discarded on gateway restart. */
   taskActivityByTaskId: Map<string, TaskActivityOverlayState>;
   /** Bounded presentation work; completion and restart recovery never depend on it. */
@@ -167,7 +168,7 @@ export function getTaskRegistryProcessState(): TaskRegistryProcessState {
     taskIdsByOwnerKey: new Map<string, Set<string>>(),
     taskIdsByParentFlowId: new Map<string, Set<string>>(),
     taskIdsByRelatedSessionKey: new Map<string, Set<string>>(),
-    tasksWithPendingDelivery: new Set<string>(),
+    tasksWithPendingDelivery: new Map<string, symbol>(),
     taskActivityByTaskId: new Map<string, TaskActivityOverlayState>(),
     taskProgressBatches: new Map<string, TaskProgressBatch>(),
     runOwners: new Map<string, TaskRunOwner>(),
@@ -294,6 +295,33 @@ export function addRelatedSessionKeyIndex(taskId: string, task: TaskSessionKeys)
 export function deleteRelatedSessionKeyIndex(taskId: string, task: TaskSessionKeys) {
   for (const sessionKey of getTaskRelatedSessionIndexKeys(task)) {
     deleteIndexedKey(indexState.taskIdsByRelatedSessionKey, sessionKey, taskId);
+  }
+}
+
+export function clearTaskRegistryProjectionRows(): void {
+  indexState.tasks.clear();
+  indexState.taskDeliveryStates.clear();
+  indexState.taskIdsByRunId.clear();
+  indexState.taskIdsByOwnerKey.clear();
+  indexState.taskIdsByParentFlowId.clear();
+  indexState.taskIdsByRelatedSessionKey.clear();
+}
+
+export function installRestoredTaskRegistrySnapshot(
+  snapshot: TaskRegistryStoreSnapshot,
+  committed = true,
+): void {
+  // Replace rows in snapshot order without disturbing live execution owners.
+  clearTaskRegistryProjectionRows();
+  for (const [id, task] of snapshot.tasks) {
+    indexState.tasks.set(id, task);
+    addTaskIndexes(task);
+  }
+  for (const [id, delivery] of snapshot.deliveryStates) {
+    indexState.taskDeliveryStates.set(id, delivery);
+  }
+  if (committed) {
+    recordTaskRegistryProjectionWrite("snapshot");
   }
 }
 

@@ -24,6 +24,7 @@ import {
   acquireStateDatabaseHandleLease,
   hasStateDatabaseSourceExclusion,
   prepareStateDatabaseCanonicalMutation,
+  withStateDatabaseCoordinatorRuntimeDirectory,
 } from "../infra/state-database-coordinator.js";
 import { getAsyncWorkSignal } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
@@ -73,6 +74,7 @@ import type {
   RetainedReadScope,
 } from "./openclaw-state-read.types.js";
 import { captureOpenClawStateWorkerContext } from "./openclaw-state-worker-context.js";
+import type { OpenClawStateWorkerContext } from "./openclaw-state-worker-context.types.js";
 
 const artifactPreservingReads = resolveGlobalSingleton(
   Symbol.for("openclaw.artifactPreservingStateReads"),
@@ -405,17 +407,26 @@ export function executeExistingOpenClawStateRead(
   command: OpenClawStateReadCommand,
   readOptions: OpenClawStateReadOptions = {},
 ): Promise<OpenClawStateReadReply | undefined> {
-  return mapOpenClawStateReadError(readOptions.mapError, (receipt) =>
-    executeRetainedOpenClawStateRead(options, command, receipt),
-  );
+  const { context } = readOptions;
+  context?.admission.assertCurrent();
+  const read = () =>
+    mapOpenClawStateReadError(readOptions.mapError, (receipt) =>
+      executeRetainedOpenClawStateRead(options, command, receipt, context),
+    );
+  const run = () =>
+    context
+      ? withStateDatabaseCoordinatorRuntimeDirectory(context.coordinatorRuntime, read)
+      : read();
+  return context?.runInCapturedSchemaScope ? context.runInCapturedSchemaScope(run) : run();
 }
 
 function executeRetainedOpenClawStateRead(
   options: OpenClawStateDatabaseOptions,
   command: OpenClawStateReadCommand,
   receipt: OpenClawStateReadReceipt,
+  capturedContext?: OpenClawStateWorkerContext,
 ): Promise<OpenClawStateReadReply | undefined> {
-  const pathname = resolveReadOnlyPath(options);
+  const pathname = capturedContext?.admission.databasePath ?? resolveReadOnlyPath(options);
   const current = stateSnapshotReads.getStore();
   const snapshot = current?.active && current.path === pathname ? current : undefined;
   const scopes: RetainedReadScope[] = [
@@ -424,10 +435,12 @@ function executeRetainedOpenClawStateRead(
       (scope) => scope.active && scope.path === pathname,
     ),
   ];
-  const context = captureOpenClawStateWorkerContext({
-    path: pathname,
-    env: snapshot?.env ?? options.env,
-  });
+  const context =
+    capturedContext ??
+    captureOpenClawStateWorkerContext({
+      path: pathname,
+      env: snapshot?.env ?? options.env,
+    });
   const mutation = prepareStateDatabaseCanonicalMutation(pathname);
   const excluded = hasStateDatabaseSourceExclusion(pathname);
   const preserveArtifacts = requiresArtifactPreservingSnapshot(pathname);
