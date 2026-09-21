@@ -1,7 +1,13 @@
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred, withTestTimeout } from "../../test/helpers/promise.js";
+import { emitAgentEvent } from "../infra/agent-events.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import * as workerStore from "../state/openclaw-state-worker-store.js";
+import * as taskRuntime from "./runtime-internal.js";
+import { createRunningTaskRunCoreWithReceiptAsync } from "./task-executor-create.async.js";
+import { taskAgentEventMutations } from "./task-registry-agent-events.js";
+import { updateTask } from "./task-registry-mutation.js";
+import { prepareTaskRegistryRead } from "./task-registry-read.js";
 import {
   createReadTask,
   requestTasks,
@@ -9,12 +15,13 @@ import {
   withReadState,
 } from "./task-registry-read.test-support.js";
 import { runTaskRegistryWorkerMutation, taskDeliveryStates, tasks } from "./task-registry-state.js";
-import { configureTaskRegistryRuntime } from "./task-registry.store.js";
+import { configureTaskRegistryRuntime, getTaskRegistryStore } from "./task-registry.store.js";
+import { loadTaskRegistryStateFromSqliteReadOnly } from "./task-registry.store.sqlite.js";
 import type {
   TaskRegistryMutationScope,
   TaskRegistryStoreSnapshot,
 } from "./task-registry.store.types.js";
-import { prepareTaskFixtureRead } from "./task-registry.test-support.js";
+import { createTaskFixture, prepareTaskFixtureRead } from "./task-registry.test-support.js";
 
 afterEach(resetReadState);
 
@@ -170,3 +177,161 @@ it.each(["current", "read failure", "retired store"] as const)(
     });
   },
 );
+
+describe("registered task list read fence", () => {
+  it("retries a changed page without joining events accepted after its first read", async () => {
+    await withReadState(async () => {
+      const task = createReadTask("read-before-page-retry");
+      const later = createTaskFixture("cli", {
+        runId: "accepted-after-page-selection",
+        ownerKey: "agent:main:later-event",
+        requesterSessionKey: "agent:main:later-event",
+        task: "Unrelated later work",
+        status: "running",
+        notifyPolicy: "silent",
+        deliveryStatus: "not_applicable",
+      });
+      const entered = createDeferred();
+      const release = createDeferred();
+      const store = getTaskRegistryStore();
+      const mutate = store.runAgentEventMutationAsync.bind(store);
+      vi.spyOn(store, "runAgentEventMutationAsync").mockImplementation(async (...args) => {
+        if (args[1].taskId === later.taskId) {
+          entered.resolve();
+          await release.promise;
+        }
+        return mutate(...args);
+      });
+      const select = taskRuntime.listTaskRecordPage;
+      let changed = false;
+      vi.spyOn(taskRuntime, "listTaskRecordPage").mockImplementation(async (params) => {
+        const page = await select(params);
+        if (!changed && page.ok) {
+          changed = true;
+          expect(page.value.tasks).toMatchObject([{ taskId: task.taskId, toolUseCount: 1 }]);
+          expect(updateTask(task.taskId, { task: "Changed before response" })).not.toBeNull();
+          emitAgentEvent({
+            runId: later.runId!,
+            stream: "tool",
+            data: { phase: "start", name: "later-tool" },
+          });
+          await withTestTimeout(entered.promise, 5_000, "Later event did not reach its barrier");
+        }
+        return page;
+      });
+      emitAgentEvent({
+        runId: task.runId!,
+        stream: "tool",
+        data: { phase: "start", name: "accepted-before-read" },
+      });
+      const read = requestTasks(task.ownerKey);
+      try {
+        await withTestTimeout(
+          Promise.race([
+            entered.promise,
+            read.then(() => {
+              throw new Error("Task request settled before the later-event barrier");
+            }),
+          ]),
+          5_000,
+          "Later event did not reach its barrier",
+        );
+        const response = await withTestTimeout(read, 5_000, "Page retry joined a later event");
+        expect(changed).toBe(true);
+        expect(response.mock.calls[0]).toMatchObject([
+          true,
+          { tasks: [{ id: task.taskId, title: "Changed before response", toolUseCount: 1 }] },
+        ]);
+      } finally {
+        release.resolve();
+        await read;
+        await prepareTaskRegistryRead();
+      }
+      expect(loadTaskRegistryStateFromSqliteReadOnly().tasks.get(later.taskId)).toMatchObject({
+        toolUseCount: 1,
+        lastToolName: "later-tool",
+      });
+    });
+  });
+});
+
+it("settles admitted run creations before preparing a registered task page", async () => {
+  await withReadState(async () => {
+    const originals = Array.from({ length: 4 }, (_, index) =>
+      createReadTask(`admitted-creation-${index}`),
+    );
+    const first = originals[0]!;
+    const store = await prepareTaskFixtureRead(first);
+    await requestTasks(first.ownerKey);
+    const context = captureOpenClawStateWorkerContext();
+    const mutate = store.runInitialMutationAsync.bind(store);
+    const load = store.loadMutationSnapshotAsync.bind(store);
+    const committed = createDeferred();
+    const release = createDeferred();
+    let committedCount = 0;
+    vi.spyOn(store, "runInitialMutationAsync").mockImplementation(async (...args) => {
+      const result = await mutate(...args);
+      if (args[1].type === "tasks.createRecord") {
+        committedCount += 1;
+        if (committedCount === originals.length) {
+          committed.resolve();
+        }
+        await release.promise;
+      }
+      return result;
+    });
+    const creations = originals.map((task) =>
+      createRunningTaskRunCoreWithReceiptAsync({
+        runtime: task.runtime,
+        runId: task.runId!,
+        task: task.task,
+        ownerKey: task.ownerKey,
+        scopeKind: task.scopeKind,
+        requesterSessionKey: task.requesterSessionKey,
+        notifyPolicy: "silent",
+        deliveryStatus: "not_applicable",
+        detail: { historyGeneration: "replacement" },
+      }),
+    );
+    const settled = Promise.allSettled(creations);
+    let reading: ReturnType<typeof requestTasks> | undefined;
+    try {
+      await withTestTimeout(committed.promise, 5_000, "Run creations committed before publication");
+      const snapshot = await load(
+        context,
+        originals.map((task) => ({ taskId: task.taskId, runId: task.runId })),
+      );
+      // Read-only snapshots may finish before the creation owners publish their committed rows.
+      // Keep those canonical rows fixed while producer readbacks retain their real worker path.
+      vi.spyOn(store, "loadMutationSnapshotAsync").mockImplementation(async (...args) =>
+        Array.isArray(args[1]) ? snapshot : load(...args),
+      );
+      const entered = createDeferred();
+      const fence = taskAgentEventMutations.captureReadFence.bind(taskAgentEventMutations);
+      vi.spyOn(taskAgentEventMutations, "captureReadFence").mockImplementationOnce((admission) => {
+        const result = fence(admission);
+        entered.resolve();
+        return result;
+      });
+      const respond = vi.fn();
+      reading = requestTasks(first.ownerKey, respond);
+      await withTestTimeout(entered.promise, 5_000, "Registered read captured its admitted work");
+      release.resolve();
+      await withTestTimeout(reading, 5_000, "Registered read joined run creation publication");
+      await Promise.all(creations);
+      expect(respond).toHaveBeenCalledOnce();
+      expect(respond.mock.calls[0]).toMatchObject([
+        true,
+        {
+          tasks: expect.arrayContaining(
+            originals.map((task) => expect.objectContaining({ id: task.taskId })),
+          ),
+        },
+      ]);
+    } finally {
+      release.resolve();
+      await settled;
+      await reading?.catch(() => {});
+    }
+  });
+});

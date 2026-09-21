@@ -2891,6 +2891,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       "src/commands/doctor-session-sqlite.test.ts",
     ]);
     expect(owners.get("agentic-commands-doctor-sessions-cron-sqlite-recovery")).toEqual([
+      "src/commands/doctor-session-sqlite.active-settlement.test.ts",
       "src/commands/doctor-session-sqlite.receipt-recovery.test.ts",
       "src/commands/doctor-session-transcripts.missing-index.test.ts",
     ]);

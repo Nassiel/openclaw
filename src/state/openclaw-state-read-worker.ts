@@ -98,6 +98,17 @@ function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCom
       },
     };
   }
+  if (command.type === "cron.observeRunRecovery") {
+    return {
+      type: command.type,
+      storeKey: command.storeKey,
+      proposals: command.proposals.map(({ jobId, queuedAtMs, runningAtMs }) => ({
+        jobId,
+        ...(queuedAtMs === undefined ? {} : { queuedAtMs }),
+        ...(runningAtMs === undefined ? {} : { runningAtMs }),
+      })),
+    };
+  }
   if (command.type === "pluginBlob.lookup") {
     const { pluginId, namespace, key } = command.input;
     return { type: command.type, input: { pluginId, namespace, key } };
@@ -138,6 +149,9 @@ function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCom
             },
     };
   }
+  if (command.type === "workers.placementProjection") {
+    return structuredClone(command);
+  }
   return { ...command };
 }
 
@@ -150,6 +164,16 @@ function commandBytes(command: OpenClawStateReadRequest["command"]): number {
         (sum, value) => sum + Buffer.byteLength(value ?? "", "utf8"),
         0,
       )
+    );
+  }
+  if (command.type === "cron.observeRunRecovery") {
+    return command.proposals.reduce(
+      (total, proposal) =>
+        total +
+        Buffer.byteLength(proposal.jobId, "utf8") +
+        (proposal.queuedAtMs === undefined ? 0 : 8) +
+        (proposal.runningAtMs === undefined ? 0 : 8),
+      bytes + Buffer.byteLength(command.storeKey, "utf8"),
     );
   }
   if (command.type === "pluginBlob.lookup" || command.type === "pluginBlob.entries") {
@@ -223,6 +247,9 @@ function commandBytes(command: OpenClawStateReadRequest["command"]): number {
       (input.executionOffset === undefined ? 0 : 8) +
       (input.executionLimit === undefined ? 0 : 8)
     );
+  }
+  if (command.type === "workers.placementProjection") {
+    return Buffer.byteLength(JSON.stringify(command), "utf8");
   }
   return bytes;
 }

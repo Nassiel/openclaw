@@ -31,7 +31,6 @@ import { createAsyncRegistryRestore, createSyncRegistryReader } from "./task-reg
 import type { TaskRegistryRestoreResult } from "./task-registry-restore.worker.js";
 import {
   createPendingTaskRegistryMutation,
-  createTaskRegistryPublicationRecovery,
   claimTaskRegistryPublication,
   publishTaskRegistryWorkerMutation,
   reconcileTaskRegistryWorkerSnapshot,
@@ -671,8 +670,9 @@ export async function runTaskRegistryWorkerMutation<T>(
   const { scope, admission, readEventTarget } = context;
   const store = getTaskRegistryStore();
   admission.assertCurrent();
-  const pending = createPendingTaskRegistryMutation(
-    scope,
+  const { pending, recovery, settle } = createPendingTaskRegistryMutation(
+    context,
+    store,
     readEventTarget
       ? () => {
           admission.assertCurrent();
@@ -683,10 +683,6 @@ export async function runTaskRegistryWorkerMutation<T>(
         }
       : undefined,
   );
-  pending.readIdentity = context.readIdentity;
-  const recovery = context.recoverPublication
-    ? createTaskRegistryPublicationRecovery(pending, context.recoverPublication)
-    : undefined;
   pendingMutations.add(pending);
   const assertOwner = () => {
     admission.assertCurrent();
@@ -741,6 +737,8 @@ export async function runTaskRegistryWorkerMutation<T>(
       }
     } finally {
       pendingMutations.delete(pending);
+      // Readers join settlement, then revalidate canonical state even when the write failed.
+      settle?.();
     }
   }
 }

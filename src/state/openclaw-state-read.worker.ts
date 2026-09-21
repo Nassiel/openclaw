@@ -10,7 +10,9 @@ import {
 import { readWorkspaceStateSnapshotForDirectoryInDatabase } from "../agents/workspace-state-store.kernel.js";
 import { ExecutionDecisionCursorError } from "../audit/execution-decision-receipts.js";
 import { inspectExecutionIdentityRunInDatabase } from "../audit/execution-identity-context.js";
+import { observeCronRunRecoveryInDatabase } from "../cron/store/run-recovery.read.js";
 import { getFleetCellInDatabase, listFleetCellsInDatabase } from "../fleet/registry.kernel.js";
+import { readWorkerSessionPlacementProjectionInDatabase } from "../gateway/worker-environments/placement-read-projection.js";
 import { readExecApprovalsConfigRow } from "../infra/exec-approvals-sqlite.js";
 import { inspectCurrentConversationBindingRecordInDatabase } from "../infra/outbound/current-conversation-bindings.kernel.js";
 import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
@@ -73,6 +75,16 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
         typeof input.command.conversation.conversationId === "string" &&
         (input.command.conversation.parentConversationId === undefined ||
           typeof input.command.conversation.parentConversationId === "string")) ||
+      (input.command.type === "cron.observeRunRecovery" &&
+        typeof input.command.storeKey === "string" &&
+        Array.isArray(input.command.proposals) &&
+        input.command.proposals.every(
+          (proposal: unknown) =>
+            isRecord(proposal) &&
+            typeof proposal.jobId === "string" &&
+            (proposal.queuedAtMs === undefined || typeof proposal.queuedAtMs === "number") &&
+            (proposal.runningAtMs === undefined || typeof proposal.runningAtMs === "number"),
+        )) ||
       input.command.type === "admit" ||
       input.command.type === "exec-approvals.read" ||
       ((input.command.type === "skills.library.descriptions" ||
@@ -117,7 +129,11 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
       (input.command.type === "sandboxRegistry.runtimeIds" &&
         typeof input.command.backendId === "string" &&
         typeof input.command.scopeKey === "string") ||
-      (input.command.type === "fleet.get" && typeof input.command.tenantId === "string"))
+      (input.command.type === "fleet.get" && typeof input.command.tenantId === "string") ||
+      (input.command.type === "workers.placementProjection" &&
+        Array.isArray(input.command.sessionIds) &&
+        input.command.sessionIds.every((id) => typeof id === "string") &&
+        Array.isArray(input.command.conflictBindings)))
   );
 }
 
@@ -183,6 +199,14 @@ serveOwnedWorkerTasks(
                       db,
                       command.conversation,
                     ),
+                  };
+                }
+                if (command.type === "cron.observeRunRecovery") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    observation: observeCronRunRecoveryInDatabase(db, command),
                   };
                 }
                 if (command.type === "pluginBlob.lookup") {
@@ -356,6 +380,18 @@ serveOwnedWorkerTasks(
                     type: command.type,
                     sourceAdmitted,
                     entries: readSandboxBrowserRegistryInDatabase(db),
+                  };
+                }
+                if (command.type === "workers.placementProjection") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    result: readWorkerSessionPlacementProjectionInDatabase(
+                      db,
+                      command.sessionIds,
+                      command.conflictBindings,
+                    ),
                   };
                 }
                 return command.type === "fleet.list"
