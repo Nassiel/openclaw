@@ -144,9 +144,7 @@ import {
   buildRemoteCompactionV2Events,
   buildReleaseAuditJson,
   buildReleaseHandoffMarkdown,
-  extractPlannedToolName,
   extractPlannedToolIdentity,
-  extractPlannedToolArgs,
   splitMockStreamingText,
   buildChannelStreamingFixtureEvents,
   QA_TELEGRAM_PREPARED_DELIVERY_RE,
@@ -189,9 +187,23 @@ import {
 import { attachQaMockResponsesWebSocketServer } from "./mock-openai-responses-websocket.js";
 import { resolveMockSubagentHandoff } from "./mock-openai-subagent-completion.js";
 import {
+  QA_CODE_MODE_TARGET_MARKER,
+  encodeCodeModeTarget,
+  decodeCodeModeTarget,
+  resolveCodeModeExecSurface,
+  hasCodeModeExecSurface,
+  canCallScenarioTool,
+  findToolCallByCallId,
+  parseToolCallArguments,
+  readStructuredToolTarget,
+  extractScenarioToolOutput,
+  readGeneratedCodeModeExecSource,
+  buildScenarioToolCallEvents,
+  extractScenarioPlannedTool,
+} from "./mock-openai-tool-surface.js";
+import {
   readTargetFromPrompt,
   execCommandFromToolProgressPrompt,
-  buildCustomToolCallEventsWithInput,
   buildToolCallEventsWithArgs as buildRawToolCallEventsWithArgs,
   extractOrbitCode,
   extractToolSearchTarget,
@@ -304,7 +316,6 @@ function hasCompactionOutputRecoveryMarker(allInputText: string) {
   );
 }
 
-const QA_CODE_MODE_TARGET_MARKER = "qa-code-mode-target:";
 const QA_RESTART_CHECKPOINT_COUNT = 3;
 const QA_RESTART_FINAL_TEXT = "unsafeVisible=false\nRESTART-CODE-MODE-WAIT-OK";
 const QA_FAILED_TOOL_TERMINAL_RECOVERY_PROMPT_RE = /failed tool terminal recovery qa check/i;
@@ -332,78 +343,6 @@ function stringifyScenarioToolOutput(value: unknown): string {
   }
 }
 
-function encodeCodeModeTarget(name: string, args: Record<string, unknown>) {
-  return Buffer.from(JSON.stringify({ name, args }), "utf8").toString("base64url");
-}
-
-function decodeCodeModeTarget(code: string | undefined) {
-  const marker = code
-    ?.split("\n")
-    .map((line) => line.trim())
-    .find((line) => line.startsWith(`// ${QA_CODE_MODE_TARGET_MARKER}`));
-  if (!marker) {
-    return null;
-  }
-  try {
-    const encoded = marker.slice(`// ${QA_CODE_MODE_TARGET_MARKER}`.length).trim();
-    const parsed = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return null;
-    }
-    const record = parsed as Record<string, unknown>;
-    if (
-      typeof record.name !== "string" ||
-      !record.args ||
-      typeof record.args !== "object" ||
-      Array.isArray(record.args)
-    ) {
-      return null;
-    }
-    return {
-      name: record.name,
-      args: record.args as Record<string, unknown>,
-    };
-  } catch {
-    return null;
-  }
-}
-
-type CodeModeExecSurface = "native" | "guest";
-
-function resolveCodeModeExecSurface(body: Record<string, unknown>): CodeModeExecSurface | null {
-  const tools = [
-    ...(Array.isArray(body.tools) ? body.tools : []),
-    ...(Array.isArray(body.dynamicTools) ? body.dynamicTools : []),
-  ];
-  const execDefinition = findNamedToolDefinition(tools, "exec");
-  if (!execDefinition || !hasToolDefinition(body, "wait")) {
-    return null;
-  }
-  if (execDefinition.type === "custom") {
-    return "native";
-  }
-  const schema =
-    (execDefinition.input_schema as Record<string, unknown> | undefined) ??
-    (execDefinition.parameters as Record<string, unknown> | undefined);
-  if (!schema) {
-    return null;
-  }
-  const properties = schema.properties;
-  const required = schema.required;
-  return properties !== null &&
-    typeof properties === "object" &&
-    !Array.isArray(properties) &&
-    Object.hasOwn(properties, "code") &&
-    Array.isArray(required) &&
-    required.includes("code")
-    ? "guest"
-    : null;
-}
-
-function hasCodeModeExecSurface(body: Record<string, unknown>) {
-  return resolveCodeModeExecSurface(body) !== null;
-}
-
 function resolveCurrentToolDeclarationSurface(
   body: Record<string, unknown>,
   input: ResponsesInputItem[],
@@ -421,29 +360,8 @@ function resolveCurrentToolDeclarationSurface(
       };
 }
 
-function findToolCallByCallId(input: ResponsesInputItem[], callId: string) {
-  return input.toReversed().find((item) => {
-    const type = item.type;
-    return (type === "function_call" || type === "custom_tool_call") && item.call_id === callId;
-  });
-}
-
-function parseToolCallArguments(toolCall: ResponsesInputItem) {
-  if (typeof toolCall.arguments !== "string") {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(toolCall.arguments) as unknown;
-    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
 function readProgressCommandOutput(input: ResponsesInputItem[], command: string, isPoll = false) {
-  const text = extractToolOutput(input);
+  const text = extractScenarioToolOutput(input);
   // Provider wires carry content, not process details; JSON stdout remains data.
   const sessionId = !isPoll
     ? /(?:^|\n\n)Command still running \(session ([^,\s]+), pid (?:\d+|n\/a)\)\. Use process \(list\/poll\/log\/write\/send-keys\/submit\/paste\/kill\/clear\/remove\) for follow-up\.$/u.exec(
@@ -516,7 +434,10 @@ function readProgressCommand(input: ResponsesInputItem[], command: string) {
   // Walk the whole turn so a valid exec or poll cannot hide an earlier foreign call.
   for (const item of input) {
     if (item.type === "function_call" || item.type === "custom_tool_call") {
-      const args = parseToolCallArguments(item);
+      const wireArgs = parseToolCallArguments(item);
+      const target = item.name === "tool_call" ? readStructuredToolTarget(wireArgs) : null;
+      const name = target?.name ?? item.name;
+      const args = target?.args ?? wireArgs;
       if (
         pendingCall ||
         typeof item.call_id !== "string" ||
@@ -524,10 +445,10 @@ function readProgressCommand(input: ResponsesInputItem[], command: string) {
         (current
           ? current.state !== "running" ||
             !sessionId ||
-            item.name !== "process" ||
+            name !== "process" ||
             args?.action !== "poll" ||
             args.sessionId !== sessionId
-          : item.type !== "function_call" || item.name !== "exec" || args?.command !== command)
+          : item.type !== "function_call" || name !== "exec" || args?.command !== command)
       ) {
         return { error: "BUG-TOOL-PROGRESS-CALL-MISMATCH" };
       }
@@ -537,7 +458,7 @@ function readProgressCommand(input: ResponsesInputItem[], command: string) {
         return { error: "BUG-TOOL-PROGRESS-CALL-MISMATCH" };
       }
       const isPoll = current !== undefined;
-      current = readProgressCommandOutput([item], command, isPoll);
+      current = readProgressCommandOutput([pendingCall, item], command, isPoll);
       if (!isPoll) {
         sessionId = current.sessionId;
       }
@@ -556,14 +477,6 @@ function readProgressCommand(input: ResponsesInputItem[], command: string) {
     return sessionId ? { sessionId } : { error: "BUG-TOOL-PROGRESS-SESSION-MISSING" };
   }
   return { failed: current.state === "failed" };
-}
-
-function readGeneratedCodeModeExecSource(toolCall: ResponsesInputItem | undefined) {
-  if (toolCall?.type === "custom_tool_call" && typeof toolCall.input === "string") {
-    return toolCall.input;
-  }
-  const code = toolCall ? parseToolCallArguments(toolCall)?.code : undefined;
-  return typeof code === "string" ? code : undefined;
 }
 
 function isGeneratedCodeModeExecCall(toolCall: ResponsesInputItem | undefined) {
@@ -678,91 +591,6 @@ function isCodeModeControlToolOutput(body: Record<string, unknown>, input: Respo
   );
 }
 
-function buildScenarioToolCallEvents(
-  body: Record<string, unknown>,
-  name: string,
-  args: Record<string, unknown>,
-) {
-  // Code Mode hides catalog capabilities behind exec/wait. Route through that
-  // visible surface while retaining the nested capability as debug evidence.
-  if (
-    name === "exec" ||
-    name === "wait" ||
-    hasToolDefinition(body, name) ||
-    !hasCodeModeExecSurface(body)
-  ) {
-    const declaration = [
-      ...(Array.isArray(body.tools) ? body.tools : []),
-      ...(Array.isArray(body.dynamicTools) ? body.dynamicTools : []),
-    ].find((tool) => findNamedToolDefinition(tool, name));
-    const definition = findNamedToolDefinition(declaration, name);
-    // Function and custom calls both retain their declared namespace; Codex
-    // dispatches the complete identity and rejects a flattened nested tool.
-    const namespace =
-      declaration &&
-      typeof declaration === "object" &&
-      declaration.type === "namespace" &&
-      typeof declaration.name === "string"
-        ? declaration.name
-        : undefined;
-    if (definition?.type === "custom" && typeof args.input === "string") {
-      return buildCustomToolCallEventsWithInput(name, args.input, namespace);
-    }
-    return buildRawToolCallEventsWithArgs(name, args, namespace);
-  }
-  const encodedTarget = encodeCodeModeTarget(name, args);
-  if (resolveCodeModeExecSurface(body) === "native") {
-    return buildCustomToolCallEventsWithInput(
-      "exec",
-      [
-        `// ${QA_CODE_MODE_TARGET_MARKER}${encodedTarget}`,
-        `const targetName = ${JSON.stringify(name)};`,
-        `const targetArgs = ${JSON.stringify(args)};`,
-        "const target = ALL_TOOLS.find((entry) => entry.name === targetName);",
-        "if (!target) throw new Error(`QA mock target tool unavailable: ${targetName}`);",
-        "let value = await tools[target.name](targetArgs);",
-        'if (targetName === "read" && value?.kind === "text" && typeof value.content === "string") {',
-        "  value = { ...value, content: value.content.slice(0, 2048) };",
-        "}",
-        "text(JSON.stringify(value));",
-      ].join("\n"),
-    );
-  }
-  return buildRawToolCallEventsWithArgs("exec", {
-    language: "javascript",
-    code: [
-      `// ${QA_CODE_MODE_TARGET_MARKER}${encodedTarget}`,
-      `const targetName = ${JSON.stringify(name)};`,
-      `const targetArgs = ${JSON.stringify(args)};`,
-      "const target = (await catalog.search(targetName)).find((entry) => entry.toolName === targetName);",
-      "if (!target) throw new Error(`QA mock target tool unavailable: ${targetName}`);",
-      "const value = await target(targetArgs);",
-      'if (targetName === "read" && value?.kind === "text" && typeof value.content === "string") {',
-      "  return { ...value, content: value.content.slice(0, 2048) };",
-      "}",
-      "return value;",
-    ].join("\n"),
-  });
-}
-
-function extractScenarioPlannedTool(events: StreamEvent[]) {
-  const wireName = extractPlannedToolName(events);
-  const wireArgs = extractPlannedToolArgs(events);
-  const source =
-    typeof wireArgs?.input === "string"
-      ? wireArgs.input
-      : typeof wireArgs?.code === "string"
-        ? wireArgs.code
-        : undefined;
-  if (wireName !== "exec" || !source) {
-    return { name: wireName, args: wireArgs, wireName };
-  }
-  const target = decodeCodeModeTarget(source);
-  return target
-    ? { name: target.name, args: target.args, wireName }
-    : { name: wireName, args: wireArgs, wireName };
-}
-
 type TerminalRequesterSettleGate = {
   markSettled: (caseName: string, childSessionKey: string) => void;
   waitUntilSettled: (caseName: string, childSessionKey: string) => Promise<void>;
@@ -831,7 +659,7 @@ function resolveQaChildSessionKey(input: ResponsesInputItem[], body: Record<stri
 }
 
 function resolveAcceptedChildSessionKey(input: ResponsesInputItem[]) {
-  const output = parseToolOutputJson(extractToolOutput(input));
+  const output = parseToolOutputJson(extractScenarioToolOutput(input));
   return output?.status === "accepted" && typeof output.childSessionKey === "string"
     ? output.childSessionKey.trim() || undefined
     : undefined;
@@ -899,7 +727,7 @@ async function buildResponsesPayload(
   const toolDeclarationBody = resolveCurrentToolDeclarationSurface(body, input);
   const prompt = extractLastUserText(input);
   const hasCompletedToolOutput = hasToolOutput(input);
-  const rawToolOutput = extractToolOutput(input);
+  const rawToolOutput = extractScenarioToolOutput(input);
   const codeModeSurface = resolveCodeModeExecSurface(toolDeclarationBody);
   const hasCodeModeControlOutput = isCodeModeControlToolOutput(toolDeclarationBody, input);
   const codeModeControlJson = hasCodeModeControlOutput
@@ -915,6 +743,9 @@ async function buildResponsesPayload(
         : rawToolOutput;
   const completedToolCall = findToolCallByCallId(input, extractToolOutputCallId(input));
   const completedToolName = (() => {
+    if (completedToolCall?.name === "tool_call") {
+      return readStructuredToolTarget(parseToolCallArguments(completedToolCall))?.name;
+    }
     if (completedToolCall?.name !== "exec") {
       return completedToolCall?.name;
     }
@@ -1154,11 +985,8 @@ async function buildResponsesPayload(
   );
   const sideEffectKind =
     QA_EMPTY_RESPONSE_SIDE_EFFECT_PROMPT_RE.exec(sideEffectPrompt)?.[1]?.toLowerCase();
-  const hasCallableCodeMode = hasCodeModeExecSurface(toolDeclarationBody);
-  const canCallSessionsSpawn =
-    hasToolDefinition(toolDeclarationBody, "sessions_spawn") || hasCallableCodeMode;
-  const canCallSessionsYield =
-    hasToolDefinition(toolDeclarationBody, "sessions_yield") || hasCallableCodeMode;
+  const canCallSessionsSpawn = canCallScenarioTool(toolDeclarationBody, "sessions_spawn");
+  const canCallSessionsYield = canCallScenarioTool(toolDeclarationBody, "sessions_yield");
   const slackProgressTurn = extractLastMatchingUserTurn(
     input,
     QA_SLACK_PROGRESS_COMMENTARY_MARKER_RE,
@@ -1391,7 +1219,7 @@ async function buildResponsesPayload(
       if (completedToolName === "message") {
         return buildAssistantEvents("");
       }
-      if (hasToolDefinition(toolDeclarationBody, "message") || hasCallableCodeMode) {
+      if (canCallScenarioTool(toolDeclarationBody, "message")) {
         const deliveryInstructions = extractAllRequestTexts(
           input.filter((item) => item.role === "system" || item.role === "developer"),
           body,
@@ -1424,7 +1252,7 @@ async function buildResponsesPayload(
     return buildAssistantEvents("NO_REPLY");
   }
   if (terminalWorkerCase === "empty") {
-    if (!hasCompletedToolOutput && hasDeclaredTool(body, "write")) {
+    if (!hasCompletedToolOutput && canCallScenarioTool(toolDeclarationBody, "write")) {
       return buildToolCallEventsWithArgs("write", {
         path: "qa-terminal-empty-side-effect.txt",
         content: "empty terminal QA side effect completed\n",
@@ -2312,7 +2140,7 @@ async function buildResponsesPayload(
   if (
     QA_IMAGE_GENERATION_PROMPT_RE.test(allInputText) &&
     !hasCompletedToolOutput &&
-    (hasToolDefinition(body, "image_generate") || hasCodeModeExecSurface(body))
+    canCallScenarioTool(toolDeclarationBody, "image_generate")
   ) {
     return buildToolCallEventsWithArgs("image_generate", {
       prompt: "A QA lighthouse on a dark sea with a tiny protocol droid silhouette.",
@@ -2338,8 +2166,7 @@ async function buildResponsesPayload(
         currentFanoutInstructions,
       ));
   const fanoutRequiresMessageTool =
-    fanoutHasPrivateSourceReply &&
-    (hasToolDefinition(toolDeclarationBody, "message") || hasCallableCodeMode);
+    fanoutHasPrivateSourceReply && canCallScenarioTool(toolDeclarationBody, "message");
   if (
     scenarioState.subagentFanoutPhase === 3 &&
     fanoutRequiresMessageTool &&
@@ -2436,7 +2263,7 @@ async function buildResponsesPayload(
       if (completedToolName === "message") {
         return buildAssistantEvents("NO_REPLY");
       }
-      return hasToolDefinition(toolDeclarationBody, "message") || hasCallableCodeMode
+      return canCallScenarioTool(toolDeclarationBody, "message")
         ? buildToolCallEventsWithArgs("message", {
             action: "send",
             message: forkCompletion,

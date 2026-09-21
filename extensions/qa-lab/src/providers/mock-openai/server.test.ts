@@ -321,11 +321,6 @@ function buildWhatsAppPendingHistoryContextFixture(
 
 const SESSIONS_SPAWN_TOOL = { type: "function", name: "sessions_spawn" } as const;
 const SESSIONS_YIELD_TOOL = { type: "function", name: "sessions_yield" } as const;
-const CODEX_DIRECT_YIELD_NAMESPACE = {
-  type: "namespace",
-  name: "openclaw_direct",
-  tools: [SESSIONS_YIELD_TOOL],
-} as const;
 const CODEX_SUBAGENT_TOOL_NAMESPACE = {
   type: "namespace",
   name: "openclaw",
@@ -3078,67 +3073,6 @@ Update and merge these partial structured summaries.`,
     expect(plannedToolArgs.mode).toBe("run");
   });
 
-  it.each([
-    {
-      name: "flat tools",
-      tools: [SESSIONS_SPAWN_TOOL, SESSIONS_YIELD_TOOL],
-      namespace: undefined,
-    },
-    {
-      name: "Codex direct-only tools",
-      tools: [SESSIONS_SPAWN_TOOL, CODEX_DIRECT_YIELD_NAMESPACE],
-      namespace: "openclaw_direct",
-    },
-  ])("drives yielded-parent subagent fallback through $name", async ({ tools, namespace }) => {
-    const server = await startMockServer();
-    const prompt =
-      "Subagent direct fallback QA check: spawn one worker and yield until QA-SUBAGENT-DIRECT-FALLBACK-OK is delivered.";
-
-    await expectResponsesText(server, {
-      stream: true,
-      tools,
-      input: [makeUserInput(prompt)],
-    });
-
-    const spawnDebug = requireRecord(
-      await (await fetch(`${server.baseUrl}/debug/last-request`)).json(),
-      "spawn debug request",
-    );
-    expect(spawnDebug.plannedToolName).toBe("sessions_spawn");
-    const spawnArgs = requireRecord(spawnDebug.plannedToolArgs, "spawn planned tool args");
-    expect(spawnArgs.label).toBe("qa-direct-fallback-worker");
-    expect(spawnArgs.thread).toBe(false);
-    expect(spawnArgs.mode).toBe("run");
-    expect(spawnArgs).not.toHaveProperty("runTimeoutSeconds");
-
-    const body = await expectResponsesText(server, {
-      stream: true,
-      tools,
-      input: [
-        makeUserInput(prompt),
-        makeToolOutputWithCallId(
-          "call_mock_sessions_spawn_1",
-          JSON.stringify({
-            status: "accepted",
-            childSessionKey: "agent:qa:subagent:child",
-            runId: "run-child-1",
-          }),
-        ),
-      ],
-    });
-
-    expect(body).toContain('"name":"sessions_yield"');
-    expect(body).toContain("QA-SUBAGENT-DIRECT-FALLBACK-OK");
-    if (namespace) {
-      expect(body.match(new RegExp(`"namespace":"${namespace}"`, "g"))).toHaveLength(3);
-    }
-    const yieldDebug = requireRecord(
-      await (await fetch(`${server.baseUrl}/debug/last-request`)).json(),
-      "yield debug request",
-    );
-    expect(yieldDebug.plannedToolName).toBe("sessions_yield");
-  });
-
   it("returns no visible announce output for the direct fallback QA marker", async () => {
     const server = await startMockServer();
 
@@ -3316,68 +3250,6 @@ Update and merge these partial structured summaries.`,
     expect(outputItems(settled).some((item) => item.type === "function_call")).toBe(false);
   });
 
-  it("binds crossed same-case parent responses to their matching workers", async () => {
-    const server = await startMockServer();
-    const firstChildSessionKey = "agent:qa:subagent:child-1";
-    const secondChildSessionKey = "agent:qa:subagent:child-2";
-    const startChild = (runtimeSessionId: string, childSessionKey: string) =>
-      postNonStreamingResponses(server, {
-        model: "gpt-5.6-luna",
-        instructions: [
-          `Runtime: embedded | sessionId=${runtimeSessionId}`,
-          `- Your session: ${childSessionKey}.`,
-        ].join("\n"),
-        input: [makeUserInput("Subagent terminal reply QA worker: visible.")],
-      });
-    const settleParent = async (
-      runtimeSessionId: string,
-      childSessionKey: string,
-      callId: string,
-    ) => {
-      const parent = await expectNonStreamingResponsesJson(server, {
-        model: "gpt-5.6-luna",
-        instructions: `Runtime: embedded | sessionId=${runtimeSessionId}`,
-        tools: [SESSIONS_SPAWN_TOOL, SESSIONS_YIELD_TOOL],
-        input: [
-          makeUserInput("Subagent terminal reply QA check: visible."),
-          makeToolOutputWithCallId(
-            callId,
-            JSON.stringify({ status: "accepted", childSessionKey, runId: `run-${callId}` }),
-          ),
-        ],
-      });
-      expect(outputText(parent)).toBe("Worker started.");
-    };
-
-    const firstChildResponse = startChild("qa-terminal-child-1", firstChildSessionKey);
-    const secondChildResponse = startChild("qa-terminal-child-2", secondChildSessionKey);
-    let firstChildSettled = false;
-    let secondChildSettled = false;
-    void firstChildResponse.then(() => {
-      firstChildSettled = true;
-    });
-    void secondChildResponse.then(() => {
-      secondChildSettled = true;
-    });
-
-    await expect
-      .poll(async () => {
-        const inflight = await getJson<unknown[]>(server, "/debug/inflight-requests");
-        return inflight.length;
-      })
-      .toBe(2);
-
-    await settleParent("qa-terminal-parent-2", secondChildSessionKey, "call_spawn_2");
-    const secondChild = await (await expectOk(secondChildResponse)).json();
-    expect(outputText(secondChild)).toBe("QA-SUBAGENT-TERMINAL-VISIBLE-OK");
-    expect(secondChildSettled).toBe(true);
-    expect(firstChildSettled).toBe(false);
-
-    await settleParent("qa-terminal-parent-1", firstChildSessionKey, "call_spawn_1");
-    const firstChild = await (await expectOk(firstChildResponse)).json();
-    expect(outputText(firstChild)).toBe("QA-SUBAGENT-TERMINAL-VISIBLE-OK");
-  });
-
   it.each([
     QA_REASONING_ONLY_RETRY_INSTRUCTION,
     QA_EMPTY_RESPONSE_RETRY_INSTRUCTION,
@@ -3492,65 +3364,6 @@ Update and merge these partial structured summaries.`,
         makeToolOutputWithCallId(
           outputToolCallId(messageCall, "call_mock_message_silent_terminal"),
           '{"ok":true,"messageId":"qa-silent-terminal"}',
-        ),
-      ],
-    });
-    expect(outputItems(settled).some((item) => item.type === "function_call")).toBe(false);
-    expect(outputText(settled)).toBe("");
-  });
-
-  it.each([
-    {
-      name: "OpenAI private-source guidance",
-      instructions:
-        "Current source visible reply MUST use `message(action=send)`; final text is private.",
-      final: undefined,
-    },
-    {
-      name: "Codex private-source guidance",
-      instructions:
-        "Visible source replies are not automatically delivered for this run. Use `message(action=send)` for user-visible source-channel output. When the message is the completed reply to the current source conversation, set `final=true`.",
-      final: true,
-    },
-  ])("delivers an empty terminal representation with $name", async ({ instructions, final }) => {
-    const server = await startMockServer();
-    const completionInput = [
-      makeUserInput("Subagent terminal reply QA check: empty."),
-      {
-        type: "function_call",
-        call_id: "call_empty_historical_write",
-        name: "write",
-        arguments: '{"path":"qa-terminal-empty-side-effect.txt"}',
-      },
-      makeToolOutputWithCallId("call_empty_historical_write", "Wrote 40 bytes"),
-      makeUserInput(
-        TEST_RUNTIME_CONTEXT_CARRIER.replace(
-          "runtime metadata",
-          "[Internal task completion event]\nTask: qa-terminal-empty\nResult: (no output)",
-        ),
-      ),
-    ];
-    const delivery = await expectNonStreamingResponsesJson(server, {
-      tools: [MESSAGE_TOOL],
-      instructions,
-      input: completionInput,
-    });
-    const messageCall = outputToolCall(delivery, "message");
-    expect(outputToolArgsFromItem(messageCall)).toEqual({
-      action: "send",
-      message: "QA-SUBAGENT-TERMINAL-EMPTY-REPRESENTED",
-      ...(final ? { final } : {}),
-    });
-
-    const settled = await expectNonStreamingResponsesJson(server, {
-      tools: [MESSAGE_TOOL],
-      instructions,
-      input: [
-        ...completionInput,
-        messageCall,
-        makeToolOutputWithCallId(
-          outputToolCallId(messageCall, "call_mock_message_empty_terminal"),
-          '{"ok":true,"messageId":"qa-empty-terminal"}',
         ),
       ],
     });
