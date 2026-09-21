@@ -178,7 +178,7 @@ it("drains accepted settlement before retiring the shared pool during whole-cach
   const release = vi.fn();
   const result = withOpenClawStateSettlementRead(context, async (read) => {
     read.bind(
-      { type: "userProfiles.avatar.reconcile", profileId: profile.id },
+      { type: "userProfiles.reconcile", profileId: profile.id },
       Promise.resolve({ kind: "completed" }),
       publish,
       release,
@@ -189,7 +189,7 @@ it("drains accepted settlement before retiring the shared pool during whole-cach
   const recovery = queueTask();
   recovery.result.resolve({
     ok: true,
-    type: "userProfiles.avatar.reconcile",
+    type: "userProfiles.reconcile",
     sourceAdmitted: true,
     profile: descriptor,
   });
@@ -203,7 +203,7 @@ it("drains accepted settlement before retiring the shared pool during whole-cach
     mutationSettled.resolve();
     expect(await result).toBe(delivery);
     expect((await recovery.captured).command).toEqual({
-      type: "userProfiles.avatar.reconcile",
+      type: "userProfiles.reconcile",
       profileId: profile.id,
     });
     expect(publish).toHaveBeenCalledExactlyOnceWith(descriptor);
@@ -236,7 +236,7 @@ it.each([false, true])(
     ])[0]![1];
     await closeOpenClawStateDatabaseAsync();
     const context = captureOpenClawStateWorkerContext(options);
-    const command = { type: "userProfiles.avatar.reconcile", profileId: profile.id } as const;
+    const command = { type: "userProfiles.reconcile", profileId: profile.id } as const;
     const reply: OpenClawStateReadReply = {
       ok: true,
       type: command.type,
@@ -593,40 +593,57 @@ it("closes only the operation matching a state path while its sibling finishes n
 
 it.each([
   "fleet.get",
-  "userProfiles.avatar.reconcile",
+  "userProfiles.reconcile",
   "onboardingRecommendations.read",
   "workspace.snapshot",
+  "pluginBlob.lookup",
+  "pluginBlob.entries",
   "sandboxRegistry.get",
   "sandboxRegistry.runtimeIds",
+  "updateRuns.get",
 ] as const)(
   "captures and charges the retained UTF-8 selector while dispatch waits (%s)",
   async (type) => {
     const { options } = source();
     const selector = "租户🦞".repeat(512);
     const command =
-      type === "fleet.get"
-        ? { type, tenantId: selector }
-        : type === "userProfiles.avatar.reconcile"
-          ? { type, profileId: selector }
-          : type === "onboardingRecommendations.read"
-            ? { type, configKey: selector }
-            : type === "workspace.snapshot"
-              ? { type, workspaceDir: selector }
-              : type === "sandboxRegistry.get"
-                ? { type, containerName: selector }
-                : { type, backendId: selector, scopeKey: selector };
-    const expected = { ...command };
+      type === "updateRuns.get"
+        ? { type, runId: selector }
+        : type === "fleet.get"
+          ? { type, tenantId: selector }
+          : type === "userProfiles.reconcile"
+            ? { type, profileId: selector }
+            : type === "onboardingRecommendations.read"
+              ? { type, configKey: selector }
+              : type === "pluginBlob.lookup"
+                ? { type, input: { pluginId: selector, namespace: selector, key: selector } }
+                : type === "pluginBlob.entries"
+                  ? { type, input: { pluginId: selector, namespace: selector } }
+                  : type === "workspace.snapshot"
+                    ? { type, workspaceDir: selector }
+                    : type === "sandboxRegistry.get"
+                      ? { type, containerName: selector }
+                      : { type, backendId: selector, scopeKey: selector };
+    const expected = structuredClone(command);
     const dispatch = createDeferredCore();
     const task = queueTask(dispatch.promise);
     const result = executeExistingOpenClawStateRead(options, command);
     const submitted = await task.submitted;
     const originalRoot = options.env.OPENCLAW_STATE_DIR;
-    if (command.type === "fleet.get") {
+    if (command.type === "updateRuns.get") {
+      command.runId = "different run after admission";
+    } else if (command.type === "fleet.get") {
       command.tenantId = "different tenant after admission";
-    } else if (command.type === "userProfiles.avatar.reconcile") {
+    } else if (command.type === "userProfiles.reconcile") {
       command.profileId = "different profile after admission";
     } else if (command.type === "onboardingRecommendations.read") {
       command.configKey = "different key after admission";
+    } else if (command.type === "pluginBlob.lookup" || command.type === "pluginBlob.entries") {
+      command.input.pluginId = "different plugin after admission";
+      command.input.namespace = "different namespace after admission";
+      if (command.type === "pluginBlob.lookup") {
+        command.input.key = "different key after admission";
+      }
     } else if (command.type === "sandboxRegistry.get") {
       command.containerName = "different container after admission";
     } else if (command.type === "sandboxRegistry.runtimeIds") {
@@ -637,35 +654,109 @@ it.each([
     }
     options.env.OPENCLAW_STATE_DIR = path.join(originalRoot, "different");
     const returned: OpenClawStateReadReply =
-      type === "fleet.get"
-        ? { ok: true, type, sourceAdmitted: true, cell: undefined }
-        : type === "userProfiles.avatar.reconcile"
-          ? { ok: true, type, sourceAdmitted: true, profile: undefined }
-          : type === "onboardingRecommendations.read"
-            ? { ok: true, type, sourceAdmitted: true, record: null }
-            : type === "sandboxRegistry.get"
-              ? { ok: true, type, sourceAdmitted: true, entry: null }
-              : type === "sandboxRegistry.runtimeIds"
-                ? { ok: true, type, sourceAdmitted: true, runtimeIds: [] }
-                : {
-                    ok: true,
-                    type,
-                    sourceAdmitted: true,
-                    snapshot: {
-                      identity: createWorkspaceStateIdentity(selector),
-                      setup: { version: 1 },
-                      setupExists: false,
-                    },
-                  };
+      type === "updateRuns.get"
+        ? { ok: true, type, sourceAdmitted: true, run: undefined }
+        : type === "fleet.get"
+          ? { ok: true, type, sourceAdmitted: true, cell: undefined }
+          : type === "userProfiles.reconcile"
+            ? { ok: true, type, sourceAdmitted: true, profile: undefined }
+            : type === "onboardingRecommendations.read"
+              ? { ok: true, type, sourceAdmitted: true, record: null }
+              : type === "pluginBlob.lookup"
+                ? { ok: true, type, sourceAdmitted: true, value: undefined }
+                : type === "pluginBlob.entries"
+                  ? { ok: true, type, sourceAdmitted: true, value: [] }
+                  : type === "sandboxRegistry.get"
+                    ? { ok: true, type, sourceAdmitted: true, entry: null }
+                    : type === "sandboxRegistry.runtimeIds"
+                      ? { ok: true, type, sourceAdmitted: true, runtimeIds: [] }
+                      : {
+                          ok: true,
+                          type,
+                          sourceAdmitted: true,
+                          snapshot: {
+                            identity: createWorkspaceStateIdentity(selector),
+                            setup: { version: 1 },
+                            setupExists: false,
+                          },
+                        };
     try {
       expect(Number.isSafeInteger(submitted.inputBytes)).toBe(true);
+      const selectorCount =
+        type === "pluginBlob.lookup"
+          ? 3
+          : type === "pluginBlob.entries" || type === "sandboxRegistry.runtimeIds"
+            ? 2
+            : 1;
       expect(submitted.inputBytes).toBeGreaterThanOrEqual(
-        Buffer.byteLength(selector) * (type === "sandboxRegistry.runtimeIds" ? 2 : 1),
+        Buffer.byteLength(selector) * selectorCount,
       );
       dispatch.resolve();
       const request = await task.captured;
       expect(request.command).toEqual(expected);
       expect(request.context.environment.OPENCLAW_STATE_DIR).toBe(originalRoot);
+      task.result.resolve(returned);
+      expect(await result).toEqual(returned);
+    } finally {
+      dispatch.resolve();
+      task.result.resolve(returned);
+      await Promise.allSettled([result]);
+    }
+  },
+);
+
+it("captures update history filters and charges retained selectors before dispatch", async () => {
+  const { options } = source();
+  const selector = "更新🦞".repeat(512);
+  const input = { reason: selector, includeRunId: selector, active: true, limit: 100 };
+  const expected = { ...input };
+  const dispatch = createDeferredCore();
+  const task = queueTask(dispatch.promise);
+  const result = executeExistingOpenClawStateRead(options, { type: "updateRuns.list", input });
+  const returned: OpenClawStateReadReply = {
+    ok: true,
+    type: "updateRuns.list",
+    sourceAdmitted: true,
+    runs: [],
+  };
+  try {
+    const submitted = await task.submitted;
+    input.reason = "changed reason";
+    input.includeRunId = "changed owner";
+    input.active = false;
+    input.limit = 1;
+    expect(submitted.inputBytes).toBeGreaterThanOrEqual(Buffer.byteLength(selector) * 2 + 9);
+    dispatch.resolve();
+    expect((await task.captured).command).toEqual({ type: "updateRuns.list", input: expected });
+    task.result.resolve(returned);
+    expect(await result).toEqual(returned);
+  } finally {
+    dispatch.resolve();
+    task.result.resolve(returned);
+    await Promise.allSettled([result]);
+  }
+});
+
+it.each(["skills.library.descriptions", "skills.library.manifests"] as const)(
+  "retains library pins and their byte charge while dispatch waits (%s)",
+  async (type) => {
+    const { options } = source();
+    const input = [{ skillId: "技能🦞".repeat(512), revision: "版本🦞".repeat(512) }];
+    const expected = structuredClone(input);
+    const dispatch = createDeferredCore();
+    const task = queueTask(dispatch.promise);
+    const result = executeExistingOpenClawStateRead(options, { type, input });
+    const returned: OpenClawStateReadReply = { ok: true, type, sourceAdmitted: true, value: [] };
+    try {
+      const submitted = await task.submitted;
+      input[0]!.skillId = "changed";
+      input[0]!.revision = "changed";
+      input.push({ skillId: "extra", revision: "extra" });
+      expect(submitted.inputBytes).toBeGreaterThanOrEqual(
+        Buffer.byteLength(expected[0]!.skillId) + Buffer.byteLength(expected[0]!.revision),
+      );
+      dispatch.resolve();
+      expect((await task.captured).command).toEqual({ type, input: expected });
       task.result.resolve(returned);
       expect(await result).toEqual(returned);
     } finally {
@@ -764,6 +855,61 @@ it.each([
     }
   },
 );
+
+it("captures cron recovery markers and charges their retained bytes before dispatch", async () => {
+  const { pathname, options } = source();
+  const context = captureOpenClawStateWorkerContext(options);
+  const location = { context, location: pathname, checkFreshAdmission: false };
+  const authority = { signal: new AbortController().signal, assertCurrent: () => {} };
+  const command = {
+    type: "cron.observeRunRecovery" as const,
+    storeKey: "租户🦞",
+    proposals: [
+      { jobId: "任务雪", queuedAtMs: 1, runningAtMs: 2 },
+      { jobId: "运行🌊", runningAtMs: 3 },
+    ],
+  };
+  const expected = structuredClone(command);
+  const transport = createOpenClawStateReadTransport(command);
+  const baseline = createOpenClawStateReadTransport({ type: "fleet.list" });
+  command.storeKey = "changed partition";
+  command.proposals[0]!.jobId = "changed before preparation";
+  command.proposals[0]!.queuedAtMs = 9;
+  const dispatch = createDeferredCore();
+  const baselineTask = queueTask(dispatch.promise);
+  const task = queueTask(dispatch.promise);
+  const baselineRead = baseline.read(location, authority);
+  const read = transport.read(location, authority);
+  try {
+    const [baseOptions, submittedOptions] = await Promise.all([
+      baselineTask.submitted,
+      task.submitted,
+    ]);
+    const expectedBytes =
+      Buffer.byteLength(expected.type) -
+      Buffer.byteLength("fleet.list") +
+      Buffer.byteLength(expected.storeKey) +
+      expected.proposals.reduce((total, entry) => total + Buffer.byteLength(entry.jobId), 24);
+    expect(submittedOptions.inputBytes).toBe(Number(baseOptions.inputBytes) + expectedBytes);
+    command.proposals.splice(0);
+    dispatch.resolve();
+    expect((await task.captured).command).toEqual(expected);
+    baselineTask.result.resolve(emptyReply);
+    task.result.resolve({
+      ok: true,
+      type: expected.type,
+      sourceAdmitted: true,
+      observation: { kind: "observed", proposals: [] },
+    });
+    await Promise.all([baselineRead, read]);
+  } finally {
+    dispatch.resolve();
+    baselineTask.result.resolve(emptyReply);
+    task.result.resolve(emptyReply);
+    await Promise.allSettled([baselineRead, read]);
+    await Promise.all([baseline.close(), transport.close()]);
+  }
+});
 
 it("captures and charges independent snapshot and schema paths before queued dispatch", async () => {
   const { root, options } = source();

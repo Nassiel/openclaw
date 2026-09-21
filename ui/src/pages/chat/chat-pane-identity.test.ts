@@ -8,7 +8,6 @@ import type { GatewaySessionRow } from "../../api/types.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import type { ExecApprovalRequest } from "../../app/exec-approval.ts";
 import { t } from "../../i18n/index.ts";
-import type { SessionCapability } from "../../lib/sessions/index.ts";
 import { gatewayHelloForMethods } from "../../test-helpers/gateway-methods.ts";
 import { setChatHistoryLoad } from "./chat-history-state.ts";
 import { ChatPaneBase } from "./chat-pane-base.ts";
@@ -29,7 +28,10 @@ import { projectSessionApprovalReplay } from "./session-approval-projection.ts";
 describe("chat pane assistant identity snapshots", () => {
   it("keeps an explicitly owned global Home pane on its agent across work selection", () => {
     const client = { request: vi.fn(async () => ({})) } as unknown as GatewayBrowserClient;
-    const { pane, state } = createTestChatPane({ client, sessions: {} as SessionCapability });
+    const { pane, state } = createTestChatPane({
+      client,
+      sessions: createSessionCapabilityFixture(),
+    });
     (pane as TestChatPane & { agentId: string }).agentId = "personal";
     pane.sessionKey = "global";
     state.sessionKey = "global";
@@ -199,7 +201,7 @@ describe("chat pane assistant identity snapshots", () => {
 
   it("keeps a session-specific assistant identity across ordinary gateway snapshots", () => {
     const client = createGatewayBrowserClientFixture();
-    const { pane } = createTestChatPane({ client, sessions: {} as SessionCapability });
+    const { pane } = createTestChatPane({ client, sessions: createSessionCapabilityFixture() });
     const state = (pane as unknown as { state: ChatPageHost }).state;
     state.client = client;
     state.connected = true;
@@ -216,7 +218,10 @@ describe("chat pane assistant identity snapshots", () => {
   it("resets a session-specific identity when the logical connection changes", () => {
     const client = createGatewayBrowserClientFixture();
     const nextClient = createGatewayBrowserClientFixture();
-    const { pane, state } = createTestChatPane({ client, sessions: {} as SessionCapability });
+    const { pane, state } = createTestChatPane({
+      client,
+      sessions: createSessionCapabilityFixture(),
+    });
     state.assistantName = "Session Agent";
 
     pane.applyGatewaySnapshot({
@@ -571,6 +576,49 @@ describe("global chat pane feature ownership", () => {
       }
     },
   );
+
+  it("refreshes the captured global card without chat effects and ignores stale actions", async () => {
+    let revision = 1;
+    const request = vi.fn(async (method: string, params?: unknown) => {
+      if (method === "progressCard.refresh") {
+        return { runId: "quiet-refresh", status: "accepted", revision: 1 };
+      }
+      const agentId = (params as { agentId?: string } | undefined)?.agentId ?? "research";
+      return { card: globalProgressCard(agentId, revision) };
+    });
+    const { pane, select, emit } = createGlobalFeaturePane(request, [
+      "progressCard.get",
+      "progressCard.refresh",
+    ]);
+    await vi.waitFor(() => expect(pane.chatProps?.progressCardRefresh).toBeDefined());
+    const original = pane.chatProps!.progressCard!;
+    const action = pane.chatProps!.progressCardRefresh!;
+    const messages = pane.chatProps!.messages;
+    const queue = pane.chatProps!.queue;
+    action.onRefresh(original);
+    expect(request).toHaveBeenLastCalledWith("progressCard.refresh", {
+      sessionKey: "global",
+      agentId: "research",
+      idempotencyKey: expect.any(String),
+    });
+    await vi.waitFor(() => expect(pane.chatProps?.progressCardRefresh?.state).toBe("pending"));
+    expect(pane.chatProps!.progressCard).toBe(original);
+    expect(pane.chatProps!.messages).toBe(messages);
+    expect(pane.chatProps!.queue).toBe(queue);
+    revision = 2;
+    emit({ sessionKey: "agent:research:global", revision });
+    await vi.waitFor(() => expect(pane.chatProps?.progressCardRefresh?.state).toBe("updated"));
+    select("main");
+    action.onRefresh(original);
+    await vi.waitFor(() =>
+      expect(pane.chatProps?.progressCard?.sessionKey).toBe("agent:main:global"),
+    );
+    expect(pane.chatProps?.progressCardRefresh?.state).toBeUndefined();
+    expect(request.mock.calls.filter(([method]) => method === "progressCard.refresh")).toHaveLength(
+      1,
+    );
+    expect(request.mock.calls.some(([method]) => method === "chat.send")).toBe(false);
+  });
 
   it("loads, refreshes and dismisses the selected agent's global progress card", async () => {
     let card: ProgressCard | null = globalProgressCard("research");

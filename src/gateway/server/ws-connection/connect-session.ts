@@ -14,7 +14,7 @@ import { upsertPresence } from "../../../infra/system-presence.js";
 import { loadVoiceWakeRoutingConfig } from "../../../infra/voicewake-routing.js";
 import { loadVoiceWakeConfig } from "../../../infra/voicewake.js";
 import { resolveLocalNodeId } from "../../../node-host/local-id.js";
-import { roleScopesAllow } from "../../../shared/operator-scope-compat.js";
+import { intersectOperatorScopes } from "../../../shared/operator-scope-compat.js";
 import { recordRemoteNodeInfo, refreshRemoteNodeBins } from "../../../skills/runtime/remote.js";
 import { classifyTailscaleLogin } from "../../../state/user-profiles-tailscale-login.js";
 import { adoptTailscaleProfileAvatar } from "../../../state/user-profiles.js";
@@ -50,15 +50,19 @@ import { truncateCloseReason } from "../close-reason.js";
 import type { GatewayWsClient } from "../ws-types.js";
 import {
   rejectGatewayConnectOrigin,
-  rejectUnavailableProfileConnect,
   resolveEffectiveConnectionScopes,
   resolveGatewayConnectPolicyFailure,
 } from "./connect-admission.js";
 import { sendGatewayHello } from "./connect-hello.js";
 import { prepareGatewayNodeConnect } from "./connect-node-session.js";
 import {
+  bindGatewayConnectOperatorAccess,
+  prepareGatewayConnectOperatorAccess,
+  rejectGatewayConnectOperatorAccess,
+} from "./connect-operator-access.js";
+import {
   resolveAuthenticatedProfile,
-  resolveGatewayConnectUserProfile,
+  resolveGatewayConnectProfileAdmission,
 } from "./connect-user-profile.js";
 import { resolveControlUiBuildMismatch } from "./control-ui-build-admission.js";
 import type {
@@ -194,34 +198,17 @@ export async function attachAuthenticatedGatewayConnect(
   const ownerProfileExpected =
     shouldTrackPresence &&
     shouldUseGatewayOwnerProfile({ role, authenticatedUserId, authMethod, rolesConfigured });
-  let authenticatedUserProfile: GatewayWsClient["authenticatedUserProfile"];
-  if (
-    ownerProfileExpected ||
-    (authenticatedUserId && (!resolveAuthenticatedGitHubIdentity || rolesConfigured))
-  ) {
-    try {
-      // The live profile callback refreshes edits and detached provider-avatar adoption.
-      authenticatedUserProfile = await resolveGatewayConnectUserProfile({
-        ownerProfileExpected,
-        authenticatedUserId,
-        authResult,
-        resolveAuthenticatedGitHubIdentity,
-      });
-    } catch (error) {
-      logWsControl.warn(
-        `user profile resolution failed conn=${connId} user=${formatForLog(authenticatedUserId)}: ${formatForLog(error)}`,
-      );
-      if (
-        !ownerProfileExpected &&
-        rolesConfigured &&
-        role === "operator" &&
-        !sharedSecretOperatorOwner
-      ) {
-        await rejectUnavailableProfileConnect(context, error);
-        return;
-      }
-    }
+  const profileAdmission = await resolveGatewayConnectProfileAdmission({
+    context,
+    state,
+    ownerProfileExpected,
+    authenticatedUserId,
+    resolveAuthenticatedGitHubIdentity,
+  });
+  if (!profileAdmission.ok) {
+    return;
   }
+  const authenticatedUserProfile = profileAdmission.profile;
   // Identity-derived scopes must be capped only after their durable profile is known.
   // Configured roles fail closed if profile storage or provider verification is unavailable.
   const effectiveScopes = resolveEffectiveConnectionScopes({
@@ -239,13 +226,7 @@ export async function attachAuthenticatedGatewayConnect(
         )
       : undefined;
   const scopes = rolePolicy
-    ? effectiveScopes.scopes.filter((scope) =>
-        roleScopesAllow({
-          role: "operator",
-          requestedScopes: [scope],
-          allowedScopes: rolePolicy.scopes,
-        }),
-      )
+    ? intersectOperatorScopes(effectiveScopes.scopes, rolePolicy.scopes)
     : effectiveScopes.scopes;
   state.scopes = scopes;
   connectParams.scopes = scopes;
@@ -539,6 +520,12 @@ export async function attachAuthenticatedGatewayConnect(
     close(1011, message);
     return;
   }
+  try {
+    prepareGatewayConnectOperatorAccess(nextClient);
+  } catch {
+    await rejectGatewayConnectOperatorAccess(context);
+    return;
+  }
   prepareGatewayRecipientProfile(nextClient);
   if (!setClient(nextClient)) {
     await releasePendingNodePairingCleanup();
@@ -546,6 +533,9 @@ export async function attachAuthenticatedGatewayConnect(
       ...clientMeta,
       auth: authMethod,
     });
+    return;
+  }
+  if (!bindGatewayConnectOperatorAccess(context, nextClient)) {
     return;
   }
   clearHandshakeTimer();

@@ -16,7 +16,6 @@ import {
   closeTaskRegistryDatabase,
   deleteTaskAndDeliveryStateFromSqlite,
   loadTaskRegistryStateFromSqlite,
-  repairLegacyTaskIdentifiersInSqlite,
   loadTaskRegistryMutationStateFromSqlite,
   upsertTaskWithDeliveryStateToSqlite,
   upsertTaskDeliveryStateToSqlite,
@@ -56,7 +55,7 @@ export type TaskRegistryStore = TaskExecutionRestoreStore & {
   ): Promise<TaskLiveFlowSyncOutcome>;
   withSnapshotAsync<T>(
     context: OpenClawStateWorkerContext,
-    consume: (snapshot: TaskRegistryRestoreResult) => T,
+    consume: (snapshot: TaskRegistryRestoreResult, reconcileFlows: () => Promise<void>) => T,
   ): Promise<T>;
   syncTaskFlowAsync: (
     context: OpenClawStateWorkerContext,
@@ -104,22 +103,24 @@ const defaultTaskRegistryStore: TaskRegistryStore = {
     return syncLiveTaskFlowWithWorker(context, params, authority);
   },
   async withSnapshotAsync(context, consume) {
-    const { runOpenClawStateWorkerOperation } =
-      await import("../state/openclaw-state-worker-store.js");
-    return runOpenClawStateWorkerOperation(context, async (scope) => {
-      const snapshot = await scope.execute({ type: "tasks.restore", input: undefined });
-      // Deliver durable settlement receipts before projection admission is rechecked.
-      return consume(snapshot);
-    });
-  },
-  async syncTaskFlowAsync(context, params) {
-    const { runOpenClawStateWorkerOperation } =
-      await import("../state/openclaw-state-worker-store.js");
-    return runOpenClawStateWorkerOperation(context, (scope) =>
-      scope.execute({ type: "flows.syncMirroredTask", input: params }),
+    const { runTaskFlowRestoreWorkerOperation } = await import("./task-flow-restore-store.js");
+    return runTaskFlowRestoreWorkerOperation(
+      context,
+      { type: "tasks.restore", input: undefined },
+      consume,
     );
   },
-  repairLegacyIdentifiers: repairLegacyTaskIdentifiersInSqlite,
+  async syncTaskFlowAsync(context, params) {
+    const { runTaskFlowRestoreWorkerOperation } = await import("./task-flow-restore-store.js");
+    return runTaskFlowRestoreWorkerOperation(
+      context,
+      { type: "flows.syncMirroredTask", input: params },
+      async (result, reconcileFlows) => {
+        await reconcileFlows();
+        return result;
+      },
+    );
+  },
   loadSnapshot: loadTaskRegistryStateFromSqlite,
   async loadMutationSnapshotAsync(context, scope) {
     const { executeOpenClawStateWorker } = await import("../state/openclaw-state-worker-store.js");

@@ -327,6 +327,18 @@ function prepareNativeEventConsumption(): { consume: () => void; release: () => 
 
 export const taskAgentEventMutations = {
   prepare: prepareNativeEventConsumption,
+  pendingTaskIds(): readonly string[] {
+    const taskIds: string[] = [];
+    for (const [taskId, entries] of pendingByTask) {
+      for (const entry of entries) {
+        if (entry.phase.kind !== "consumed") {
+          taskIds.push(taskId);
+          break;
+        }
+      }
+    }
+    return taskIds;
+  },
   pending(taskId?: string) {
     const entries = taskId === undefined ? pendingEvents : pendingByTask.get(taskId);
     for (const entry of entries ?? []) {
@@ -377,7 +389,14 @@ async function persist(pending: PendingEvent): Promise<void> {
           admission: context.admission,
           readIdentity: "preserved",
           prepare: async () => {
-            await taskFlowSyncOwner(taskId).prepare(context, store, Number.POSITIVE_INFINITY);
+            const owner = taskFlowSyncOwner(taskId);
+            // Native consumption owns settlement even when a held snapshot becomes stale.
+            // Join that read, then let the mutation callback await native commit or rollback.
+            while (pending.phase.kind !== "consumed") {
+              if (await owner.prepare(context, store, 1)) {
+                return;
+              }
+            }
           },
           onPublicationError: (error) => {
             publicationFailure = { error };

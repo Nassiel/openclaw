@@ -32,6 +32,7 @@ import {
 } from "./openclaw-state-lease-storage.js";
 import {
   type OpenClawStateLeaseAcquisition,
+  type OpenClawStateLeaseIdentity,
   readOpenClawStateLeaseExpiry,
   releaseOpenClawStateLeaseInTransaction,
   renewOpenClawStateLeaseInTransaction,
@@ -179,12 +180,7 @@ function validateOptions(options: OpenClawStateLeaseOptions) {
   };
 }
 
-type LeaseIdentity = {
-  scope: string;
-  key: string;
-  owner: string;
-  leaseLabel: string;
-};
+type LeaseIdentity = OpenClawStateLeaseIdentity & { leaseLabel: string };
 
 function renew(
   params: LeaseIdentity & {
@@ -400,6 +396,7 @@ export async function withOpenClawStateLease<T>(
     validated.signal?.removeEventListener("abort", abortAcquisition);
   }
 
+  const acquiredAt = confirmedExpiresAt - validated.leaseMs;
   const identity: LeaseIdentity = {
     scope: validated.scope,
     key: validated.key,
@@ -570,6 +567,7 @@ export async function withOpenClawStateLease<T>(
       identity,
       leaseMs: validated.leaseMs,
       heartbeatMs,
+      acquiredAt,
       expiresAt,
       onLost: abortLost,
       renewDuringStartup: () => {

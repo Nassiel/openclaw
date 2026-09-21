@@ -54,6 +54,7 @@ describe("tsgo core test shards", () => {
       }),
     ).toEqual([]);
     for (const [file, owner] of [
+      ["src/agents/sessions/settings-storage.test.ts", "agents-sessions"],
       ["ui/src/pages/chat/chat-send-submit.test.ts", "ui-chat"],
       ["ui/src/pages/config/config-page.test.ts", "ui-pages"],
       ["src/gateway/server-methods/update-owner.test.ts", "gateway-methods"],
@@ -69,9 +70,10 @@ describe("tsgo core test shards", () => {
       ["src/cli/program/register.agent.test.ts", "commands"],
       ["src/tui/tui-plugin-approvals.test.ts", "commands"],
       ["src/wizard/setup.test.ts", "commands"],
-      ["src/cli/cron-cli.test.ts", "services"],
-      ["src/cli/cron-output.process.test.ts", "services"],
-      ["src/cli/cron-cli/register.cron-edit.test.ts", "services"],
+      ["src/cli/cron-cli.test.ts", "services-cron"],
+      ["src/cli/cron-output.process.test.ts", "services-cron"],
+      ["src/cli/cron-cli/register.cron-edit.test.ts", "services-cron"],
+      ["src/cron/service/run-recovery.observation.test.ts", "services-cron"],
       ["src/cli/program/command-registry.test.ts", "commands"],
       ["src/cli/update-cli.test.ts", "cli-update"],
       ["src/cli/update-cli/update-command-config-fence.test.ts", "cli-update"],
