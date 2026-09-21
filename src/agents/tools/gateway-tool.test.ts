@@ -1,7 +1,12 @@
 import { asRecord, readStringField } from "@openclaw/normalization-core/record-coerce";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { prepareCronPromptRunAdmission } from "../../cron/isolated-agent/run-admission.js";
 import type { GatewayRequestContext } from "../../gateway/server-methods/types.js";
-import { withGatewayToolCallerIdentity } from "./gateway-caller-context.js";
+import { bindGatewayContextResolver } from "../../plugins/runtime/gateway-request-scope.js";
+import {
+  createAdmittedGatewayToolCallerIdentity,
+  withGatewayToolCallerIdentity,
+} from "./gateway-caller-context.js";
 import { createGatewayTool } from "./gateway-tool.js";
 
 const { callGatewayToolMock, dispatchMock, host } = vi.hoisted(() => ({
@@ -40,7 +45,7 @@ describe("gateway tool", () => {
       "update.run",
     ]);
     expect(tool.description).toBe(
-      "Read gateway config/schema. update.run: owner-only update on explicit user request; restart + completion notice automatic. Never via shell.",
+      "Read gateway config/schema. update.run: owner request or operator schedule; automatic restart + completion notice. Never via shell.",
     );
   });
 
@@ -101,6 +106,66 @@ describe("gateway update action", () => {
     host.context = {} as GatewayRequestContext;
   });
 
+  it.each(["operator-schedule", "requester-schedule", undefined] as const)(
+    "uses recorded scheduler admission %s independently of audit and chat delivery",
+    async (admissionSource) => {
+      const sessionKey = "agent:main:synthetic-update";
+      const admission = prepareCronPromptRunAdmission({
+        cfg: {},
+        agentId: "main",
+        runId: "synthetic-run",
+        sessionId: "synthetic-session",
+        sessionKey,
+        jobId: "synthetic-job",
+        admissionSource,
+      });
+      try {
+        const context = await admission.preparedRunAdmission.admit("embedded");
+        expect(context.executionIdentityToken).toBeUndefined();
+        bindGatewayContextResolver(context, () => host.context);
+        const caller = createAdmittedGatewayToolCallerIdentity({
+          admittedRunContext: context,
+          agentId: "main",
+          sessionKey,
+          turnSourceChannel: "telegram",
+          turnSourceTo: "123",
+        });
+        dispatchMock.mockResolvedValue({ ok: true, runId: "update-run", result: { status: "ok" } });
+        const invoke = () =>
+          withGatewayToolCallerIdentity(caller, () =>
+            withGatewayToolCallerIdentity({ agentId: "main", sessionKey }, () =>
+              createGatewayTool().execute("scheduled-update", { action: "update.run" }),
+            ),
+          );
+        const result = await invoke();
+        if (admissionSource === "operator-schedule") {
+          expect(result.details).toMatchObject({ ok: true, runId: "update-run" });
+          expect(dispatchMock).toHaveBeenCalledOnce();
+          expect(dispatchMock.mock.calls[0]?.[1]).toMatchObject({
+            sessionKey,
+            requester: undefined,
+            deliveryContext: { channel: "telegram", to: "123" },
+          });
+          admission.close();
+          await expect(invoke()).rejects.toThrow("caller authority is no longer active");
+          expect(dispatchMock).toHaveBeenCalledOnce();
+        } else {
+          expect(result.details).toMatchObject({
+            ok: false,
+            code: "owner_required",
+            reason: "owner_required",
+            message: expect.stringContaining(
+              "No authenticated owner chat principal or operator-scheduled admission",
+            ),
+          });
+          expect(dispatchMock).not.toHaveBeenCalled();
+        }
+      } finally {
+        admission.close();
+      }
+    },
+  );
+
   it.each([false, undefined])("requires an explicit owner identity (%s)", async (senderIsOwner) => {
     const result = await withGatewayToolCallerIdentity(
       {
@@ -118,8 +183,9 @@ describe("gateway update action", () => {
     expect(result.details).toEqual({
       ok: false,
       code: "owner_required",
+      reason: "owner_required",
       message:
-        "Only the OpenClaw owner can start an update from chat. Ask the operator to add `telegram:123456789` to `commands.ownerAllowFrom`.",
+        "No authenticated owner chat principal or operator-scheduled admission authorizes this update. Ask the operator to add `telegram:123456789` to `commands.ownerAllowFrom`.",
     });
     expect(callGatewayToolMock).not.toHaveBeenCalled();
     expect(dispatchMock).not.toHaveBeenCalled();
