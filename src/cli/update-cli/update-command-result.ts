@@ -365,7 +365,7 @@ export async function withUpdateAdmissionReporting<T>(
         durationMs: 0,
       }),
       opts,
-      { nextAction: message },
+      { readHistory: false, nextAction: message },
     );
     return exitCliAfterOutput(defaultRuntime, 1);
   }
