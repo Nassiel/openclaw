@@ -1,11 +1,10 @@
+import { getEventListeners } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { createRetainedCache } from "../infra/retained-cache.js";
 import type { ControlUiSessionPullRequests } from "./control-ui-contract.js";
-import {
-  createControlUiSessionPullRequestSubscriptions,
-  parseControlUiSessionPullRequestsSubscribeParams,
-} from "./control-ui-session-pr-subscriptions.js";
+import { parseControlUiSessionPullRequestsSubscribeParams } from "./control-ui-session-pr-subscriptions.js";
+import { createTestControlUiSessionPrSubscriptions } from "./control-ui-session-pr-subscriptions.test-support.js";
 import type { ControlUiSessionPullRequestsParams } from "./control-ui-session-prs.js";
 
 const CHANGED_EVENT = "controlUi.sessionPullRequests.changed";
@@ -15,7 +14,7 @@ const READY: ControlUiSessionPullRequests = {
   rateLimited: false,
 };
 
-let active: ReturnType<typeof createControlUiSessionPullRequestSubscriptions> | undefined;
+let active: ReturnType<typeof createTestControlUiSessionPrSubscriptions> | undefined;
 
 afterEach(async () => {
   await active?.stop();
@@ -38,7 +37,7 @@ describe("control UI session PR subscriptions", () => {
       const entered = createDeferred();
       const held = createDeferred();
       const signals: AbortSignal[] = [];
-      active = createControlUiSessionPullRequestSubscriptions({
+      active = createTestControlUiSessionPrSubscriptions({
         broadcastToConnIds: vi.fn(),
         load: async ({ sessionKey }, signal) => {
           if (!signal) {
@@ -143,7 +142,7 @@ describe("control UI session PR subscriptions", () => {
       rateLimited: false,
     }));
     const broadcastToConnIds = vi.fn();
-    active = createControlUiSessionPullRequestSubscriptions({ broadcastToConnIds, load });
+    active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
 
     await active.replace("conn-a", ["agent:main:demo"]);
     expect(broadcastToConnIds).toHaveBeenCalledTimes(1);
@@ -155,6 +154,7 @@ describe("control UI session PR subscriptions", () => {
         },
       },
       new Set(["conn-a"]),
+      { sessionKeys: ["agent:main:demo"], agentId: "main" },
     );
 
     broadcastToConnIds.mockClear();
@@ -175,7 +175,7 @@ describe("control UI session PR subscriptions", () => {
       (params: ControlUiSessionPullRequestsParams) => Promise<ControlUiSessionPullRequests>
     >(async () => READY);
     const broadcastToConnIds = vi.fn();
-    active = createControlUiSessionPullRequestSubscriptions({ broadcastToConnIds, load });
+    active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
 
     await active.replace("conn-a", ["shared", "only-a"]);
     await active.replace("conn-b", ["shared", "only-b"]);
@@ -194,11 +194,11 @@ describe("control UI session PR subscriptions", () => {
     ).toEqual(["only-a", "only-b", "shared"]);
   });
 
-  it("keeps a delivered audience snapshot when a send disconnects a watcher", async () => {
+  it("skips a watcher disconnected by an earlier synchronous send", async () => {
     let revision = 0;
     const load = vi.fn(async () => ({ ...READY, rateLimited: revision > 0 }));
     const broadcastToConnIds = vi.fn();
-    active = createControlUiSessionPullRequestSubscriptions({ broadcastToConnIds, load });
+    active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
     await active.replace("conn-a", ["shared"]);
     await active.replace("conn-b", ["shared"]);
     broadcastToConnIds.mockClear();
@@ -207,11 +207,21 @@ describe("control UI session PR subscriptions", () => {
     revision++;
     await active.pollNow();
 
-    expect(broadcastToConnIds.mock.calls[0]?.[2]).toEqual(new Set(["conn-a", "conn-b"]));
+    expect(broadcastToConnIds).toHaveBeenCalledExactlyOnceWith(
+      CHANGED_EVENT,
+      { sessions: { shared: { ...READY, rateLimited: true, status: "rate-limited" } } },
+      new Set(["conn-a"]),
+      { sessionKeys: ["shared"], agentId: "main" },
+    );
     broadcastToConnIds.mockClear();
     revision = 0;
     await active.pollNow();
-    expect(broadcastToConnIds.mock.calls[0]?.[2]).toEqual(new Set(["conn-a"]));
+    expect(broadcastToConnIds).toHaveBeenCalledExactlyOnceWith(
+      CHANGED_EVENT,
+      { sessions: { shared: { ...READY, status: "ready" } } },
+      new Set(["conn-a"]),
+      { sessionKeys: ["shared"], agentId: "main" },
+    );
   });
 
   it("shares the four-load limit across connections, hydration, and polling", async () => {
@@ -223,7 +233,7 @@ describe("control UI session PR subscriptions", () => {
           releases.push(() => resolve(READY));
         }),
     );
-    active = createControlUiSessionPullRequestSubscriptions({
+    active = createTestControlUiSessionPrSubscriptions({
       broadcastToConnIds: vi.fn(),
       load,
     });
@@ -258,7 +268,7 @@ describe("control UI session PR subscriptions", () => {
     vi.useFakeTimers();
     const load = vi.fn(async () => READY);
     const broadcastToConnIds = vi.fn();
-    active = createControlUiSessionPullRequestSubscriptions({ broadcastToConnIds, load });
+    active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
     await active.replace("conn-a", ["first", "second"]);
     load.mockClear();
     broadcastToConnIds.mockClear();
@@ -270,11 +280,15 @@ describe("control UI session PR subscriptions", () => {
 
     await active.replace("conn-a", ["first", "second", "added"]);
 
-    expect(load).toHaveBeenCalledExactlyOnceWith({ sessionKey: "added" }, expect.any(AbortSignal));
+    expect(load).toHaveBeenCalledExactlyOnceWith(
+      { sessionKey: "added", agentId: "main" },
+      expect.any(AbortSignal),
+    );
     expect(broadcastToConnIds).toHaveBeenCalledExactlyOnceWith(
       CHANGED_EVENT,
       { sessions: { added: { ...READY, status: "ready" } } },
       new Set(["conn-a"]),
+      { sessionKeys: ["added"], agentId: "main" },
     );
   });
 
@@ -292,7 +306,7 @@ describe("control UI session PR subscriptions", () => {
         sessionKey.startsWith("blocked-") ? await blocked.promise : READY,
       );
       const broadcastToConnIds = vi.fn();
-      active = createControlUiSessionPullRequestSubscriptions({ broadcastToConnIds, load });
+      active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
       if (polling) {
         await active.replace("old", ["session"]);
         load.mockClear();
@@ -313,13 +327,18 @@ describe("control UI session PR subscriptions", () => {
         load.mock.calls
           .map(([params]) => params)
           .filter((params) => params.sessionKey === "session"),
-      ).toEqual([refresh ? { sessionKey: "session", refresh: true } : { sessionKey: "session" }]);
+      ).toEqual([
+        refresh
+          ? { sessionKey: "session", agentId: "main", refresh: true }
+          : { sessionKey: "session", agentId: "main" },
+      ]);
       expect(broadcastToConnIds.mock.calls.filter((call) => "session" in call[1].sessions)).toEqual(
         [
           [
             CHANGED_EVENT,
             { sessions: { session: { ...READY, status: "ready" } } },
             new Set(["new"]),
+            { sessionKeys: ["session"], agentId: "main" },
           ],
         ],
       );
@@ -331,7 +350,7 @@ describe("control UI session PR subscriptions", () => {
     const normal = createDeferred<ControlUiSessionPullRequests>();
     const load = vi.fn(() => normal.promise);
     const broadcastToConnIds = vi.fn();
-    active = createControlUiSessionPullRequestSubscriptions({ broadcastToConnIds, load });
+    active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
     const initial = active.replace("old", ["session"]);
     await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(1));
     const forced = active.replace("old", ["session"], new Set(["session"]));
@@ -341,13 +360,14 @@ describe("control UI session PR subscriptions", () => {
     await Promise.all([initial, forced, current]);
 
     expect(load).toHaveBeenCalledExactlyOnceWith(
-      { sessionKey: "session" },
+      { sessionKey: "session", agentId: "main" },
       expect.any(AbortSignal),
     );
     expect(broadcastToConnIds).toHaveBeenCalledExactlyOnceWith(
       CHANGED_EVENT,
       { sessions: { session: { ...READY, status: "ready" } } },
       new Set(["new"]),
+      { sessionKeys: ["session"], agentId: "main" },
     );
   });
 
@@ -360,7 +380,7 @@ describe("control UI session PR subscriptions", () => {
       .mockImplementationOnce(() => retired.promise)
       .mockImplementationOnce(() => fresh.promise);
     const broadcastToConnIds = vi.fn();
-    active = createControlUiSessionPullRequestSubscriptions({ broadcastToConnIds, load });
+    active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
     const initial = active.replace("old", ["session"]);
     await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(1));
     const forced = active.replace("old", ["session"], new Set(["session"]));
@@ -371,8 +391,8 @@ describe("control UI session PR subscriptions", () => {
 
     expect(broadcastToConnIds).not.toHaveBeenCalled();
     expect(load.mock.calls.map(([params]) => params)).toEqual([
-      { sessionKey: "session" },
-      { sessionKey: "session" },
+      { sessionKey: "session", agentId: "main" },
+      { sessionKey: "session", agentId: "main" },
     ]);
     fresh.resolve(READY);
     await Promise.all([initial, forced, current]);
@@ -381,13 +401,14 @@ describe("control UI session PR subscriptions", () => {
       CHANGED_EVENT,
       { sessions: { session: { ...READY, status: "ready" } } },
       new Set(["new"]),
+      { sessionKeys: ["session"], agentId: "main" },
     );
   });
 
   it("loads agent-scoped global watch keys from the owning agent store", async () => {
     vi.useFakeTimers();
     const load = vi.fn(async () => READY);
-    active = createControlUiSessionPullRequestSubscriptions({
+    active = createTestControlUiSessionPrSubscriptions({
       broadcastToConnIds: vi.fn(),
       load,
     });
@@ -407,7 +428,7 @@ describe("control UI session PR subscriptions", () => {
       rateLimited: refresh === true,
     }));
     const broadcastToConnIds = vi.fn();
-    active = createControlUiSessionPullRequestSubscriptions({ broadcastToConnIds, load });
+    active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
     await active.replace("conn-a", ["refresh-me", "leave-cached"]);
     await active.replace("conn-b", ["refresh-me"]);
     load.mockClear();
@@ -417,13 +438,16 @@ describe("control UI session PR subscriptions", () => {
 
     expect(load).toHaveBeenCalledTimes(1);
     expect(load).toHaveBeenCalledWith(
-      { sessionKey: "refresh-me", refresh: true },
+      { sessionKey: "refresh-me", agentId: "main", refresh: true },
       expect.any(AbortSignal),
     );
-    expect(broadcastToConnIds).toHaveBeenCalledExactlyOnceWith(
-      CHANGED_EVENT,
-      { sessions: { "refresh-me": { ...READY, rateLimited: true, status: "rate-limited" } } },
-      new Set(["conn-a", "conn-b"]),
+    expect(broadcastToConnIds.mock.calls).toEqual(
+      ["conn-a", "conn-b"].map((connId) => [
+        CHANGED_EVENT,
+        { sessions: { "refresh-me": { ...READY, rateLimited: true, status: "rate-limited" } } },
+        new Set([connId]),
+        { sessionKeys: ["refresh-me"], agentId: "main" },
+      ]),
     );
   });
 
@@ -438,7 +462,7 @@ describe("control UI session PR subscriptions", () => {
         return READY;
       });
       const broadcastToConnIds = vi.fn();
-      active = createControlUiSessionPullRequestSubscriptions({ broadcastToConnIds, load });
+      active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
       await active.replace("requester", ["session"]);
       await active.replace("sibling", ["session"]);
       broadcastToConnIds.mockClear();
@@ -449,6 +473,7 @@ describe("control UI session PR subscriptions", () => {
         CHANGED_EVENT,
         { sessions: { session: { ...READY, status: failing ? "unavailable" : "ready" } } },
         new Set(["requester"]),
+        { sessionKeys: ["session"], agentId: "main" },
       );
     },
   );
@@ -469,7 +494,7 @@ describe("control UI session PR subscriptions", () => {
       .mockImplementationOnce(async () => await normal)
       .mockImplementationOnce(async () => await forced);
     const broadcastToConnIds = vi.fn();
-    active = createControlUiSessionPullRequestSubscriptions({ broadcastToConnIds, load });
+    active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
     await active.replace("conn-a", ["session"]);
     await active.replace("conn-b", ["session"]);
     broadcastToConnIds.mockClear();
@@ -483,10 +508,13 @@ describe("control UI session PR subscriptions", () => {
     resolveForced(READY);
     await Promise.all([poll, refresh]);
 
-    expect(broadcastToConnIds).toHaveBeenLastCalledWith(
-      CHANGED_EVENT,
-      { sessions: { session: { ...READY, status: "ready" } } },
-      new Set(["conn-a", "conn-b"]),
+    expect(broadcastToConnIds.mock.calls.slice(-2)).toEqual(
+      ["conn-a", "conn-b"].map((connId) => [
+        CHANGED_EVENT,
+        { sessions: { session: { ...READY, status: "ready" } } },
+        new Set([connId]),
+        { sessionKeys: ["session"], agentId: "main" },
+      ]),
     );
   });
 
@@ -510,7 +538,7 @@ describe("control UI session PR subscriptions", () => {
         return await heldSnapshot.promise;
       });
       const broadcastToConnIds = vi.fn();
-      const subscriptions = createControlUiSessionPullRequestSubscriptions({
+      const subscriptions = createTestControlUiSessionPrSubscriptions({
         broadcastToConnIds,
         load,
       });
@@ -553,7 +581,10 @@ describe("control UI session PR subscriptions", () => {
         }).toEqual({
           completedBeforeRelease: 0,
           stopCompletions: 2,
-          loads: [{ sessionKey: "session" }, { sessionKey: "barrier" }],
+          loads: [
+            { sessionKey: "session", agentId: "main" },
+            { sessionKey: "barrier", agentId: "main" },
+          ],
           broadcasts: 0,
         });
       } finally {
@@ -568,7 +599,7 @@ describe("control UI session PR subscriptions", () => {
     vi.useFakeTimers();
     const load = vi.fn(async () => READY);
     const broadcastToConnIds = vi.fn();
-    active = createControlUiSessionPullRequestSubscriptions({ broadcastToConnIds, load });
+    active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
 
     await active.replace("conn-a", ["replace-orphan"]);
     await active.replace("conn-a", []);
@@ -594,7 +625,7 @@ describe("control UI session PR subscriptions", () => {
         .mockImplementationOnce(() => pending.promise)
         .mockResolvedValue(READY);
       const broadcastToConnIds = vi.fn();
-      active = createControlUiSessionPullRequestSubscriptions({ broadcastToConnIds, load });
+      active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
       await active.replace("conn-a", ["session"]);
       const pendingLoad =
         kind === "poll"
@@ -610,6 +641,7 @@ describe("control UI session PR subscriptions", () => {
         CHANGED_EVENT,
         { sessions: { session: { ...READY, rateLimited: true, status: "rate-limited" } } },
         new Set(["conn-a"]),
+        { sessionKeys: ["session"], agentId: "main" },
       );
     },
   );
@@ -625,7 +657,7 @@ describe("control UI session PR subscriptions", () => {
         .mockImplementationOnce(() => normal.promise)
         .mockResolvedValue(READY);
       const broadcastToConnIds = vi.fn();
-      active = createControlUiSessionPullRequestSubscriptions({ broadcastToConnIds, load });
+      active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
       await active.replace("conn-a", ["session"]);
       const poll = active.pollNow();
       await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(2));
@@ -652,7 +684,7 @@ describe("control UI session PR subscriptions", () => {
   it("rejects replace-sets from inactive connections before loading", async () => {
     const load = vi.fn(async () => READY);
     const broadcastToConnIds = vi.fn();
-    active = createControlUiSessionPullRequestSubscriptions({
+    active = createTestControlUiSessionPrSubscriptions({
       broadcastToConnIds,
       load,
       isConnectionActive: () => false,
@@ -672,7 +704,7 @@ describe("control UI session PR subscriptions", () => {
       .mockResolvedValueOnce(READY)
       .mockImplementationOnce(() => pending.promise);
     const broadcastToConnIds = vi.fn();
-    active = createControlUiSessionPullRequestSubscriptions({ broadcastToConnIds, load });
+    active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
     await active.replace("conn-a", ["session"]);
     const poll = active.pollNow();
     await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(2));
@@ -686,6 +718,7 @@ describe("control UI session PR subscriptions", () => {
       CHANGED_EVENT,
       { sessions: { session: { ...READY, rateLimited: true, status: "rate-limited" } } },
       new Set(["conn-b"]),
+      { sessionKeys: ["session"], agentId: "main" },
     );
   });
 
@@ -697,11 +730,14 @@ describe("control UI session PR subscriptions", () => {
       sessionKey === "old" ? await first : READY,
     );
     const broadcastToConnIds = vi.fn();
-    active = createControlUiSessionPullRequestSubscriptions({ broadcastToConnIds, load });
+    active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
 
     const oldReplace = active.replace("conn-a", ["old", "current"]);
     await vi.waitFor(() =>
-      expect(load).toHaveBeenCalledWith({ sessionKey: "old" }, expect.any(AbortSignal)),
+      expect(load).toHaveBeenCalledWith(
+        { sessionKey: "old", agentId: "main" },
+        expect.any(AbortSignal),
+      ),
     );
     await active.replace("conn-a", ["current"]);
     resolveFirst(READY);
@@ -720,7 +756,7 @@ describe("control UI session PR subscriptions", () => {
       sessionKey.startsWith("blocked") ? await blocked : READY,
     );
     const broadcastToConnIds = vi.fn();
-    active = createControlUiSessionPullRequestSubscriptions({ broadcastToConnIds, load });
+    active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
 
     const oldReplace = active.replace("conn-a", [
       "blocked-1",
@@ -744,6 +780,7 @@ describe("control UI session PR subscriptions", () => {
       CHANGED_EVENT,
       { sessions: { shared: { ...READY, status: "ready" } } },
       new Set(["conn-a"]),
+      { sessionKeys: ["shared"], agentId: "main" },
     );
   });
 
@@ -766,7 +803,7 @@ describe("control UI session PR subscriptions", () => {
       },
     );
     const broadcastToConnIds = vi.fn();
-    active = createControlUiSessionPullRequestSubscriptions({ broadcastToConnIds, load });
+    active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
 
     await active.replace("conn-a", ["limited", "failed", "repository-only"]);
     expect(broadcastToConnIds).toHaveBeenCalledTimes(3);
@@ -786,4 +823,3 @@ describe("control UI session PR subscriptions", () => {
     });
   });
 });
-import { getEventListeners } from "node:events";

@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runGitWorkerOperation } from "../infra/git-worker.js";
-import { loadControlUiSessionPullRequests } from "./control-ui-session-prs.js";
 import {
-  evictPullRequestCache,
+  createSessionPullRequestsFixture,
   githubJson,
   pullListItem,
   requestUrl,
@@ -10,6 +9,8 @@ import {
   testGitContext as context,
 } from "./control-ui-session-prs.test-support.js";
 import { parseGitHubRemoteUrl } from "./github-remote.js";
+
+const { load: loadControlUiSessionPullRequests } = createSessionPullRequestsFixture();
 
 vi.mock("../infra/git-worker.js", () => ({ runGitWorkerOperation: vi.fn() }));
 
@@ -72,8 +73,7 @@ describe("loadControlUiSessionPullRequests", () => {
     vi.setSystemTime(cacheEpochMs);
   });
 
-  afterEach(async () => {
-    await evictPullRequestCache();
+  afterEach(() => {
     vi.unstubAllEnvs();
     vi.useRealTimers();
   });

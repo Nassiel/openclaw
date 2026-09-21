@@ -46,6 +46,7 @@ it.each(["alias replacement", "cold-store close", "same-file reopen"] as const)(
       try {
         expect(read.entry?.sessionId).toBe("identical-session");
         expect(read.isCurrentAtResponse()).toBe(true);
+        expect(read.readCurrentAtResponse()?.entry?.sessionId).toBe("identical-session");
         if (change === "alias replacement") {
           fs.rmSync(aliasDirectory, { recursive: true });
           fs.symlinkSync(replacementDirectory, aliasDirectory, "junction");
@@ -54,14 +55,17 @@ it.each(["alias replacement", "cold-store close", "same-file reopen"] as const)(
           if (change === "same-file reopen") {
             const successor = retainGatewaySessionEntryReadOnly(sessionKey, "main");
             expect(successor.isCurrentAtResponse()).toBe(true);
+            expect(successor.readCurrentAtResponse()?.entry?.sessionId).toBe("identical-session");
             successor.release();
           }
         }
         expect(read.isCurrentAtResponse()).toBe(false);
+        expect(read.readCurrentAtResponse()).toBeUndefined();
       } finally {
         read.release();
       }
       expect(read.isCurrent()).toBe(false);
+      expect(read.readCurrentAtResponse()).toBeUndefined();
       await closeOpenClawAgentDatabaseByPathAsync(read.readSource!.path);
       expect(hasOpenClawAgentDatabaseAsyncResources()).toBe(false);
     });

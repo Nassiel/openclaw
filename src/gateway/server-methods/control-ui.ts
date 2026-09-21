@@ -1,7 +1,6 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
-import { resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
 import {
   GitHubIdentityError,
   prepareGitHubReadIdentity,
@@ -9,13 +8,13 @@ import {
 } from "../../agents/github-tool-identity.js";
 import { redactToolPayloadText } from "../../logging/redact.js";
 import { getActiveSecretsRuntimeConfigSnapshot } from "../../secrets/runtime-state.js";
-import { getSessionRepositoryWorkspaceStore } from "../../state/session-repository-workspaces.js";
 import { truncateUtf16Safe } from "../../utils.js";
 import type { ControlUiSessionPreview } from "../control-ui-contract.js";
 import type {
   ControlUiSessionPullRequestChecksParams,
   loadControlUiSessionPullRequestChecks,
 } from "../control-ui-session-pr-check-details.js";
+import { resolveControlUiSessionPrTarget } from "../control-ui-session-pr-read.js";
 import { parseControlUiSessionPullRequestsSubscribeParams } from "../control-ui-session-pr-subscriptions.js";
 import { requestCurrentGitHubOAuthRefresh } from "../github-oauth-lifecycle.js";
 import { gitHubPublicApi, type ControlUiGitHubPreviewIdentity } from "../github-public-api.js";
@@ -272,7 +271,7 @@ function resolveCheckDetailsSession(
   if (!requested.ok) {
     return null;
   }
-  const { target, entry } = loadSessionEntriesForTarget({
+  const { target, entry, storePath } = loadSessionEntriesForTarget({
     key: sessionKey,
     cfg,
     agentId: requested.agentId,
@@ -281,24 +280,14 @@ function resolveCheckDetailsSession(
   if (!entry?.sessionId || (entryFilter && !entryFilter(target.canonicalKey, entry))) {
     return null;
   }
-  const repository = entry.repositoryWorkspaceId
-    ? getSessionRepositoryWorkspaceStore().get(entry.repositoryWorkspaceId)
-    : undefined;
-  return {
+  const selected = resolveControlUiSessionPrTarget({
+    cfg,
     agentId: target.agentId,
-    sessionScope: JSON.stringify([
-      target.agentId,
-      target.canonicalKey,
-      entry.sessionId,
-      entry.lifecycleRevision,
-      entry.repositoryWorkspaceId,
-      repository?.url,
-      repository?.branch,
-      entry.spawnedCwd,
-      entry.spawnedWorkspaceDir,
-      resolveAgentWorkspaceDir(cfg, target.agentId),
-    ]),
-  };
+    canonicalKey: target.canonicalKey,
+    storePath,
+    entry,
+  });
+  return selected ? { agentId: selected.params.agentId, sessionScope: selected.identity } : null;
 }
 
 async function loadSessionCheckDetails(
