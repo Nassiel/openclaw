@@ -9,6 +9,7 @@ import {
   captureUiProofEnabled,
   createChatFlowE2eSuite,
   installMockGateway,
+  waitForChatScrollIdle,
 } from "./chat-flow.test-support.ts";
 
 const suite = createChatFlowE2eSuite();
@@ -141,6 +142,7 @@ suite.define(() => {
             rail.locator('[aria-current="true"]').getAttribute("data-position-marker-id");
           await expect.poll(() => rail.locator('[aria-current="true"]').count()).toBe(1);
           await transcript.focus();
+          await waitForChatScrollIdle(page);
           const entryId = await currentMarkerId();
           await page.keyboard.press("Tab");
           await expect.poll(focusedMarkerId).toBe(entryId);
@@ -155,6 +157,7 @@ suite.define(() => {
           await page.keyboard.press("Tab");
           expect(await focusedMarkerId()).toBeNull();
           await transcript.focus();
+          await waitForChatScrollIdle(page);
           const reentryId = await currentMarkerId();
           await page.keyboard.press("Tab");
           await expect.poll(focusedMarkerId).toBe(reentryId);
