@@ -14583,7 +14583,11 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       ).include;
       expect(rows).toHaveLength(1);
       expect(rows[0].check_name).toBe("bundled-node-plan");
-      expect(rows[0].includePatterns).toEqual(forwardsChangedPaths ? changedPaths : undefined);
+      expect(
+        resolveShardPlans({
+          OPENCLAW_NODE_TEST_GROUPS_GZIP_BASE64: rows[0].groups_gzip_base64,
+        }).map((plan) => (plan.kind === "group" ? plan.plan.includePatterns : plan.target)),
+      ).toEqual([forwardsChangedPaths ? changedPaths : undefined]);
     },
   );
 
@@ -14909,25 +14913,32 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       eventName: "pull_request",
     });
     expect(matrixFallbackPullRequest.status, matrixFallbackPullRequest.output).toBe(0);
+    const matrixFallbackRows = JSON.parse(
+      expectDefined(
+        matrixFallbackPullRequest.outputs.checks_node_core_nondist_matrix,
+        "Matrix fallback PR node matrix output",
+      ),
+    ).include;
+    const matrixFallbackRow = matrixFallbackRows.find(
+      (row: { check_name: string }) => row.check_name === "changed-extension-fallback-plan",
+    );
+    expect(matrixFallbackRow).toBeDefined();
     expect(
-      JSON.parse(
-        expectDefined(
-          matrixFallbackPullRequest.outputs.checks_node_core_nondist_matrix,
-          "Matrix fallback PR node matrix output",
-        ),
-      ).include,
-    ).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          check_name: "changed-extension-fallback-plan",
+      resolveShardPlans({
+        OPENCLAW_NODE_TEST_GROUPS_GZIP_BASE64: matrixFallbackRow.groups_gzip_base64,
+      }),
+    ).toMatchObject([
+      {
+        kind: "group",
+        plan: {
           configs: ["test/vitest/vitest.extension-matrix.config.ts"],
           includePatterns: [
             "extensions/matrix/src/client.test.ts",
             "extensions/matrix/src/monitor.test.ts",
           ],
-        }),
-      ]),
-    );
+        },
+      },
+    ]);
 
     const sqliteLifecycleTestPullRequest = runCiManifestFixture({
       bundledPlanner: true,
@@ -14944,11 +14955,13 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       eventName: "pull_request",
     });
     expect(emptyPullRequest.status, emptyPullRequest.output).toBe(0);
+    const emptyRows = JSON.parse(
+      expectDefined(emptyPullRequest.outputs.checks_node_core_nondist_matrix, "empty PR matrix"),
+    ).include;
+    expect(emptyRows).toEqual([expect.objectContaining({ check_name: "bundled-node-plan" })]);
     expect(
-      JSON.parse(
-        expectDefined(emptyPullRequest.outputs.checks_node_core_nondist_matrix, "empty PR matrix"),
-      ).include,
-    ).toEqual([expect.objectContaining({ check_name: "bundled-node-plan", includePatterns: [] })]);
+      resolveShardPlans({ OPENCLAW_NODE_TEST_GROUPS_GZIP_BASE64: emptyRows[0].groups_gzip_base64 }),
+    ).toMatchObject([{ kind: "group", plan: { includePatterns: [] } }]);
 
     for (const [changedPlannerSource, error] of [
       [null, "Current CI target does not provide ./scripts/lib/ci-changed-node-test-plan.mjs"],
@@ -16914,6 +16927,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
   });
 
   it("packs grouped Node matrix rows and unpacks them in the shard runner", () => {
+    const jobEnv = { OPENCLAW_VITEST_MAX_WORKERS: "1" };
     const groups = [
       {
         configs: ["test/vitest/vitest.unit-fast.config.ts"],
@@ -16948,6 +16962,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       nodeTestShards: [
         {
           checkName: "checks-node-compact-small-1",
+          env: jobEnv,
           groups,
           requiresDist: false,
           runner: "ubuntu-24.04",
@@ -16984,10 +16999,71 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     );
     expect(legacyEnv).toBe("");
     expect(
+      JSON.parse(
+        String(evaluateWorkflowExpression(runStep.env.OPENCLAW_NODE_TEST_ENV_JSON, context)),
+      ),
+    ).toEqual(jobEnv);
+    expect(
       resolveShardPlans({ OPENCLAW_NODE_TEST_GROUPS_GZIP_BASE64: String(packedEnv) }).map((plan) =>
         plan.kind === "group" ? plan.plan : plan,
       ),
     ).toEqual(projectedGroups);
+  });
+
+  it("packs flat manual Node rows below the output budget without changing their plan", () => {
+    const configs = ["test/vitest/vitest.unit-fast.config.ts"];
+    const env = { OPENCLAW_VITEST_MAX_WORKERS: "2" };
+    const includePatterns = Array.from(
+      { length: 6_000 },
+      (_, index) =>
+        `src/infra/manual-inventory/owner-${index}/workflow-contract-process-boundaries.test.ts`,
+    );
+    const manifest = runCiManifestFixture({
+      bundledPlanner: true,
+      eventName: "workflow_dispatch",
+      historicalCompatibility: false,
+      releaseGate: true,
+      scopeEnv: { OPENCLAW_CI_WORKFLOW_REVISION: "a".repeat(40) },
+      nodeTestShards: [
+        {
+          checkName: "checks-node-manual-inventory",
+          configs,
+          env,
+          includePatterns,
+          requiresDist: false,
+          runner: "ubuntu-24.04",
+          shardName: "manual-inventory",
+          timeoutMinutes: 20,
+        },
+      ],
+    });
+    expect(manifest.status, manifest.output).toBe(0);
+    expect(manifest.outputChars).toBeLessThan(262_144);
+    const rows = JSON.parse(
+      expectDefined(manifest.outputs.checks_node_core_nondist_matrix, "manual Node matrix"),
+    ).include;
+    expect(rows).toHaveLength(1);
+    const [row] = rows;
+    expect(row).toMatchObject({
+      check_name: "checks-node-manual-inventory",
+      env,
+      runner: "ubuntu-24.04",
+      shard_name: "manual-inventory",
+      timeout_minutes: 20,
+    });
+    for (const field of ["groups", "configs", "includePatterns"]) {
+      expect(row).not.toHaveProperty(field);
+    }
+    expect(
+      resolveShardPlans({ OPENCLAW_NODE_TEST_GROUPS_GZIP_BASE64: row.groups_gzip_base64 }),
+    ).toEqual([
+      {
+        kind: "group",
+        name: "manual-inventory",
+        timingKey: "manual-inventory",
+        plan: { configs, env, includePatterns, shard_name: "manual-inventory" },
+      },
+    ]);
   });
 
   it.each(["github", "hybrid", "blacksmith"] as const)(
