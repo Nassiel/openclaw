@@ -351,7 +351,7 @@ describe("update progress", () => {
       },
       {},
     );
-    expect(log.mock.calls.flat().join("\n")).toContain("deadline exceeded");
+    expect(log.mock.calls.flat().join("\n")).toContain(`Distinct detail ${"y".repeat(104)}`);
     log.mockClear();
     presentation.progress.onStepComplete?.({
       ...failed,
