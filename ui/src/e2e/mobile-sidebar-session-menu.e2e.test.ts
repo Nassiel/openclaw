@@ -49,10 +49,16 @@ suite.define(() => {
 
       const row = page.locator(`[data-session-key="${sessionKey}"]`);
       await row.waitFor({ state: "visible" });
-      await row.locator("[data-sidebar-session-menu]").tap();
+      expect(await row.locator("[data-sidebar-session-pin]").isVisible()).toBe(false);
+      expect(await row.locator("[data-sidebar-session-archive]").isVisible()).toBe(false);
+      const menuButton = row.locator("[data-sidebar-session-menu]");
+      expect(await menuButton.boundingBox()).toMatchObject({ width: 44, height: 44 });
+      await menuButton.tap();
 
       const menu = page.getByRole("menu", { name: "Actions for Mobile sidebar menu" });
       await menu.waitFor({ state: "visible" });
+      await page.getByRole("menuitem", { name: "Pin session", exact: true }).waitFor();
+      await page.getByRole("menuitem", { name: "Archive session", exact: true }).waitFor();
       await captureUiProof(suite, page, "mobile-sidebar-session-menu-after-root.png");
 
       expect(await page.locator("openclaw-session-menu [slot='submenu']").count()).toBe(0);
