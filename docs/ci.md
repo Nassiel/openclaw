@@ -56,6 +56,10 @@ Vitest transform-cache fingerprints exclude the generated `.ci-harness` checkout
 Linux PR tests use Bun for the measured compatible lanes. Full Release Validation
 keeps their Node coverage and runs them on Bun too; see [test runtime selection](/ci/pipeline#test-runtime-selection).
 
+The measured Gateway isolated/database-worker cohort uses at most eight workers
+on those hosts with at least 28 GiB total memory; other packed groups retain
+their existing caps.
+
 The complete [startup corpus](/ci/pipeline) uses eight state test files so existing workers can share its release/config matrix. Its explicit fallback prepares the runtime once and uses four workers; historical frozen targets retain their legacy process layout.
 
 | Page                                                           | Read it when                                                                                                        |

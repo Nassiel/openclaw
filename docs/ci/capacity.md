@@ -214,11 +214,32 @@ local scheduling is unchanged.
 | 16                         | 4 / 15.42 GiB       |                                3 |                         2 |
 | 32                         | 8 / 30.95 GiB       |                                8 |                         2 |
 
-Group pins can lower these ceilings. Only the measured `agentic-gateway-core-2`
-family loses its two-worker compact pin on Blacksmith and hybrid profiles;
-GitHub-hosted planning and other timing-sensitive groups retain it. Gateway
-plans still run exclusively. When core-2 shares a serial bin, its unproven
-siblings retain their two-worker caps at group scope.
+Compact group pins can lower these ceilings. The measured `agentic-gateway-core-2`
+family uses the shared serial ceiling on Blacksmith and hybrid profiles.
+The `agentic-gateway-server-isolated` family, including its database-worker
+config, is capped at eight workers and additionally requires 28 GiB total
+memory. Its historical 20.70 GiB peak fits within 75% of that floor, leaving at
+least 7.30 GiB for the runner, operating system, and variation. Smaller hosts,
+hosted retries, frozen targets, and overlapping plans retain its two-worker
+fallback; the independently planned GitHub profile is unchanged. Gateway plans
+remain exclusive, and unmeasured siblings retain their two-worker group caps.
+
+The historical [September 20 paired probe](https://github.com/openclaw/openclaw/actions/runs/35543209292)
+at source `39b3aa10677c99af54e3bffb43cadf3bb6c89eb8` used the same eight-CPU,
+30.95 GiB, Node 24.19.0 Testbox for a fixed 2/8/8/2
+sequence, with fresh JavaScript cache paths for each round. Every round ran the
+same 114 files and passed 2,776 tests with one existing skip. Two-worker walls
+were 481.535 and 474.459 seconds; eight-worker walls were 225.123 and 225.151
+seconds, a 52.9% reduction in the midpoint. Peak summed process RSS rose from
+8.71 to 20.70 GiB, and aggregate user plus system CPU increased about 8.1%.
+No descendant processes survived a round. The remaining 14 runtime-bearing
+files also passed at eight workers, with 39 passing tests, one existing skip,
+and 14.96 GiB peak summed RSS. These measurements cover that source's 128-file
+cohort. The current 130-file inventory and shared Gateway fixtures have changed;
+candidate-specific functional, memory, and cleanup proof must be recorded
+separately. The 52.9% result does not establish a current-source or whole-CI
+speedup. Existing two-worker timing generations stay
+as advisory floors until the normal complete-group refit replaces them.
 
 Agents-core files share the configured worker pool, including local scheduling
 and its one-worker throttle. Compact agents-core groups retain a two-worker cap.
@@ -334,7 +355,7 @@ Gateway boot measured 37 seconds alone and 50 seconds under contention against
 a 90-second test budget. Jobs containing these configs execute their packed
 plans serially. Plan admission retains the existing summed duration budgets
 and runner allocations; formerly parallel jobs retain
-their two-worker ceiling through the job environment, except measured core-2
+their two-worker ceiling through the job environment, except measured Gateway
 bins whose other groups retain that ceiling individually. This adds no jobs and
 leaves ordinary jobs' concurrency unchanged. The shard runner enforces the same
 config policy even when a caller requests two plans. Precise changed-test

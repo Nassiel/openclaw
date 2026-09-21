@@ -16923,6 +16923,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
         configs: ["test/vitest/vitest.unit-fast.config.ts"],
         env: undefined,
         fallbackMaxWorkers: 2,
+        minTotalMemoryBytes: 28 * 1024 ** 3,
         includePatterns: ["src/a.test.ts", "src/b.test.ts"],
         requiresDist: false,
         runner: "ubuntu-24.04",
@@ -16938,11 +16939,20 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       },
     ];
     const projectedGroups = groups.map(
-      ({ configs, env, fallbackMaxWorkers, includePatterns, shard_name, timing_key }) => ({
+      ({
         configs,
         env,
         fallbackMaxWorkers,
         includePatterns,
+        minTotalMemoryBytes,
+        shard_name,
+        timing_key,
+      }) => ({
+        configs,
+        env,
+        fallbackMaxWorkers,
+        includePatterns,
+        minTotalMemoryBytes,
         shard_name,
         timing_key,
       }),
