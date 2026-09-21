@@ -695,6 +695,7 @@ export function createWorkerSessionPlacementStore(
       const reply = await executeExistingOpenClawStateRead(
         { path },
         { type: "workerPlacements.changeSnapshot" },
+        { current: true },
       );
       if (!reply || !reply.ok || reply.type !== "workerPlacements.changeSnapshot") {
         throw new Error("Worker placement change snapshot is unavailable");

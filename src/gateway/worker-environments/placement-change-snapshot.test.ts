@@ -1,12 +1,16 @@
 import { isMainThread } from "node:worker_threads";
 import { expect, it, vi } from "vitest";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
-import { withDisposableOpenClawStateReads } from "../../state/openclaw-state-db-readonly.js";
+import {
+  withDisposableOpenClawStateReads,
+  withOpenClawStateDatabaseReadSnapshot,
+} from "../../state/openclaw-state-db-readonly.js";
 import {
   closeOpenClawStateDatabaseAsync,
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { flushPendingSessionsChangedEvents } from "../server-methods/session-change-event.js";
 import { createGatewayWorkerPlacementChangePublisher } from "../server-worker-placement-change-events.js";
 import type { WorkerSessionPlacementChangeSnapshot } from "./placement-record.js";
 import { createWorkerSessionPlacementStore } from "./placement-store.js";
@@ -101,3 +105,50 @@ it.each(["cached", "fresh"] as const)(
     });
   },
 );
+
+it("reports committed placement changes inside an inspection snapshot", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const database = openOpenClawStateDatabase();
+    const store = createWorkerSessionPlacementStore({ database, now: () => 1000 });
+    store.startDispatch({ sessionId: "a", agentId: "main", sessionKey: "agent:main:a" });
+    const failed = store.fail({ sessionId: "a", recoveryError: "synthetic failure" });
+    const broadcastToConnIds = vi.fn();
+    const warn = vi.fn();
+    const context = {
+      broadcastToConnIds,
+      chatAbortControllers: new Map(),
+      getRuntimeConfig: () => ({}),
+      getSessionEventSubscriberConnIds: () => new Set(["synthetic-client"]),
+    };
+    const publishChanges = createGatewayWorkerPlacementChangePublisher({
+      placements: store,
+      getSessionChangeContext: () => context,
+      warn,
+    });
+    try {
+      await withOpenClawStateDatabaseReadSnapshot(async () => {
+        await expect(
+          publishChanges(async () => {
+            store.retireSessionPlacement({
+              sessionId: "a",
+              expectedState: "failed",
+              expectedGeneration: failed.generation,
+            });
+            return "retired";
+          }),
+        ).resolves.toBe("retired");
+        await flushPendingSessionsChangedEvents(context);
+        expect(broadcastToConnIds).toHaveBeenCalledWith(
+          "sessions.changed",
+          expect.objectContaining({ reason: "placement", sessionKey: "agent:main:a" }),
+          new Set(["synthetic-client"]),
+          expect.any(Object),
+        );
+      });
+      expect(store.list()).toEqual([]);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      await flushPendingSessionsChangedEvents(context);
+    }
+  });
+});
