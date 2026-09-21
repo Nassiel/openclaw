@@ -148,14 +148,15 @@ suite.define(() => {
                 if (event.key !== "Tab") {
                   return;
                 }
-                const rail = document.querySelector(".chat-position-rail");
+                const positionRail = document.querySelector(".chat-position-rail");
                 currentId =
-                  rail
+                  positionRail
                     ?.querySelector('[aria-current="true"]')
                     ?.getAttribute("data-position-marker-id") ?? null;
                 tabStopId =
-                  rail?.querySelector('[tabindex="0"]')?.getAttribute("data-position-marker-id") ??
-                  null;
+                  positionRail
+                    ?.querySelector('[tabindex="0"]')
+                    ?.getAttribute("data-position-marker-id") ?? null;
               };
               document.addEventListener("keydown", captureEntry, true);
               return {

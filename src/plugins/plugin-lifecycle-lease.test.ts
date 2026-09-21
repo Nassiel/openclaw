@@ -474,8 +474,7 @@ describe("plugin lifecycle lease", () => {
           await loadInstalledPluginIndexInstallRecords();
           process.stdout.write("ready\\n");
           await waitForMarker(goMarker);
-          // Cache freshness follows admission; use the production lease lifetime.
-          const operation = withPluginLifecycleLease({ env, waitMs: 5_000 }, async () => {
+          const operation = withPluginLifecycleLease({ env, leaseMs: 1_000, waitMs: 5_000 }, async () => {
             process.stdout.write("acquired\\n");
             if (pluginId === "alpha") {
               await waitForMarker(releaseAlphaMarker);
