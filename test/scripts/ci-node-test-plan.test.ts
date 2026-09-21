@@ -2840,14 +2840,32 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         (group) => group.shard_name === "agentic-control-plane-startup-core",
       )?.runner,
     ).toBe(DEFAULT_NODE_TEST_RUNNER);
+    const startupHealthJob = expectDefined(
+      compact.find((job) =>
+        job.groups.some(
+          (group) => group.shard_name === "agentic-control-plane-startup-health-runtime",
+        ),
+      ),
+      "startup health runtime job",
+    );
+    const measuredSiblings = startupHealthJob.groups.filter(
+      (group) => group.fallbackMaxWorkers === 2,
+    );
     expect(
-      compact
-        .flatMap((shard) => shard.groups)
-        .find((group) => group.shard_name === "agentic-control-plane-startup-health-runtime")?.env,
+      startupHealthJob.groups.find(
+        (group) => group.shard_name === "agentic-control-plane-startup-health-runtime",
+      )?.env,
     ).toEqual({
-      OPENCLAW_VITEST_MAX_WORKERS: "2",
       OPENCLAW_VITEST_NO_OUTPUT_TIMEOUT_MS: "60000",
+      OPENCLAW_VITEST_MAX_WORKERS: "2",
     });
+    if (measuredSiblings.length > 0) {
+      expect(startupHealthJob.planConcurrency).toBe(1);
+      expect(startupHealthJob.env?.OPENCLAW_VITEST_MAX_WORKERS).toBeUndefined();
+      for (const sibling of measuredSiblings) {
+        expect(sibling.env?.OPENCLAW_VITEST_MAX_WORKERS).toBeUndefined();
+      }
+    }
     const largeJobs = compact.filter(
       (shard) => !shard.requiresDist && shard.checkName.startsWith("checks-node-compact-large-"),
     );
