@@ -657,6 +657,9 @@ reads; full success and restore clear that intent. These overlays remain bound t
 their producing database, and returned persisted records cannot mutate them.
 The progress observer uses its existing live-run owner, matching the admission
 and generation checks that already require a live entry.
+Inspection links prepare their configuration through the existing asynchronous
+config reader. Delivery rechecks its claim after that wait, then resolves the link
+from the captured config during its synchronous send decision.
 
 Agent-event task progress uses the same shared-state worker and publication owner.
 Ingestion retains exact task, run, and backing identities without waiting for a native

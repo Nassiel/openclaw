@@ -193,51 +193,64 @@ afterEach(async () => {
 });
 
 describe("terminal task notification persistence", () => {
-  it("does not queue a subagent cancellation after its claim retires during prepared reading", async () => {
-    vi.stubEnv("OPENCLAW_TEST_READ_SUBAGENT_RUNS_FROM_SQLITE", "1");
-    const task = seedTerminal({
-      runtime: "subagent",
-      status: "cancelled",
-      childSessionKey: "agent:main:subagent:retired-preparation",
-      requesterOrigin: undefined,
-    });
-    const selected = createDeferred();
-    const release = createDeferred();
-    const read = stateReads.executeExistingOpenClawStateRead;
-    vi.spyOn(stateReads, "executeExistingOpenClawStateRead").mockImplementation(async (...args) => {
-      const result = await read(...args);
-      if (args[1].type === "subagents.forChildSession") {
-        selected.resolve();
-        await release.promise;
+  it.each(["subagent read", "link config"] as const)(
+    "does not send or queue after its claim retires during %s preparation",
+    async (phase) => {
+      vi.stubEnv("OPENCLAW_TEST_READ_SUBAGENT_RUNS_FROM_SQLITE", "1");
+      const task = seedTerminal({
+        runtime: "subagent",
+        status: "cancelled",
+        childSessionKey: "agent:main:subagent:retired-preparation",
+        requesterOrigin: phase === "subagent read" ? undefined : origin,
+      });
+      const selected = createDeferred();
+      const release = createDeferred();
+      const read = stateReads.executeExistingOpenClawStateRead;
+      vi.spyOn(stateReads, "executeExistingOpenClawStateRead").mockImplementation(
+        async (...args) => {
+          const result = await read(...args);
+          if (phase === "subagent read" && args[1].type === "subagents.forChildSession") {
+            selected.resolve();
+            await release.promise;
+          }
+          return result;
+        },
+      );
+      setTaskRegistryDeliveryRuntimeForTests({
+        sendMessage,
+        prepareTaskControlUiSessionUrl: async () => {
+          selected.resolve();
+          await release.promise;
+          return () => "https://dashboard.example/synthetic-cancelled-child";
+        },
+      });
+      const notification = maybeDeliverTaskTerminalUpdate(task.taskId);
+      const successor = Symbol("successor cancellation notification");
+      try {
+        await Promise.race([
+          selected.promise,
+          notification.then(() => {
+            throw new Error("Subagent notification settled before its prepared read");
+          }),
+        ]);
+        expect(tasksWithPendingDelivery.has(task.taskId)).toBe(true);
+        tasksWithPendingDelivery.set(task.taskId, successor);
+        release.resolve();
+        expect(await notification).toBeNull();
+        expect(tasksWithPendingDelivery.get(task.taskId)).toBe(successor);
+        expect(drainSystemEvents(ownerKey)).toEqual([]);
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(stored(task.taskId)?.deliveryStatus).toBe("pending");
+      } finally {
+        release.resolve();
+        await notification;
+        if (tasksWithPendingDelivery.get(task.taskId) === successor) {
+          tasksWithPendingDelivery.delete(task.taskId);
+        }
+        vi.unstubAllEnvs();
       }
-      return result;
-    });
-    const notification = maybeDeliverTaskTerminalUpdate(task.taskId);
-    const successor = Symbol("successor cancellation notification");
-    try {
-      await Promise.race([
-        selected.promise,
-        notification.then(() => {
-          throw new Error("Subagent notification settled before its prepared read");
-        }),
-      ]);
-      expect(tasksWithPendingDelivery.has(task.taskId)).toBe(true);
-      tasksWithPendingDelivery.set(task.taskId, successor);
-      release.resolve();
-      expect(await notification).toBeNull();
-      expect(tasksWithPendingDelivery.get(task.taskId)).toBe(successor);
-      expect(drainSystemEvents(ownerKey)).toEqual([]);
-      expect(sendMessage).not.toHaveBeenCalled();
-      expect(stored(task.taskId)?.deliveryStatus).toBe("pending");
-    } finally {
-      release.resolve();
-      await notification;
-      if (tasksWithPendingDelivery.get(task.taskId) === successor) {
-        tasksWithPendingDelivery.delete(task.taskId);
-      }
-      vi.unstubAllEnvs();
-    }
-  });
+    },
+  );
 
   it.each(["persisted pending", "live released", "live moved"] as const)(
     "prepares subagent cancellation with %s state without host data SQL",
@@ -269,6 +282,9 @@ describe("terminal task notification persistence", () => {
         });
       }
       sendMessage.mockResolvedValue(sent);
+      const { prepareTaskControlUiSessionUrl } =
+        await import("./task-registry-delivery-runtime.js");
+      setTaskRegistryDeliveryRuntimeForTests({ sendMessage, prepareTaskControlUiSessionUrl });
       const deliver = async () => {
         const host = observeHostDataSql();
         try {

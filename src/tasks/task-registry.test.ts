@@ -1842,7 +1842,7 @@ describe("task-registry", () => {
       const resolveTaskControlUiSessionUrl = vi.fn(() => "https://dashboard.example/chat/task");
       setTaskRegistryDeliveryRuntimeForTests({
         sendMessage: hoisted.sendMessageMock,
-        resolveTaskControlUiSessionUrl,
+        prepareTaskControlUiSessionUrl: async () => resolveTaskControlUiSessionUrl,
       });
       hoisted.sendMessageMock.mockResolvedValue({
         channel: "notifychat",
@@ -1950,7 +1950,7 @@ describe("task-registry", () => {
       const resolveTaskControlUiSessionUrl = vi.fn(() => testCase.inspectUrl);
       setTaskRegistryDeliveryRuntimeForTests({
         sendMessage: hoisted.sendMessageMock,
-        resolveTaskControlUiSessionUrl,
+        prepareTaskControlUiSessionUrl: async () => resolveTaskControlUiSessionUrl,
       });
       hoisted.sendMessageMock.mockResolvedValue({
         channel: "discord",

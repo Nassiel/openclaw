@@ -241,8 +241,12 @@ async function maybeDeliverTaskTerminalUpdateUnderAdmission(
     let startedMutation: Promise<TaskRecord | null> | undefined;
     let deliverySettled = false;
     try {
-      const { sendMessage, resolveTaskControlUiSessionUrl } =
+      const { sendMessage, prepareTaskControlUiSessionUrl } =
         await loadTaskRegistryDeliveryRuntime();
+      const resolveTaskControlUiSessionUrl = target.childSessionKey
+        ? await prepareTaskControlUiSessionUrl?.(assertCurrent)
+        : undefined;
+      assertCurrent();
       const invocation: {
         send?: { facts: TaskTerminalDelivery; pending: ReturnType<typeof sendMessage> };
         cleanupFailure?: { error: unknown };
