@@ -20,9 +20,10 @@ import {
   patchConfigHealthEntryInDatabase,
   readConfigHealthSnapshotInDatabase,
 } from "../config/io.health-state.kernel.js";
-import { loadMutableCronStoreInWorker } from "../cron/store/load.worker.js";
-import { proposeCronRunRecoveryInWorker } from "../cron/store/run-recovery.worker.js";
-import { executeCronStoreSaveCommand } from "../cron/store/save.worker.js";
+import {
+  executeCronStateCommand,
+  isCronStateWorkerCommand,
+} from "../cron/store/dispatch.worker.js";
 import {
   acquireFleetCellOperationInDatabase,
   assertFleetCellOperationInDatabase,
@@ -455,14 +456,8 @@ export function executeSharedStateCommand(
   if (command.type === "sessionUpstream.listWatched") {
     return listWatchedSessionUpstreamLinksInDatabase(database.db);
   }
-  if (command.type === "cron.loadMutable") {
-    return loadMutableCronStoreInWorker(database, command.input.storeKey);
-  }
-  if (command.type === "cron.proposeRunRecovery") {
-    return proposeCronRunRecoveryInWorker(database, command.input);
-  }
-  if (command.type === "cron.save" || command.type === "cron.saveChanges") {
-    return executeCronStoreSaveCommand(command, database);
+  if (isCronStateWorkerCommand(command)) {
+    return executeCronStateCommand(command, database);
   }
   if (command.type === "deliveryQueue.countFailed") {
     return countFailedDeliveryQueueEntriesInDatabase(database);

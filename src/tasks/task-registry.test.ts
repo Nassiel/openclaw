@@ -1,7 +1,6 @@
 // Covers task registry lifecycle, delivery, notification, and query behavior.
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AcpSessionStoreEntry } from "../acp/runtime/session-meta.js";
 import { startAcpSpawnParentStreamRelay } from "../agents/subagents/spawn/acp-spawn-parent-stream.js";
 import { resetCronActiveJobs } from "../cron/active-jobs.js";
 import { emitAgentEvent, resetAgentEventsForTest } from "../infra/agent-events.js";
@@ -64,6 +63,7 @@ import {
   waitForAssertion,
   waitForFast,
 } from "./task-registry-delivery.test-support.js";
+import { captureTaskRegistryReadFence } from "./task-registry-listener-state.js";
 import { updateTaskStateByRunId } from "./task-registry-record-api.js";
 import {
   readTaskRegistryRevision,
@@ -98,8 +98,6 @@ import {
   resetTaskRegistryMaintenanceRuntimeForTests,
   reconcileInspectableTasks,
   runTaskRegistryMaintenance,
-  startTaskRegistryMaintenance,
-  stopTaskRegistryMaintenance,
   sweepTaskRegistry,
 } from "./task-registry.maintenance.js";
 import {
@@ -1840,6 +1838,7 @@ describe("task-registry", () => {
 
   it("queues delegated ACP completion to the requester session when a delivery origin exists", async () => {
     await withTaskRegistryTempDir(async () => {
+      using deliveries = captureTaskDeliveryWork();
       const terminalSummary = ("The export is ready. " + "Full result detail. ".repeat(20)).trim();
       const resolveTaskControlUiSessionUrl = vi.fn(() => "https://dashboard.example/chat/task");
       setTaskRegistryDeliveryRuntimeForTests({
@@ -1872,12 +1871,12 @@ describe("task-registry", () => {
         },
       });
 
-      await waitForAssertion(() =>
-        expectRecordFields(requireTaskByRunId("run-delivery"), {
-          status: "succeeded",
-          deliveryStatus: "pending",
-        }),
-      );
+      await captureTaskRegistryReadFence(captureOpenClawStateWorkerContext().admission);
+      await deliveries.settle();
+      expectRecordFields(requireTaskByRunId("run-delivery"), {
+        status: "succeeded",
+        deliveryStatus: "pending",
+      });
       expect(hoisted.sendMessageMock).not.toHaveBeenCalled();
       expect(peekSystemEvents("agent:main:main")).toEqual([
         expect.stringContaining("Background task ready for review: ACP background task"),
@@ -1891,6 +1890,7 @@ describe("task-registry", () => {
   it("keeps direct delegated ACP completions pending so parent-review handoffs can retry", async () => {
     await withTaskRegistryTempDir(
       async () => {
+        using deliveries = captureTaskDeliveryWork();
         hoisted.sendMessageMock.mockResolvedValue({
           channel: "notifychat",
           to: "notifychat:123",
@@ -1904,11 +1904,10 @@ describe("task-registry", () => {
           status: "succeeded",
         });
 
-        await waitForAssertion(() =>
-          expect(peekSystemEvents("agent:main:main")).toEqual([
-            expect.stringContaining("Background task ready for review: ACP background task"),
-          ]),
-        );
+        await deliveries.settle();
+        expect(peekSystemEvents("agent:main:main")).toEqual([
+          expect.stringContaining("Background task ready for review: ACP background task"),
+        ]);
         expectRecordFields(requireTaskById(task.taskId), {
           deliveryStatus: "pending",
         });
@@ -1947,6 +1946,7 @@ describe("task-registry", () => {
     },
   ])("delivers ACP completion directly to a requester thread $name", async (testCase) => {
     await withTaskRegistryTempDir(async () => {
+      using deliveries = captureTaskDeliveryWork();
       const terminalSummary = ("The export is ready. " + "Full result detail. ".repeat(20)).trim();
       const resolveTaskControlUiSessionUrl = vi.fn(() => testCase.inspectUrl);
       setTaskRegistryDeliveryRuntimeForTests({
@@ -1982,13 +1982,13 @@ describe("task-registry", () => {
         },
       });
 
-      await waitForAssertion(() =>
-        expectRecordFields(requireTaskByRunId("run-direct-delivery"), {
-          status: "succeeded",
-          deliveryStatus: "delivered",
-        }),
-      );
-      await waitForAssertion(() => expect(hoisted.sendMessageMock).toHaveBeenCalledTimes(1));
+      await captureTaskRegistryReadFence(captureOpenClawStateWorkerContext().admission);
+      await deliveries.settle();
+      expectRecordFields(requireTaskByRunId("run-direct-delivery"), {
+        status: "succeeded",
+        deliveryStatus: "delivered",
+      });
+      expect(hoisted.sendMessageMock).toHaveBeenCalledTimes(1);
       const message = sentMessageCall();
       expectRecordFields(message, {
         channel: "discord",
@@ -2037,9 +2037,8 @@ describe("task-registry", () => {
       ownerKey: "agent:main:slack:channel:c123",
     },
   ])("delivers delegated ACP completion directly to a $name thread origin", async (origin) => {
-    await withTaskRegistryTempDir(async (root) => {
-      process.env.OPENCLAW_STATE_DIR = root;
-      resetTaskRegistryForTests({ persist: false });
+    await withTaskRegistryTempDir(async () => {
+      using deliveries = captureTaskDeliveryWork();
       const runId = `run-${origin.channel}-thread-terminal`;
       hoisted.sendMessageMock.mockResolvedValue({
         channel: origin.channel,
@@ -2069,15 +2068,15 @@ describe("task-registry", () => {
         },
       });
 
-      await waitForAssertion(() => {
-        const task = findTaskByRunId(runId);
-        if (!task) {
-          throw new Error(`Expected task for run ${runId}`);
-        }
-        expect(task.status).toBe("succeeded");
-        expect(task.deliveryStatus).toBe("delivered");
-      });
-      await waitForAssertion(() => expect(hoisted.sendMessageMock).toHaveBeenCalledTimes(1));
+      await captureTaskRegistryReadFence(captureOpenClawStateWorkerContext().admission);
+      await deliveries.settle();
+      const task = findTaskByRunId(runId);
+      if (!task) {
+        throw new Error(`Expected task for run ${runId}`);
+      }
+      expect(task.status).toBe("succeeded");
+      expect(task.deliveryStatus).toBe("delivered");
+      expect(hoisted.sendMessageMock).toHaveBeenCalledTimes(1);
       const message = sentMessageCall();
       expectRecordFields(message, {
         channel: origin.channel,
@@ -2096,9 +2095,8 @@ describe("task-registry", () => {
   });
 
   it("keeps delegated ACP completion queued when the transport does not declare thread delivery", async () => {
-    await withTaskRegistryTempDir(async (root) => {
-      process.env.OPENCLAW_STATE_DIR = root;
-      resetTaskRegistryForTests({ persist: false });
+    await withTaskRegistryTempDir(async () => {
+      using deliveries = captureTaskDeliveryWork();
       const runId = "run-guildchat-thread-terminal";
       // guildchat is deliverable but declares no thread capability, so a thread-shaped
       // origin must keep routing through the parent session instead of direct delivery.
@@ -2131,14 +2129,14 @@ describe("task-registry", () => {
         },
       });
 
-      await waitForAssertion(() => {
-        const task = findTaskByRunId(runId);
-        if (!task) {
-          throw new Error(`Expected task for run ${runId}`);
-        }
-        expect(task.status).toBe("succeeded");
-        expect(task.deliveryStatus).toBe("session_queued");
-      });
+      await captureTaskRegistryReadFence(captureOpenClawStateWorkerContext().admission);
+      await deliveries.settle();
+      const task = findTaskByRunId(runId);
+      if (!task) {
+        throw new Error(`Expected task for run ${runId}`);
+      }
+      expect(task.status).toBe("succeeded");
+      expect(task.deliveryStatus).toBe("session_queued");
       expect(hoisted.sendMessageMock).not.toHaveBeenCalled();
       expect(peekSystemEvents("agent:main:guildchat:channel:room-9")).toEqual([
         expect.stringContaining("Background task ready for review: ACP background task"),
@@ -2147,9 +2145,8 @@ describe("task-registry", () => {
   });
 
   it("keeps delegated ACP completion queued when the requester origin has no thread", async () => {
-    await withTaskRegistryTempDir(async (root) => {
-      process.env.OPENCLAW_STATE_DIR = root;
-      resetTaskRegistryForTests({ persist: false });
+    await withTaskRegistryTempDir(async () => {
+      using deliveries = captureTaskDeliveryWork();
       const runId = "run-root-discord-terminal";
       const requesterOrigin = {
         channel: "discord",
@@ -2179,14 +2176,14 @@ describe("task-registry", () => {
         },
       });
 
-      await waitForAssertion(() => {
-        const task = findTaskByRunId(runId);
-        if (!task) {
-          throw new Error(`Expected task for run ${runId}`);
-        }
-        expect(task.status).toBe("succeeded");
-        expect(task.deliveryStatus).toBe("session_queued");
-      });
+      await captureTaskRegistryReadFence(captureOpenClawStateWorkerContext().admission);
+      await deliveries.settle();
+      const task = findTaskByRunId(runId);
+      if (!task) {
+        throw new Error(`Expected task for run ${runId}`);
+      }
+      expect(task.status).toBe("succeeded");
+      expect(task.deliveryStatus).toBe("session_queued");
       expect(hoisted.sendMessageMock).not.toHaveBeenCalled();
       expect(peekSystemEvents("agent:main:discord:guild-123:channel-parent-channel")).toEqual([
         expect.stringContaining("Background task ready for review: ACP background task"),
@@ -2227,7 +2224,7 @@ describe("task-registry", () => {
     },
   ])("routes $name ACP completion through the parent session", async ({ id, ownerKey, target }) => {
     await withTaskRegistryTempDir(async () => {
-      resetTaskRegistryForTests({ persist: false });
+      using deliveries = captureTaskDeliveryWork();
       const runId = `run-group-terminal-${id}`;
       hoisted.sendMessageMock.mockResolvedValue({
         channel: "guildchat",
@@ -2255,14 +2252,14 @@ describe("task-registry", () => {
         },
       });
 
-      await waitForAssertion(() => {
-        const task = findTaskByRunId(runId);
-        if (!task) {
-          throw new Error(`Expected task for run ${runId}`);
-        }
-        expect(task.status).toBe("succeeded");
-        expect(task.deliveryStatus).toBe("session_queued");
-      });
+      await captureTaskRegistryReadFence(captureOpenClawStateWorkerContext().admission);
+      await deliveries.settle();
+      const task = findTaskByRunId(runId);
+      if (!task) {
+        throw new Error(`Expected task for run ${runId}`);
+      }
+      expect(task.status).toBe("succeeded");
+      expect(task.deliveryStatus).toBe("session_queued");
       expect(hoisted.sendMessageMock).not.toHaveBeenCalled();
       expect(peekSystemEvents(ownerKey)).toEqual([
         expect.stringContaining("Background task ready for review: ACP background task"),
@@ -2274,6 +2271,7 @@ describe("task-registry", () => {
 
   it("records delivery failure and queues a session fallback when direct delivery misses", async () => {
     await withTaskRegistryTempDir(async () => {
+      using deliveries = captureTaskDeliveryWork();
       hoisted.sendMessageMock.mockRejectedValueOnce(new Error("notifychat unavailable"));
 
       createAcpTaskRecord({
@@ -2293,18 +2291,16 @@ describe("task-registry", () => {
         },
       });
 
-      await waitForAssertion(() =>
-        expectRecordFields(requireTaskByRunId("run-delivery-fail"), {
-          status: "failed",
-          deliveryStatus: "failed",
-          error: "Permission denied by ACP runtime",
-        }),
-      );
-      await waitForAssertion(() => {
-        const events = peekSystemEvents("agent:main:main");
-        expect(events).toHaveLength(1);
-        expect(events[0]).toContain("Background task failed: ACP background task");
+      await captureTaskRegistryReadFence(captureOpenClawStateWorkerContext().admission);
+      await deliveries.settle();
+      expectRecordFields(requireTaskByRunId("run-delivery-fail"), {
+        status: "failed",
+        deliveryStatus: "failed",
+        error: "Permission denied by ACP runtime",
       });
+      const events = peekSystemEvents("agent:main:main");
+      expect(events).toHaveLength(1);
+      expect(events[0]).toContain("Background task failed: ACP background task");
     });
   });
 
@@ -2345,6 +2341,7 @@ describe("task-registry", () => {
 
   it("still wakes the parent when blocked delivery misses the outward channel", async () => {
     await withTaskRegistryTempDir(async () => {
+      using deliveries = captureTaskDeliveryWork();
       hoisted.sendMessageMock.mockRejectedValueOnce(new Error("notifychat unavailable"));
 
       createAcpTaskRecord({
@@ -2356,13 +2353,12 @@ describe("task-registry", () => {
         terminalSummary: "Writable session or apply_patch authorization required.",
       });
 
-      await waitForAssertion(() =>
-        expectRecordFields(requireTaskByRunId("run-delivery-blocked"), {
-          status: "succeeded",
-          deliveryStatus: "failed",
-          terminalOutcome: "blocked",
-        }),
-      );
+      await deliveries.settle();
+      expectRecordFields(requireTaskByRunId("run-delivery-blocked"), {
+        status: "succeeded",
+        deliveryStatus: "failed",
+        terminalOutcome: "blocked",
+      });
       expect(peekSystemEvents("agent:main:main")).toEqual([
         "Background task blocked: ACP background task (run run-deli). Writable session or apply_patch authorization required.",
         "Task needs follow-up: ACP background task (run run-deli). Writable session or apply_patch authorization required.",
@@ -2374,6 +2370,7 @@ describe("task-registry", () => {
 
   it("marks internal fallback delivery as session queued instead of delivered", async () => {
     await withTaskRegistryTempDir(async () => {
+      using deliveries = captureTaskDeliveryWork();
       createAcpTaskRecord({
         runId: "run-session-queued",
         task: "Investigate issue",
@@ -2389,12 +2386,12 @@ describe("task-registry", () => {
         },
       });
 
-      await waitForAssertion(() =>
-        expectRecordFields(requireTaskByRunId("run-session-queued"), {
-          status: "succeeded",
-          deliveryStatus: "session_queued",
-        }),
-      );
+      await captureTaskRegistryReadFence(captureOpenClawStateWorkerContext().admission);
+      await deliveries.settle();
+      expectRecordFields(requireTaskByRunId("run-session-queued"), {
+        status: "succeeded",
+        deliveryStatus: "session_queued",
+      });
       const events = peekSystemEvents("agent:main:main");
       expect(events).toHaveLength(1);
       expect(events[0]).toContain("Background task ready for review: ACP background task");
@@ -2404,6 +2401,7 @@ describe("task-registry", () => {
 
   it("wakes the parent for blocked tasks even when delivery falls back to the session", async () => {
     await withTaskRegistryTempDir(async () => {
+      using deliveries = captureTaskDeliveryWork();
       createAcpTaskRecord({
         runId: "run-session-blocked",
         task: "Port the repo changes",
@@ -2412,12 +2410,11 @@ describe("task-registry", () => {
         terminalSummary: "Writable session or apply_patch authorization required.",
       });
 
-      await waitForAssertion(() =>
-        expectRecordFields(requireTaskByRunId("run-session-blocked"), {
-          status: "succeeded",
-          deliveryStatus: "session_queued",
-        }),
-      );
+      await deliveries.settle();
+      expectRecordFields(requireTaskByRunId("run-session-blocked"), {
+        status: "succeeded",
+        deliveryStatus: "session_queued",
+      });
       expect(peekSystemEvents("agent:main:main")).toEqual([
         "Background task blocked: ACP background task (run run-sess). Writable session or apply_patch authorization required.",
         "Task needs follow-up: ACP background task (run run-sess). Writable session or apply_patch authorization required.",
@@ -2430,6 +2427,7 @@ describe("task-registry", () => {
 
   it("does not include internal progress detail in the terminal channel message", async () => {
     await withTaskRegistryTempDir(async () => {
+      using deliveries = captureTaskDeliveryWork();
       hoisted.sendMessageMock.mockResolvedValue({
         channel: "notifychat",
         to: "notifychat:123",
@@ -2461,19 +2459,20 @@ describe("task-registry", () => {
         },
       });
 
-      await waitForAssertion(() => {
-        const events = peekSystemEvents("agent:main:main");
-        expect(events).toHaveLength(1);
-        expect(events[0]).toBe(
-          "Background task ready for review: ACP background task (run run-deta). Next: parent will review/verify before calling it done.",
-        );
-      });
+      await captureTaskRegistryReadFence(captureOpenClawStateWorkerContext().admission);
+      await deliveries.settle();
+      const events = peekSystemEvents("agent:main:main");
+      expect(events).toHaveLength(1);
+      expect(events[0]).toBe(
+        "Background task ready for review: ACP background task (run run-deta). Next: parent will review/verify before calling it done.",
+      );
       expect(hoisted.sendMessageMock).not.toHaveBeenCalled();
     });
   });
 
   it("surfaces blocked outcomes separately from completed tasks", async () => {
     await withTaskRegistryTempDir(async () => {
+      using deliveries = captureTaskDeliveryWork();
       hoisted.sendMessageMock.mockResolvedValue({
         channel: "notifychat",
         to: "notifychat:123",
@@ -2489,12 +2488,11 @@ describe("task-registry", () => {
         terminalSummary: "Writable session or apply_patch authorization required.",
       });
 
-      await waitForAssertion(() =>
-        expectRecordFields(sentMessageCall(), {
-          content:
-            "Background task blocked: ACP background task (run run-bloc). Writable session or apply_patch authorization required.",
-        }),
-      );
+      await deliveries.settle();
+      expectRecordFields(sentMessageCall(), {
+        content:
+          "Background task blocked: ACP background task (run run-bloc). Writable session or apply_patch authorization required.",
+      });
       expect(peekSystemEvents("agent:main:main")).toEqual([
         "Task needs follow-up: ACP background task (run run-bloc). Writable session or apply_patch authorization required.",
       ]);
@@ -2505,6 +2503,7 @@ describe("task-registry", () => {
 
   it("does not queue an unblock follow-up for ordinary completed tasks", async () => {
     await withTaskRegistryTempDir(async () => {
+      using deliveries = captureTaskDeliveryWork();
       hoisted.sendMessageMock.mockResolvedValue({
         channel: "notifychat",
         to: "notifychat:123",
@@ -2520,13 +2519,12 @@ describe("task-registry", () => {
         terminalOutcome: "succeeded",
       });
 
-      await waitForAssertion(() => {
-        const events = peekSystemEvents("agent:main:main");
-        expect(events).toHaveLength(1);
-        expect(events[0]).toBe(
-          "Background task ready for review: ACP background task (run run-succ). Created /tmp/file.txt and verified contents. Next: parent will review/verify before calling it done.",
-        );
-      });
+      await deliveries.settle();
+      const events = peekSystemEvents("agent:main:main");
+      expect(events).toHaveLength(1);
+      expect(events[0]).toBe(
+        "Background task ready for review: ACP background task (run run-succ). Created /tmp/file.txt and verified contents. Next: parent will review/verify before calling it done.",
+      );
       expect(hoisted.sendMessageMock).not.toHaveBeenCalled();
       await flushHeartbeatWakeRequests();
       expectHeartbeatWake("background-task", "agent:main:main");
@@ -2603,6 +2601,7 @@ describe("task-registry", () => {
 
   it("suppresses duplicate ACP delivery when a preferred spawned task shares the runId", async () => {
     await withTaskRegistryTempDir(async () => {
+      using deliveries = captureTaskDeliveryWork();
       hoisted.sendMessageMock.mockResolvedValue({
         channel: "notifychat",
         to: "notifychat:123",
@@ -2625,6 +2624,7 @@ describe("task-registry", () => {
 
       await maybeDeliverTaskTerminalUpdate(directTask.taskId);
       await maybeDeliverTaskTerminalUpdate(spawnedTask.taskId);
+      await deliveries.settle();
 
       expect(hoisted.sendMessageMock).not.toHaveBeenCalled();
       expect(countMatching(listTaskRecords(), (task) => task.runId === "run-shared-delivery")).toBe(
@@ -2735,6 +2735,7 @@ describe("task-registry", () => {
 
   it("delivers a terminal ACP update only once when multiple notifiers race", async () => {
     await withTaskRegistryTempDir(async () => {
+      using deliveries = captureTaskDeliveryWork();
       const terminalSummary = (
         "Writable session or apply_patch authorization required. " +
         "Diagnostic detail. ".repeat(20)
@@ -2757,6 +2758,7 @@ describe("task-registry", () => {
       const first = maybeDeliverTaskTerminalUpdate(task.taskId);
       const second = maybeDeliverTaskTerminalUpdate(task.taskId);
       await Promise.all([first, second]);
+      await deliveries.settle();
 
       expect(hoisted.sendMessageMock).toHaveBeenCalledTimes(1);
       const message = sentMessageCall();
@@ -2781,6 +2783,7 @@ describe("task-registry", () => {
 
   it("keeps detached terminal delivery root-admitted through mirror persistence", async () => {
     await withTaskRegistryTempDir(async () => {
+      using deliveries = captureTaskDeliveryWork();
       let releaseSend = () => {};
       hoisted.sendMessageMock.mockImplementationOnce(
         () =>
@@ -2801,7 +2804,8 @@ describe("task-registry", () => {
       await waitForFast(() => expect(hoisted.sendMessageMock).toHaveBeenCalledOnce());
       expect(getActiveGatewayRootWorkCount()).toBe(1);
       releaseSend();
-      await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
+      await deliveries.settle();
+      expect(getActiveGatewayRootWorkCount()).toBe(0);
       expectRecordFields(requireTaskByRunId("run-held-delivery"), {
         deliveryStatus: "delivered",
       });
@@ -2810,6 +2814,7 @@ describe("task-registry", () => {
 
   it("drains an admitted task through terminal delivery without admitting unrelated work", async () => {
     await withTaskRegistryTempDir(async () => {
+      using deliveries = captureTaskDeliveryWork();
       let releaseSend = () => {};
       hoisted.sendMessageMock.mockImplementationOnce(
         () =>
@@ -2871,7 +2876,8 @@ describe("task-registry", () => {
         expect(tryBeginGatewayRootWorkAdmission()).toBeNull();
 
         releaseSend();
-        await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
+        await deliveries.settle();
+        expect(getActiveGatewayRootWorkCount()).toBe(0);
         expectRecordFields(requireTaskById(task.taskId), {
           status: "succeeded",
           deliveryStatus: "delivered",
@@ -2885,6 +2891,7 @@ describe("task-registry", () => {
         finishTask();
         resumeGatewaySuspend(suspension.suspensionId);
         await taskRun;
+        await deliveries.settle();
       }
     });
   });
@@ -3563,83 +3570,6 @@ describe("task-registry", () => {
     });
   });
 
-  it("cancels the deferred maintenance sweep during test teardown", async () => {
-    await withTaskRegistryTempDir(async () => {
-      vi.useFakeTimers();
-      const now = Date.now();
-
-      const task = createTaskFixture("acp", {
-        childSessionKey: "agent:main:acp:missing",
-        runId: "run-deferred-maintenance-stop",
-        task: "Missing child",
-        deliveryStatus: "pending",
-        lastEventAt: now - 10 * 60_000,
-      });
-
-      startTaskRegistryMaintenance();
-      stopTaskRegistryMaintenance();
-
-      await vi.advanceTimersByTimeAsync(5_000);
-      await flushAsyncWork();
-
-      expectRecordFields(requireTaskById(task.taskId), {
-        status: "running",
-      });
-    });
-  });
-
-  it("prunes expired ended TaskFlows during scheduled maintenance", async () => {
-    await withTaskRegistryTempDir(
-      async () => {
-        vi.useFakeTimers();
-        const endedAt = Date.now() - 8 * 24 * 60 * 60_000;
-        const flow = createManagedTaskFlow({
-          ownerKey: "agent:main:main",
-          controllerId: "tests/scheduled-task-flow-maintenance",
-          goal: "Completed without a usable result",
-          status: "blocked",
-          createdAt: endedAt,
-          updatedAt: endedAt,
-          endedAt,
-        });
-        resetTaskRegistryForTests({ persist: false });
-        resetTaskFlowRegistryForTests({ persist: false });
-
-        try {
-          startTaskRegistryMaintenance();
-          await vi.advanceTimersByTimeAsync(5_000);
-          await waitForFast(() => expect(getTaskFlowById(flow.flowId)).toBeUndefined());
-        } finally {
-          stopTaskRegistryMaintenance();
-        }
-      },
-      { durableStore: true },
-    );
-  });
-
-  it("keeps scheduled maintenance root-admitted until session cleanup inspection settles", async () => {
-    await withTaskRegistryTempDir(async () => {
-      vi.useFakeTimers();
-      let releaseInspection = (_entries: AcpSessionStoreEntry[]) => {};
-      const inspection = new Promise<AcpSessionStoreEntry[]>((resolve) => {
-        releaseInspection = resolve;
-      });
-      configureTaskRegistryMaintenanceRuntimeForTest({
-        currentTasks: new Map(),
-        snapshotTasks: [],
-        listAcpSessionEntries: async () => await inspection,
-      });
-
-      startTaskRegistryMaintenance();
-      await vi.advanceTimersByTimeAsync(5_000);
-      await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(1));
-
-      releaseInspection([]);
-      await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
-      stopTaskRegistryMaintenance();
-    });
-  });
-
   it.each(["closing", "retained"] as const)(
     "keeps sweep membership fixed when %s retention changes during awaited cleanup",
     async (refreshedTask) => {
@@ -4149,6 +4079,7 @@ describe("task-registry", () => {
 
   it("delivers concise state-change updates only when notify policy requests them", async () => {
     await withTaskRegistryTempDir(async () => {
+      using deliveries = captureTaskDeliveryWork();
       hoisted.sendMessageMock.mockResolvedValue({
         channel: "guildchat",
         to: "guildchat:123",
@@ -4169,7 +4100,8 @@ describe("task-registry", () => {
         runId: "run-state-change",
         eventSummary: "Started.",
       });
-      await waitForAssertion(() => expect(hoisted.sendMessageMock).not.toHaveBeenCalled());
+      await deliveries.settle();
+      expect(hoisted.sendMessageMock).not.toHaveBeenCalled();
 
       updateTaskNotifyPolicyById({
         taskId: task.taskId,
@@ -4180,12 +4112,11 @@ describe("task-registry", () => {
         eventSummary: "No output for 60s. It may be waiting for input.",
       });
 
-      await waitForAssertion(() =>
-        expectRecordFields(sentMessageCall(), {
-          content:
-            "Background task update: ACP background task. No output for 60s. It may be waiting for input.",
-        }),
-      );
+      await deliveries.settle();
+      expectRecordFields(sentMessageCall(), {
+        content:
+          "Background task update: ACP background task. No output for 60s. It may be waiting for input.",
+      });
       expectRecordFields(requireTaskByRunId("run-state-change"), {
         notifyPolicy: "state_changes",
       });
@@ -4233,6 +4164,7 @@ describe("task-registry", () => {
 
   it("keeps background ACP progress off the foreground lane and only sends a terminal notify", async () => {
     await withTaskRegistryTempDir(async () => {
+      using deliveries = captureTaskDeliveryWork();
       resetSystemEventsForTest();
       hoisted.sendMessageMock.mockResolvedValue({
         channel: "guildchat",
@@ -4281,7 +4213,9 @@ describe("task-registry", () => {
           endedAt: 250,
         },
       });
-      await waitForFast(() => expect(peekSystemEvents("agent:main:main")).toHaveLength(1));
+      await captureTaskRegistryReadFence(captureOpenClawStateWorkerContext().admission);
+      await deliveries.settle();
+      expect(peekSystemEvents("agent:main:main")).toHaveLength(1);
 
       expect(hoisted.sendMessageMock).not.toHaveBeenCalled();
       expect(peekSystemEvents("agent:main:main")).toEqual([
