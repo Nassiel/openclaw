@@ -107,9 +107,10 @@ type TaskRegistryReadOwner = {
 };
 
 /** External readers join a fixed accepted prefix; persistence preparation must never use this fence. */
-export async function prepareTaskRegistryReadOwner(): Promise<TaskRegistryReadOwner> {
-  const context = captureOpenClawStateWorkerContext();
-  const store = getTaskRegistryStore();
+export async function prepareTaskRegistryReadOwner(
+  context = captureOpenClawStateWorkerContext(),
+  store = getTaskRegistryStore(),
+): Promise<TaskRegistryReadOwner> {
   const fence = captureTaskRegistryReadFence(context.admission);
   const settled = await Promise.allSettled([ensureTaskRegistryReadyAsync(context), fence]);
   const errors = settled.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
