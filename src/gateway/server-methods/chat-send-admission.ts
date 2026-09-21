@@ -37,9 +37,8 @@ import {
   registerChatAbortController,
   resolveChatRunExpiresAtMs,
 } from "../chat-abort.js";
-import { retainGatewayDeviceRevocation } from "../device-revocation.js";
 import { ExpectedProfileMismatchError } from "../expected-profile.js";
-import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
+import { retainGatewayOperatorRun } from "../operator-run-cancellation.js";
 import { PENDING_CHAT_SEND_DEDUPE_PREFIX, type DedupeEntry } from "../server-shared.js";
 import { loadSessionEntry } from "../session-utils.js";
 import {
@@ -556,10 +555,13 @@ export async function admitChatSend(params: {
   };
   let interruptedActiveRun = false;
   try {
-    const capturedOperator = captureGatewayOperatorRunAuthority(params);
-    operatorAuthority = capturedOperator?.authority;
-    releaseCallerAuthority =
-      capturedOperator?.release ?? retainGatewayDeviceRevocation(params.hasCurrentClientAuthority);
+    const capturedOperator = retainGatewayOperatorRun({
+      ...params,
+      runId: clientRunId,
+      entry: activeRunAbort.entry,
+    });
+    operatorAuthority = capturedOperator.authority;
+    releaseCallerAuthority = capturedOperator.release;
     let interruptionSettled = true;
     if (runInterruptTarget) {
       interruptedActiveRun = true;

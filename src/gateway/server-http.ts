@@ -349,6 +349,7 @@ export function createGatewayHttpServer(opts: {
         trustedProxies,
         allowRealIpFallback,
         rateLimiter,
+        resolveGatewayContext: opts.getGatewayRequestContext?.()?.resolveGatewayContext,
       };
       const controlUiRouteOptions = {
         basePath: controlUiBasePath,
@@ -508,7 +509,7 @@ export function createGatewayHttpServer(opts: {
       );
       addAdmittedStage(scopedRequestPath.startsWith("/__openclaw__/board/"), async () =>
         (await getBoardHttpModule()).handleBoardHttpRequest(req, res, {
-          resolveGatewayContext: opts.getGatewayRequestContext?.()?.resolveGatewayContext,
+          resolveGatewayContext: routeAuth.resolveGatewayContext,
         }),
       );
       addAdmittedStage(scopedRequestPath.startsWith(pluginAssetRoot), async () => {
@@ -536,7 +537,6 @@ export function createGatewayHttpServer(opts: {
         (await getOpenResponsesHttpModule()).handleOpenResponsesHttpRequest(req, res, {
           ...routeAuth,
           config: openResponsesConfig,
-          resolveGatewayContext: opts.getGatewayRequestContext?.()?.resolveGatewayContext,
         }),
       );
       addAdmittedStage(
@@ -545,7 +545,6 @@ export function createGatewayHttpServer(opts: {
           (await getOpenAiHttpModule()).handleOpenAiHttpRequest(req, res, {
             ...routeAuth,
             config: openAiChatCompletionsConfig,
-            resolveGatewayContext: opts.getGatewayRequestContext?.()?.resolveGatewayContext,
           }),
       );
       const approvalDocument = isControlUiApprovalDocumentPath({

@@ -35,10 +35,9 @@ import {
 } from "../../sessions/input-provenance.js";
 import { normalizeDeliveryContext } from "../../utils/delivery-context.shared.js";
 import { registerChatAbortController, resolveAgentRunExpiresAtMs } from "../chat-abort.js";
-import { retainGatewayDeviceRevocation } from "../device-revocation.js";
 import { errorShapeFromError } from "../error-shape.js";
 import { readInProcessSubagentResume } from "../in-process-subagent-resume.js";
-import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
+import { retainGatewayOperatorRun } from "../operator-run-cancellation.js";
 import { resolveGatewayCronCreatorAuthorityAdmission } from "../server-methods/cron-creator-authority-admission.js";
 import { assertParentSubagentResumeSuccessorCurrent } from "../session-subagent-resume.js";
 import { loadSessionEntry, resolveSessionModelRef } from "../session-utils.js";
@@ -617,10 +616,9 @@ export async function prepareAgentRunDispatch(
   }
   try {
     // The transport request ends at acceptance; execution retains this exact caller.
-    const capturedOperator = captureGatewayOperatorRunAuthority(params);
-    operatorAuthority = capturedOperator?.authority;
-    releaseCallerAuthority =
-      capturedOperator?.release ?? retainGatewayDeviceRevocation(params.hasCurrentClientAuthority);
+    const capturedOperator = retainGatewayOperatorRun({ ...params, entry: activeRunAbort.entry });
+    operatorAuthority = capturedOperator.authority;
+    releaseCallerAuthority = capturedOperator.release;
   } catch (error) {
     const failure = releasePreparedAgentRunUserTurnAfterFailure(userTurn, error);
     return rejectPreaccept(errorShapeFromError(ErrorCodes.INVALID_REQUEST, failure));
