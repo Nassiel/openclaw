@@ -58,7 +58,7 @@ versions and unsupported extended-stable correction versions fail before Docker.
 
 Docker seed CI resolves an exact published stable predecessor of the selected source package version before running `published-upgrade-survivor`. It uses the release baseline resolver and selected release context, so publishing `latest` never turns the first upgrade into an already-current operation. Missing predecessors fail before Docker starts; the separate already-current control remains unchanged.
 
-The `published-upgrade-survivor` Docker lane validates one published package baseline per scenario. In Package Acceptance, the resolved `package-under-test` tarball is always the candidate and `published_upgrade_survivor_baseline` selects the fallback published baseline, defaulting to `openclaw@latest`; failed-lane rerun commands preserve that baseline. Current source release checks set `published_upgrade_survivor_baselines=supported-lines` for `legacy-operator-state`: npm's current `latest`, the preceding stable version, `extended-stable` when that tag exists, and the documented oldest supported baseline `2026.6.34`. The resolver reads `npm view openclaw versions` and `npm view openclaw dist-tags` at run time, pins exact versions before fanout, and deduplicates overlapping lines. Normal current-source release checks retain `base` and add `legacy-operator-state` and `custom-plugin-siblings`; release soak selects `reported-issues`, including these and the existing issue-shaped fixtures. The sibling-source scenario uses baselines from 2026.9.4 onward and requires actual custom-plugin Doctor contract execution from the private update canary, plus intact source files and plugin loading after the update.
+The `published-upgrade-survivor` Docker lane validates one published package baseline per scenario. In Package Acceptance, the resolved `package-under-test` tarball supplies the candidate source and `published_upgrade_survivor_baseline` selects the fallback published baseline, defaulting to `openclaw@latest`; failed-lane rerun commands preserve that baseline. Current source release checks set `published_upgrade_survivor_baselines=supported-lines` for `legacy-operator-state`: npm's current `latest`, the preceding stable version, `extended-stable` when that tag exists, and the documented oldest supported baseline `2026.6.34`. The resolver reads `npm view openclaw versions` and `npm view openclaw dist-tags` at run time, pins exact versions before fanout, and deduplicates overlapping lines. Normal current-source release checks retain `base` and add `legacy-operator-state` and `custom-plugin-siblings`; release soak selects `reported-issues`, including these and the existing issue-shaped fixtures. The sibling-source scenario uses baselines from 2026.9.4 onward and requires actual custom-plugin Doctor contract execution from the private update canary, plus intact source files and plugin loading after the update.
 
 Before targeted Docker fanout, the trusted group planner installs each distinct published baseline in a throwaway npm prefix and checks `openclaw --version` plus `openclaw config set gateway.mode local` against synthetic isolated state. The config write loads the CLI setup path because version/help and config reads can use fast paths. An installed CLI that exits unsuccessfully is recorded as an **unusable published baseline**, with its skipped scenarios and captured error in the job summary and `upgrade-baseline-checks-*` artifact. Skipped scenarios are never counted as successful upgrades. Install errors, probe timeouts, and process-launch failures fail planning. Candidate installs and upgrades retain their existing failure gates.
 
@@ -68,6 +68,17 @@ Published and candidate packages can share an exact version while containing
 different bytes; preserving published dist-tags alone does not isolate them.
 After those baseline commands, candidate installs keep using the verified
 candidate registry, including its exact-version dependencies.
+
+When an unpublished regular stable candidate shares the published baseline's
+Discord plugin version, `legacy-operator-state` prepares a synthetic next-patch
+core/plugin cohort inside the fixture. A regular stable successor must be
+available. Only package versions, build-cohort metadata, and the matching core
+content-inventory entry change. `candidate-cohort.json` records the source
+commit, original and derived archive hashes, and changed members. Runtime files,
+schema versions, dependencies, and the genuine published baseline stay intact;
+update, integrity, recovery, and serving assertions still run. The synthetic
+version is never published. Package-integrity and installer jobs continue to
+check the original tarball.
 
 Expanded release qualification requires the candidate's `YYYY.M.PATCH` base version
 to be at least the trusted workflow package's base version, ignoring prerelease

@@ -721,8 +721,37 @@ assert_prepublish_plugin_install() {
   assert_prepublish_fixture_idle
 }
 
+prepare_same_version_candidate_cohort() {
+  if [ "$CANDIDATE_KIND" != "tarball" ] ||
+    [ -z "${OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR:-}" ] ||
+    [ "$baseline_companion_availability" != "available" ] ||
+    [ "$baseline_plugin_version" != "$candidate_version" ]; then
+    return 0
+  fi
+  local fixture_dir
+  fixture_dir="$(mktemp -d "$RUNTIME_ROOT/candidate-cohort.XXXXXX")" || return "$?"
+  # Preserve the genuine baseline; different candidate bytes need a new npm identity.
+  node scripts/e2e/lib/update-first-hop-package-fixtures.mjs candidate-cohort \
+    "${CANDIDATE_SPEC#file:}" "$OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR" "$fixture_dir" \
+    "$OPENCLAW_DOCKER_E2E_SELECTED_SHA" "$candidate_version" \
+    "$OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_MANIFEST_SHA256" \
+    >"$ARTIFACT_ROOT/candidate-cohort.json" || return "$?"
+  CANDIDATE_SPEC="$fixture_dir/openclaw.tgz"
+  candidate_tarball=""
+  resolve_candidate_version || return "$?"
+  export OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR="$fixture_dir/registry"
+  export OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_CANDIDATE_VERSION="$candidate_version"
+  OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_MANIFEST_SHA256="$(
+    node -p 'require(process.argv[1]).targetManifestSha256' "$ARTIFACT_ROOT/candidate-cohort.json"
+  )" || return "$?"
+  export OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_MANIFEST_SHA256
+}
+
 configure_plugin_registry() {
   local stage="${1:-candidate}"
+  if [ "$stage" = "candidate" ] && [ "$SCENARIO" = "legacy-operator-state" ]; then
+    prepare_same_version_candidate_cohort || return "$?"
+  fi
   local fixture_root="$ARTIFACT_ROOT/plugin-registry"
   local package_dir="$fixture_root/package"
   local tarball="$fixture_root/openclaw-brave-plugin-${candidate_version}.tgz"

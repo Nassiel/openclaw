@@ -27,15 +27,15 @@ function writeJson(filePath: string, value: unknown) {
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-function makePackageFixture() {
+function makePackageFixture(version = "2026.8.1") {
   const root = tempDirs.make("openclaw-first-hop-package-");
   writeJson(path.join(root, "package.json"), {
     name: "openclaw",
-    version: "2026.8.1",
-    dependencies: { "@openclaw/ai": "2026.8.1" },
+    version,
+    dependencies: { "@openclaw/ai": version },
   });
   writeJson(path.join(root, "dist", "build-info.json"), {
-    version: "2026.8.1",
+    version,
     commit: "a".repeat(40),
     builtAt: "2026-09-02T00:00:00.000Z",
     buildId: "old-build",
@@ -53,7 +53,253 @@ function makePackageFixture() {
   return root;
 }
 
+async function makeCandidateCohortFixture() {
+  const root = tempDirs.make("openclaw-validation-cohort-");
+  const version = "2026.9.5";
+  const sourceSha = "a".repeat(40);
+  const packageRoot = path.join(root, "package");
+  fs.cpSync(makePackageFixture(version), packageRoot, { recursive: true });
+  const packageJson = path.join(packageRoot, "package.json");
+  writeJson(packageJson, {
+    ...JSON.parse(fs.readFileSync(packageJson, "utf8")),
+    openclaw: { schemaVersions: { state: 17, agent: 22 } },
+  });
+  await writePackageDistInventory(packageRoot);
+  const candidateTarball = path.join(root, "candidate.tgz");
+  execFileSync("tar", ["-czf", candidateTarball, "-C", root, "package"]);
+  const registryDir = path.join(root, "registry");
+  fs.mkdirSync(registryDir);
+  const packages = ["@openclaw/discord", "@openclaw/duckduckgo-plugin"].map((name) => {
+    const id = name.split("/")[1]!;
+    const directory = path.join(root, id);
+    writeJson(path.join(directory, "package/package.json"), {
+      name,
+      version,
+      dependencies: { "fixture-runtime": "1.2.3" },
+      peerDependencies: { openclaw: `>=${version}` },
+      openclaw: { build: { openclawVersion: version } },
+    });
+    writeJson(path.join(directory, "package/openclaw.plugin.json"), { id });
+    fs.mkdirSync(path.join(directory, "package/dist"));
+    fs.writeFileSync(path.join(directory, "package/dist/index.js"), "export const fixture = 1;\n");
+    const tarball = `${id}.tgz`;
+    execFileSync("tar", ["-czf", path.join(registryDir, tarball), "-C", directory, "package"]);
+    return { name, version, tarball, sha256: archiveHash(path.join(registryDir, tarball)) };
+  });
+  const manifest = {
+    schema: "openclaw.prepublish-plugin-registry/v1",
+    schemaVersion: 1,
+    sourceSha,
+    candidateVersion: version,
+    packages,
+  };
+  const manifestPath = path.join(registryDir, "prepublish-plugin-registry.json");
+  writeJson(manifestPath, manifest);
+  return {
+    root,
+    packageRoot,
+    candidateTarball,
+    registryDir,
+    manifest,
+    manifestPath,
+    sourceSha,
+    version,
+  };
+}
+
+function archiveHash(file: string) {
+  return createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
+function archiveJson(file: string, member = "package/package.json") {
+  return JSON.parse(execFileSync("tar", ["-xOf", file, member], { encoding: "utf8" }));
+}
+
 describe("first-hop package fixtures", () => {
+  it.each(["2026.9.4", "2026.9.5"])(
+    "prepares an immutable candidate cohort only for the matching published plugin version %s",
+    async (baselinePluginVersion) => {
+      const f = await makeCandidateCohortFixture();
+      const inputs = [
+        f.candidateTarball,
+        f.manifestPath,
+        ...f.manifest.packages.map((entry) => path.join(f.registryDir, entry.tarball)),
+      ];
+      const before = inputs.map(archiveHash);
+      const runner = fs.readFileSync("scripts/e2e/lib/upgrade-survivor/run.sh", "utf8");
+      const firstPhase = runner.indexOf("phase storage-preflight");
+      expect(firstPhase).toBeGreaterThan(0);
+      const fixtureScript = path.join(f.root, "configure-registry.sh");
+      fs.writeFileSync(
+        fixtureScript,
+        `
+${runner.slice(0, firstPhase)}
+trap - EXIT ERR HUP INT TERM
+baseline_version="$FIXTURE_BASELINE_VERSION"
+baseline_plugin_version="$FIXTURE_BASELINE_VERSION"
+baseline_companion_availability=available
+candidate_version="$FIXTURE_CANDIDATE_VERSION"
+configured_plugin_installs_enabled() { return 1; }
+openclaw_prepublish_plugin_registry_start() { :; }
+configure_plugin_registry
+CANDIDATE_VERSION="$candidate_version" CANDIDATE_PATH="$CANDIDATE_SPEC" node -e '
+process.stdout.write(JSON.stringify({
+  version:process.env.CANDIDATE_VERSION, tarball:process.env.CANDIDATE_PATH,
+  registry:process.env.OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR,
+  manifestSha256:process.env.OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_MANIFEST_SHA256
+}));'
+`,
+      );
+      const result = spawnSync("bash", [fixtureScript], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          OPENCLAW_UPGRADE_SURVIVOR_RUNTIME_ROOT: path.join(f.root, "runtime"),
+          OPENCLAW_UPGRADE_SURVIVOR_SUMMARY_JSON: path.join(f.root, "summary.json"),
+          OPENCLAW_UPGRADE_SURVIVOR_CANDIDATE_KIND: "tarball",
+          OPENCLAW_UPGRADE_SURVIVOR_CANDIDATE_SPEC: f.candidateTarball,
+          OPENCLAW_UPGRADE_SURVIVOR_BASELINE: `openclaw@${baselinePluginVersion}`,
+          OPENCLAW_UPGRADE_SURVIVOR_SCENARIO: "legacy-operator-state",
+          FIXTURE_BASELINE_VERSION: baselinePluginVersion,
+          FIXTURE_CANDIDATE_VERSION: f.version,
+          OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR: f.registryDir,
+          OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_CANDIDATE_VERSION: f.version,
+          OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_MANIFEST_SHA256: before[1],
+          OPENCLAW_DOCKER_E2E_SELECTED_SHA: f.sourceSha,
+        },
+      });
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(inputs.map(archiveHash)).toEqual(before);
+      const prepared = JSON.parse(result.stdout);
+      if (baselinePluginVersion !== f.version) {
+        expect(prepared).toEqual({
+          version: f.version,
+          tarball: f.candidateTarball,
+          registry: f.registryDir,
+          manifestSha256: before[1],
+        });
+        expect(fs.existsSync(path.join(f.root, "candidate-cohort.json"))).toBe(false);
+        return;
+      }
+      expect(prepared.version).toBe("2026.9.6");
+      const receipt = JSON.parse(
+        fs.readFileSync(path.join(f.root, "candidate-cohort.json"), "utf8"),
+      );
+      expect(receipt).toMatchObject({
+        method: "candidate-stable-successor-cohort-fixture",
+        sourceSha: f.sourceSha,
+        sourceVersion: f.version,
+        targetVersion: "2026.9.6",
+        sourceManifestSha256: before[1],
+        targetManifestSha256: prepared.manifestSha256,
+        root: { sourceSha256: before[0], targetSha256: archiveHash(prepared.tarball) },
+      });
+      expect(archiveJson(prepared.tarball)).toEqual({
+        ...archiveJson(f.candidateTarball),
+        version: "2026.9.6",
+      });
+      expect(archiveJson(prepared.tarball, "package/dist/build-info.json")).toEqual({
+        ...archiveJson(f.candidateTarball, "package/dist/build-info.json"),
+        version: "2026.9.6",
+      });
+      expect(receipt.root.members.changes.map((entry: { path: string }) => entry.path)).toEqual([
+        "dist/build-info.json",
+        "dist/postinstall-content-inventory.json",
+        "package.json",
+      ]);
+      const extracted = path.join(f.root, "derived-root");
+      fs.mkdirSync(extracted);
+      execFileSync("tar", ["-xzf", prepared.tarball, "-C", extracted]);
+      expect(
+        await collectPackageDistContentInventoryErrors(path.join(extracted, "package")),
+      ).toEqual([]);
+      const derivedManifest = JSON.parse(
+        fs.readFileSync(path.join(prepared.registry, "prepublish-plugin-registry.json"), "utf8"),
+      );
+      expect(derivedManifest.sourceSha).toBe(f.sourceSha);
+      expect(derivedManifest.candidateVersion).toBe("2026.9.6");
+      for (const entry of derivedManifest.packages) {
+        const original = f.manifest.packages.find((value) => value.name === entry.name)!;
+        const source = path.join(f.registryDir, original.tarball);
+        const target = path.join(prepared.registry, entry.tarball);
+        const sourceManifest = archiveJson(source);
+        expect(archiveJson(target)).toEqual({
+          ...sourceManifest,
+          version: "2026.9.6",
+          openclaw: {
+            ...sourceManifest.openclaw,
+            build: { ...sourceManifest.openclaw.build, openclawVersion: "2026.9.6" },
+          },
+        });
+        expect(entry.sha256).toBe(archiveHash(target));
+        const pluginReceipt = receipt.packages.find(
+          (value: { name: string }) => value.name === entry.name,
+        );
+        expect(pluginReceipt.sourceSha256).toBe(original.sha256);
+        expect(pluginReceipt.targetSha256).toBe(entry.sha256);
+        expect(
+          pluginReceipt.members.changes.map((change: { path: string }) => change.path),
+        ).toEqual(["package.json"]);
+      }
+    },
+  );
+
+  it.each([
+    ["root build", "candidate root identity differs"],
+    ["plugin build", "plugin build identity differs"],
+    ["changed archive", "tarball SHA-256 mismatch"],
+    ["unlisted member", "missing, extra, or non-file entries"],
+  ])(
+    "refuses an unbound %s before producing a successful cohort receipt",
+    async (fault, message) => {
+      const f = await makeCandidateCohortFixture();
+      if (fault === "root build") {
+        const file = path.join(f.packageRoot, "dist/build-info.json");
+        writeJson(file, { ...JSON.parse(fs.readFileSync(file, "utf8")), commit: "b".repeat(40) });
+        execFileSync("tar", ["-czf", f.candidateTarball, "-C", f.root, "package"]);
+      } else if (fault === "plugin build") {
+        const entry = f.manifest.packages[0]!;
+        const directory = path.join(f.root, "discord");
+        const file = path.join(directory, "package/package.json");
+        const manifest = JSON.parse(fs.readFileSync(file, "utf8"));
+        manifest.openclaw.build.openclawVersion = "2026.9.4";
+        writeJson(file, manifest);
+        const archive = path.join(f.registryDir, entry.tarball);
+        execFileSync("tar", ["-czf", archive, "-C", directory, "package"]);
+        entry.sha256 = archiveHash(archive);
+        writeJson(f.manifestPath, f.manifest);
+      } else if (fault === "changed archive") {
+        fs.appendFileSync(path.join(f.registryDir, f.manifest.packages[0]!.tarball), "changed");
+      } else {
+        fs.writeFileSync(path.join(f.registryDir, "unbound.tgz"), "unlisted");
+      }
+      const inputs = [
+        f.candidateTarball,
+        f.manifestPath,
+        ...f.manifest.packages.map((entry) => path.join(f.registryDir, entry.tarball)),
+      ];
+      const before = inputs.map(archiveHash);
+      const result = spawnSync(
+        process.execPath,
+        [
+          "scripts/e2e/lib/update-first-hop-package-fixtures.mjs",
+          "candidate-cohort",
+          f.candidateTarball,
+          f.registryDir,
+          path.join(f.root, "output"),
+          f.sourceSha,
+          f.version,
+          archiveHash(f.manifestPath),
+        ],
+        { encoding: "utf8" },
+      );
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(message);
+      expect(result.stdout).toBe("");
+      expect(inputs.map(archiveHash)).toEqual(before);
+    },
+  );
+
   it.each(["first-hop-tarball", "future-tarball", "negative-tarball", "future", "negative"])(
     "keeps modern content inventories valid for %s",
     async (method) => {

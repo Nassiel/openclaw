@@ -201,13 +201,15 @@ describe("memory embedding cache", () => {
           now: 222,
         });
         const updatedRows = readMigratedRows.all();
-        expect(updatedRows.filter((row) => row.hash !== "new")).toEqual(
-          migratedRows.map((row) =>
+        const expectedRows: typeof migratedRows = [];
+        for (const row of migratedRows) {
+          expectedRows.push(
             row.provider_key === identity.providerKey && regeneratedHashes.has(String(row.hash))
               ? { ...row, embedding: regeneratedBytes, dims: 2n, updated_at: 222n }
               : row,
-          ),
-        );
+          );
+        }
+        expect(updatedRows.filter((row) => row.hash !== "new")).toEqual(expectedRows);
         expect(updatedRows.find((row) => row.hash === "new")).toEqual({
           rowid: largestRowid + 1n,
           provider: identity.provider,

@@ -11,7 +11,9 @@ import {
   PACKAGE_DIST_CONTENT_INVENTORY_RELATIVE_PATH,
   parsePackageDistContentInventory,
 } from "../../lib/package-dist-inventory-contract.mts";
+import { classifyReleaseTrain, parseReleaseVersion } from "../../lib/release-version.mjs";
 import { isUpdateCompatibilityChunk } from "../../lib/update-compat-contract.mjs";
+import { validatePrepublishPluginRegistryArtifact } from "../../prepublish-plugin-registry-artifact.mjs";
 
 // Frozen candidates predating the recorded inventory retain their original fixture contract.
 export const LEGACY_UPDATE_COMPAT_CHUNKS = [
@@ -297,6 +299,118 @@ function packTransformedFixture(candidateTarball, outputTarball, transform) {
   }
 }
 
+/** A local successor gives changed candidate bytes a different immutable npm identity. */
+function packUpgradeCandidateCohort(params) {
+  const { manifest } = validatePrepublishPluginRegistryArtifact({
+    artifactDir: params.registryDir,
+    expectedCandidateVersion: params.candidateVersion,
+    expectedManifestSha256: params.manifestSha256,
+    expectedSourceSha: params.sourceSha,
+    requiredPackages: ["@openclaw/discord", "@openclaw/duckduckgo-plugin"],
+  });
+  const source = parseReleaseVersion(params.candidateVersion);
+  if (
+    !source ||
+    classifyReleaseTrain(source) !== "stable" ||
+    source.correctionNumber !== undefined ||
+    source.patch >= 32
+  ) {
+    throw new Error("same-version operator fixture requires a regular stable successor");
+  }
+  const targetVersion = `${source.year}.${source.month}.${source.patch + 1}`;
+  const outputDir = path.resolve(params.outputDir);
+  fs.mkdirSync(outputDir, { recursive: true });
+  if (fs.readdirSync(outputDir).length !== 0) {
+    throw new Error("candidate cohort output directory must be empty");
+  }
+  const root = packTransformedFixture(
+    params.candidateTarball,
+    path.join(outputDir, "openclaw.tgz"),
+    (packageRoot) => {
+      const pkg = readJson(path.join(packageRoot, "package.json"));
+      const build = readJson(path.join(packageRoot, "dist/build-info.json"));
+      if (
+        pkg.name !== "openclaw" ||
+        pkg.version !== source.version ||
+        build.version !== source.version ||
+        build.commit !== params.sourceSha
+      ) {
+        throw new Error("candidate root identity differs from the sealed cohort");
+      }
+      stampFixtureVersion(packageRoot, targetVersion);
+    },
+  );
+  const registryDir = path.join(outputDir, "registry");
+  fs.mkdirSync(registryDir);
+  const packages = [];
+  const receipts = [];
+  for (const entry of manifest.packages) {
+    const tarball = `${entry.name.replace(/^@/u, "").replace("/", "-")}-${targetVersion}.tgz`;
+    const output = path.join(registryDir, tarball);
+    let receipt;
+    if (entry.name === "openclaw") {
+      if (entry.sha256 !== root.sourceSha256) {
+        throw new Error("registry root differs from the candidate tarball");
+      }
+      fs.copyFileSync(path.join(outputDir, "openclaw.tgz"), output, fs.constants.COPYFILE_EXCL);
+      receipt = root;
+    } else {
+      receipt = packTransformedFixture(
+        path.join(params.registryDir, entry.tarball),
+        output,
+        (packageRoot) => {
+          const file = path.join(packageRoot, "package.json");
+          const pkg = readJson(file);
+          if (
+            pkg.name !== entry.name ||
+            pkg.version !== source.version ||
+            pkg.openclaw?.build?.openclawVersion !== source.version
+          ) {
+            throw new Error(`plugin build identity differs from the sealed cohort: ${entry.name}`);
+          }
+          pkg.version = targetVersion;
+          pkg.openclaw.build.openclawVersion = targetVersion;
+          writeJson(file, pkg);
+        },
+      );
+      if (receipt.sourceSha256 !== entry.sha256) {
+        throw new Error(
+          `candidate plugin bytes changed while preparing the fixture: ${entry.name}`,
+        );
+      }
+    }
+    packages.push({
+      name: entry.name,
+      version: targetVersion,
+      tarball,
+      sha256: receipt.targetSha256,
+    });
+    receipts.push({ name: entry.name, ...receipt });
+  }
+  const manifestPath = path.join(registryDir, "prepublish-plugin-registry.json");
+  writeJson(manifestPath, { ...manifest, candidateVersion: targetVersion, packages });
+  const targetManifestSha256 = createHash("sha256")
+    .update(fs.readFileSync(manifestPath))
+    .digest("hex");
+  validatePrepublishPluginRegistryArtifact({
+    artifactDir: registryDir,
+    expectedCandidateVersion: targetVersion,
+    expectedManifestSha256: targetManifestSha256,
+    expectedSourceSha: params.sourceSha,
+    requiredPackages: manifest.packages.map((entry) => entry.name),
+  });
+  return {
+    method: "candidate-stable-successor-cohort-fixture",
+    sourceSha: params.sourceSha,
+    sourceVersion: source.version,
+    targetVersion,
+    sourceManifestSha256: params.manifestSha256,
+    targetManifestSha256,
+    root,
+    packages: receipts,
+  };
+}
+
 export function packFirstHopUpdateFixture(candidateTarball, outputTarball, sequence = 0) {
   const version = futureFixtureVersion(sequence);
   return {
@@ -352,6 +466,25 @@ function packFutureRuntimeFixture(candidateTarball, outputTarball, sequence = 0)
 
 function main() {
   const [mode, packageRoot, outputTarball, sequence] = process.argv.slice(2);
+  if (mode === "candidate-cohort") {
+    const [candidateTarball, registryDir, outputDir, sourceSha, candidateVersion, manifestSha256] =
+      process.argv.slice(3);
+    process.stdout.write(
+      `${JSON.stringify(
+        packUpgradeCandidateCohort({
+          candidateTarball,
+          registryDir,
+          outputDir,
+          sourceSha,
+          candidateVersion,
+          manifestSha256,
+        }),
+        null,
+        2,
+      )}\n`,
+    );
+    return;
+  }
   if (mode === "sources" && packageRoot) {
     process.stdout.write(`${listFirstHopSourceVersions(packageRoot).join("\n")}\n`);
     return;
