@@ -1645,6 +1645,8 @@ export const en: TranslationMap & {
     appearance: {
       lobsterVisits: "Lobster visits",
       lobsterVisitsOn: "Drops by occasionally",
+      lobsterVisitsThemeHidden:
+        "The lobster stays home while the {theme} theme is active. Other visitors still drop by.",
       lobsterVisitsOff: "Never visits",
       lobsterSounds: "Lobster sounds",
       lobsterSoundsOn: "Tiny blubs when touched",
@@ -2128,6 +2130,7 @@ export const en: TranslationMap & {
     automation: "Automation",
     mcp: "MCP",
     memory: "Memory",
+    search: "Search",
     talk: "Talk",
     infrastructure: "Infrastructure",
     labs: "Labs",
@@ -2178,6 +2181,7 @@ export const en: TranslationMap & {
     automation: "Commands, hooks, automations, and plugins.",
     mcp: "MCP servers, auth, tools, and diagnostics.",
     memory: "Memory engine, search, and dreaming.",
+    search: "Choose how agents search the web and check provider health.",
     talk: "Realtime voice: provider, model, and speaker voice.",
     infrastructure: "Gateway, browser, node host, discovery, and ACP settings.",
     labs: "Experimental agent and tool capabilities.",
@@ -3153,6 +3157,7 @@ export const en: TranslationMap & {
   },
   dreaming: {},
   modelProviders: {},
+  searchPage: {},
   usage: {
     common: {
       emptyValue: "—",
@@ -3891,6 +3896,12 @@ export const en: TranslationMap & {
     goals: {},
     asyncQuestions: {
       title: "Optional · work can continue",
+      dismiss: "Dismiss",
+      dismissing: "Dismissing…",
+      dismissed: "Dismissed",
+      reopening: "Restoring answer…",
+      dismissedReason: "You can still answer this question later.",
+      dismissedNotice: "Question dismissed. Work continues.",
       pendingOne: "{count} unanswered question",
       pendingMany: "{count} unanswered questions",
       inComposer: "Answer above the message box.",
@@ -3903,6 +3914,9 @@ export const en: TranslationMap & {
       failed: "Answer not sent",
       awaitingConfirmation: "Awaiting delivery confirmation",
       retry: "Retry answer",
+      draftStorageFailed:
+        "This answer is not saved on this device. Keep this page open or copy your answer.",
+      draftConflict: "This question was edited in another tab. Copy your answer before reloading.",
     },
     questions: {
       other: "Type your own answer here",

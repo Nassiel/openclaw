@@ -95,6 +95,12 @@ chat message, using the existing outbox and retry controls. Skipping removes tha
 request from the dock without sending an answer. The transcript retains a summary.
 Minimizing alone neither answers nor skips a question.
 
+The question summary shows whether your answer is queued, sending, failed, or
+confirmed in saved conversation history. If delivery fails or becomes uncertain
+after reconnecting, **Retry answer** retries the existing outbox message instead
+of submitting a second answer. **Discard** removes that queued answer and reopens
+its preserved draft in the currently open panes for that conversation.
+
 ## Timeout and no answer
 
 The default timeout is 900 seconds. `timeoutSeconds` is clamped to the range

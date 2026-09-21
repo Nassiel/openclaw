@@ -1,12 +1,12 @@
 import { readSessionMessageIdentity } from "@openclaw/gateway-client/browser";
 import { asNullableRecord, isRecord } from "@openclaw/normalization-core/record-coerce";
-import { html, nothing } from "lit";
 import { resolveAssistantMessagePhase } from "../../../../../src/shared/chat-message-content.js";
-import type { QuestionDraft } from "../../../app/question-prompt.ts";
 import { t } from "../../../i18n/index.ts";
 import type { ChatQueueItem } from "../../../lib/chat/chat-types.ts";
+import type { DurableComposerDraftScope } from "../../../lib/chat/composer-draft-store.runtime.ts";
 import { extractTextCached } from "../../../lib/chat/message-extract.ts";
 import { shouldHideAssistantChatMessage } from "../../../lib/chat/message-visibility.ts";
+import { showToast } from "../../../lib/toast.ts";
 import {
   isKeyedAssistantStreamFallbackMessage,
   transcriptRunId,
@@ -16,37 +16,21 @@ import {
   readLiveTerminalDisposition,
   readLiveTerminalRunId,
 } from "../terminal-message-identity.ts";
+import {
+  persistAsyncQuestionDrafts,
+  restoreAsyncQuestionDrafts,
+  type AsyncQuestionDraftSession,
+} from "./chat-async-question-draft.ts";
+import { parseGeneratedAsyncAnswer, quoteQuestion } from "./chat-async-question-summary.ts";
+import type {
+  AsyncQuestionDraft,
+  AsyncQuestionPresentation,
+  AsyncQuestions,
+} from "./chat-async-question.types.ts";
 import { questionDraftValues } from "./chat-question-answer-controls.ts";
 import type { QuestionPanelOptions, QuestionPanelProps } from "./chat-question-card.ts";
 
-export type AsyncQuestions = {
-  itemId: string;
-  sourceMessageId?: string;
-  questions: { title: string; options?: string[] }[];
-};
-
-export type AsyncQuestionDraft = {
-  answers: Map<string, QuestionDraft>;
-  status?: "submitting" | "submitted" | "skipped";
-  admittedQueueId?: string;
-  error?: string;
-  reopenedAfterBoundary?: string;
-};
-
-export type AsyncQuestionPresentation = {
-  scope: string;
-  pending: AsyncQuestions[];
-  archived: ReadonlyMap<string, string>;
-  historyKey: string;
-  drafts: Map<string, AsyncQuestionDraft>;
-  resolved: ReadonlyMap<string, AsyncQuestionDraft>;
-  delivery: ReadonlyMap<string, ChatQueueItem>;
-  retry?: (queueId: string) => void;
-  discard: (item: ChatQueueItem) => void;
-  onChange: () => void;
-  reopen: (itemId: string) => void;
-  submit?: (message: string, itemId?: string, sourceMessageId?: string) => Promise<boolean>;
-};
+export { renderAsyncQuestionSummary } from "./chat-async-question-summary.ts";
 
 function terminalOutcome(message: unknown): "successful" | "settled" | null {
   const record = asNullableRecord(message);
@@ -228,6 +212,9 @@ function questionHistory(messages: readonly unknown[]) {
 export function createAsyncQuestionPresentation(
   state: {
     asyncQuestionScope?: string;
+    asyncQuestionGeneration?: number;
+    asyncQuestionPresentation?: AsyncQuestionPresentation;
+    asyncQuestionSessions?: Map<string, AsyncQuestionDraftSession>;
     asyncQuestionDrafts: Map<string, AsyncQuestionDraft>;
     asyncQuestionRevision: number;
     transcriptRenderContext: { onAsyncQuestionSubmit?: AsyncQuestionPresentation["submit"] };
@@ -239,19 +226,72 @@ export function createAsyncQuestionPresentation(
     sessionKey: string;
     currentAgentId?: string;
     connectionEpoch?: number;
+    asyncQuestionStorage?: DurableComposerDraftScope | null;
     onAsyncQuestionSubmit?: AsyncQuestionPresentation["submit"];
     onReopen?: (itemId: string, scope: string) => void;
     onRequestUpdate?: () => void;
   },
 ): AsyncQuestionPresentation {
-  const scope = JSON.stringify([props.sessionKey, props.currentAgentId, props.connectionEpoch]);
-  if (state.asyncQuestionScope !== scope) {
+  const storageScope = props.asyncQuestionStorage
+    ? {
+        ...props.asyncQuestionStorage,
+        scopeKey: `questions:v1:${props.asyncQuestionStorage.scopeKey}`,
+      }
+    : undefined;
+  const storageKey = storageScope
+    ? JSON.stringify([storageScope.gatewayOwner, storageScope.recoveryScope, storageScope.scopeKey])
+    : undefined;
+  // Session navigation/reconnect can reuse drafts only within the same authenticated
+  // owner. A direct non-null owner replacement must also retire old callbacks and
+  // force a fresh read on return, so a cached map cannot bypass a deletion tombstone.
+  for (const [key, cached] of state.asyncQuestionSessions ?? []) {
+    if (
+      storageScope &&
+      cached.scope.gatewayOwner === storageScope.gatewayOwner &&
+      cached.scope.recoveryScope === storageScope.recoveryScope
+    ) {
+      continue;
+    }
+    cached.invalidated = true;
+    state.asyncQuestionSessions?.delete(key);
+  }
+  const scope = JSON.stringify([
+    props.sessionKey,
+    props.currentAgentId,
+    props.connectionEpoch,
+    storageKey,
+  ]);
+  let session: AsyncQuestionDraftSession | undefined;
+  if (storageScope && storageKey) {
+    const sessions = (state.asyncQuestionSessions ??= new Map());
+    session = sessions.get(storageKey);
+    if (!session) {
+      session = {
+        scope: storageScope,
+        drafts: new Map(),
+        resolved: new Set(),
+        revision: 0,
+        saved: "[]",
+        loaded: false,
+        onChange: () => {},
+      };
+      sessions.set(storageKey, session);
+    }
+  }
+  if (
+    state.asyncQuestionScope !== scope ||
+    (session && state.asyncQuestionDrafts !== session.drafts)
+  ) {
     state.asyncQuestionScope = scope;
-    state.asyncQuestionDrafts = new Map();
+    state.asyncQuestionGeneration = (state.asyncQuestionGeneration ?? 0) + 1;
+    state.asyncQuestionDrafts = session?.drafts ?? new Map();
   }
   const drafts = state.asyncQuestionDrafts;
+  const generation = state.asyncQuestionGeneration;
   const isCurrent = () =>
-    state.asyncQuestionScope === scope && state.asyncQuestionDrafts === drafts;
+    state.asyncQuestionScope === scope &&
+    state.asyncQuestionGeneration === generation &&
+    state.asyncQuestionDrafts === drafts;
   const { history: questions, resolved } = questionHistory(props.messages ?? []);
   // This is a projection, never another sender: a recovered outbox row retains
   // the question association and is the only owner of retry and delivery state.
@@ -260,6 +300,24 @@ export function createAsyncQuestionPresentation(
       item.asyncQuestionItemId ? [[item.asyncQuestionItemId, item] as const] : [],
     ),
   );
+  const notify = () => {
+    if (isCurrent()) {
+      state.asyncQuestionRevision += 1;
+      props.onRequestUpdate?.();
+    }
+  };
+  if (session) {
+    session.resolved = new Set(resolved.keys());
+    session.onChange = notify;
+    for (const { question } of questions) {
+      getQuestionDraft(question, drafts);
+    }
+    restoreAsyncQuestionDrafts(session);
+    // Resolving an answer from authoritative history retires its recoverable draft.
+    if (session.loaded && resolved.size) {
+      persistAsyncQuestionDrafts(session);
+    }
+  }
   const archived = new Map<string, string>();
   const pending = questions.flatMap(({ question, boundary }) => {
     const queued = delivery.get(question.itemId);
@@ -273,14 +331,23 @@ export function createAsyncQuestionPresentation(
       admitted.answers = parseGeneratedAsyncAnswer(question, queued.text) ?? new Map();
     }
     const draft = resolved.get(question.itemId) ?? drafts.get(question.itemId);
-    if (
-      delivery.has(question.itemId) ||
-      draft?.status === "submitted" ||
-      draft?.status === "skipped"
-    ) {
+    if (delivery.has(question.itemId) || draft?.status === "submitted") {
       return [];
     }
-    if (boundary && !draft?.status && !draft?.error && draft?.reopenedAfterBoundary !== boundary) {
+    if (draft?.status === "skipped" || draft?.status === "reopening") {
+      // Keep the current completion boundary available while a durable Undo waits.
+      if (boundary) {
+        archived.set(question.itemId, boundary);
+      }
+      return [];
+    }
+    if (
+      boundary &&
+      !draft?.edited &&
+      !draft?.status &&
+      !draft?.error &&
+      draft?.reopenedAfterBoundary !== boundary
+    ) {
       archived.set(question.itemId, boundary);
       return [];
     }
@@ -288,11 +355,67 @@ export function createAsyncQuestionPresentation(
   });
   const onChange = () => {
     if (isCurrent()) {
-      state.asyncQuestionRevision += 1;
-      props.onRequestUpdate?.();
+      if (session) {
+        persistAsyncQuestionDrafts(session, true);
+      }
+      notify();
     }
   };
-  return {
+  const storageError = () =>
+    session?.error
+      ? t(
+          session.error === "conflict"
+            ? "chat.asyncQuestions.draftConflict"
+            : "chat.asyncQuestions.draftStorageFailed",
+        )
+      : undefined;
+  const reopen = async (itemId: string) => {
+    const entry = questions.find(({ question }) => question.itemId === itemId);
+    const draft = drafts.get(itemId);
+    if (
+      isCurrent() &&
+      entry &&
+      !resolved.has(itemId) &&
+      !state.asyncQuestionPresentation?.resolved.has(itemId) &&
+      draft?.status !== "reopening" &&
+      (archived.has(itemId) || draft?.status === "skipped")
+    ) {
+      const current = getQuestionDraft(entry.question, drafts);
+      const durableDismissal = current.status === "skipped" && session;
+      current.status = durableDismissal ? "reopening" : undefined;
+      current.error = undefined;
+      current.reopenedAfterBoundary = entry.boundary;
+      if (durableDismissal) {
+        // Do not present Undo/Answer as restored while reload still reads dismissed.
+        // The existing writer serializes this intent behind any dismissal in flight.
+        for (;;) {
+          onChange();
+          await durableDismissal.write;
+          const latest = state.asyncQuestionPresentation;
+          if (drafts.get(itemId) !== current || current.status !== "reopening") {
+            return;
+          }
+          if (!isCurrent() || latest?.resolved.has(itemId)) {
+            current.status = undefined;
+            durableDismissal.onChange();
+            return;
+          }
+          const boundary = latest?.archived.get(itemId);
+          if (current.reopenedAfterBoundary === boundary) {
+            break;
+          }
+          // History can advance during the save; persist that latest reopen boundary
+          // before revealing an untouched answer that would otherwise age out again.
+          current.reopenedAfterBoundary = boundary;
+        }
+        current.status = undefined;
+      }
+      // Failed storage still permits answering, with the existing unsaved notice.
+      props.onReopen?.(itemId, scope);
+      onChange();
+    }
+  };
+  const presentation: AsyncQuestionPresentation = {
     scope,
     pending,
     archived,
@@ -341,15 +464,40 @@ export function createAsyncQuestionPresentation(
             }
           }
         : undefined,
+    storageError: storageError(),
     onChange,
-    reopen: (itemId) => {
-      const boundary = archived.get(itemId);
+    reopen,
+    dismiss: async (itemId) => {
       const question = questions.find((entry) => entry.question.itemId === itemId)?.question;
-      if (isCurrent() && boundary && question) {
-        const draft = getQuestionDraft(question, drafts);
-        draft.reopenedAfterBoundary = boundary;
-        props.onReopen?.(itemId, scope);
-        onChange();
+      if (!isCurrent() || !question || resolved.has(itemId)) {
+        return;
+      }
+      const draft = getQuestionDraft(question, drafts);
+      if (draft.status) {
+        return;
+      }
+      draft.status = "skipped";
+      draft.error = undefined;
+      onChange();
+      await session?.write;
+      const current = state.asyncQuestionPresentation;
+      if (
+        isCurrent() &&
+        current?.drafts.get(itemId) === draft &&
+        draft.status === "skipped" &&
+        !current.resolved.has(itemId)
+      ) {
+        showToast({
+          message: storageError() ?? t("chat.asyncQuestions.dismissedNotice"),
+          actionLabel: t("common.undo"),
+          // History can advance while the toast remains visible. The latest
+          // projection owns both canonical resolution and the reopen boundary.
+          onAction: () => {
+            if (isCurrent()) {
+              void state.asyncQuestionPresentation?.reopen(itemId);
+            }
+          },
+        });
       }
     },
     submit: props.onAsyncQuestionSubmit
@@ -367,6 +515,8 @@ export function createAsyncQuestionPresentation(
         }
       : undefined,
   };
+  state.asyncQuestionPresentation = presentation;
+  return presentation;
 }
 
 function boundedText(value: unknown, limit: number): value is string {
@@ -408,87 +558,12 @@ export function readAsyncQuestions(message: unknown): AsyncQuestions | null {
   return { itemId: metadata.itemId, ...(sourceMessageId ? { sourceMessageId } : {}), questions };
 }
 
-function draftForAnswer(
-  question: AsyncQuestions["questions"][number],
-  answer: string,
-): QuestionDraft {
-  const values = answer ? answer.split(", ") : [];
-  const selected =
-    values.length > 0 &&
-    values.every((value) => question.options?.includes(value)) &&
-    values.join(", ") === answer
-      ? new Set(values)
-      : new Set<string>();
-  return { selected, freeText: selected.size > 0 ? "" : answer };
-}
-
-function parseGeneratedAsyncAnswer(
-  question: AsyncQuestions,
-  message: string,
-): Map<string, QuestionDraft> | null {
-  let offset = 0;
-  const answers: string[] = [];
-  for (let index = 0; index < question.questions.length; index += 1) {
-    const current = question.questions[index];
-    if (!current) {
-      return null;
-    }
-    const prefix = `${quoteQuestion(current.title)}\n\n`;
-    if (!message.startsWith(prefix, offset)) {
-      return null;
-    }
-    offset += prefix.length;
-    if (index === question.questions.length - 1) {
-      answers.push(message.slice(offset));
-      offset = message.length;
-      break;
-    }
-    const next = question.questions[index + 1];
-    if (!next) {
-      return null;
-    }
-    const separator = `\n\n${quoteQuestion(next.title)}\n\n`;
-    const answerEnd = message.indexOf(separator, offset);
-    // Free text can contain quoted headings. Do not guess a section boundary.
-    if (answerEnd < offset || message.includes(separator, answerEnd + separator.length)) {
-      return null;
-    }
-    answers.push(message.slice(offset, answerEnd));
-    offset = answerEnd + 2;
-  }
-  if (
-    offset !== message.length ||
-    answers.length !== question.questions.length ||
-    answers.some((answer) => !answer.trim())
-  ) {
-    return null;
-  }
-  return new Map(
-    question.questions.map((entry, index) => [
-      String(index),
-      draftForAnswer(entry, answers[index] ?? ""),
-    ]),
-  );
-}
-
-function quoteQuestion(title: string): string {
-  const encoder = new TextEncoder();
-  let quote = "";
-  let bytes = 0;
-  for (const character of title) {
-    bytes += encoder.encode(character).length;
-    if (bytes > 512) {
-      break;
-    }
-    quote += character;
-  }
-  return `> ${quote.replace(/[\r\n]/g, " ")}`;
-}
-
 function getQuestionDraft(questions: AsyncQuestions, drafts: Map<string, AsyncQuestionDraft>) {
   let draft = drafts.get(questions.itemId);
-  if (!draft) {
+  const signature = JSON.stringify(questions.questions);
+  if (!draft || (draft.signature && draft.signature !== signature)) {
     draft = {
+      signature,
       answers: new Map(
         questions.questions.map((question, index) => [
           String(index),
@@ -498,6 +573,7 @@ function getQuestionDraft(questions: AsyncQuestions, drafts: Map<string, AsyncQu
     };
     drafts.set(questions.itemId, draft);
   }
+  draft.signature = signature;
   return draft;
 }
 
@@ -533,16 +609,17 @@ export function createAsyncQuestionPanelProps(
       submitting: draft.status === "submitting",
       drafts: draft.answers,
       error: draft.error,
+      notice: presentation.storageError,
       requestPosition: options.requestPosition,
     },
-    onChange: presentation.onChange,
+    onChange: () => {
+      draft.edited = true;
+      presentation.onChange();
+    },
     onCollapsedChange: options.onCollapsedChange,
     onPreviousRequest: options.onPreviousRequest,
     onNextRequest: options.onNextRequest,
-    onSkip: () => {
-      draft.status = "skipped";
-      presentation.onChange();
-    },
+    onSkip: () => presentation.dismiss(questions.itemId),
     onSubmit: async (answers: Record<string, string[]>) => {
       if (draft.status) {
         return;
@@ -570,90 +647,4 @@ export function createAsyncQuestionPanelProps(
       }
     },
   };
-}
-
-export function renderAsyncQuestionSummary(
-  questions: AsyncQuestions,
-  presentation: AsyncQuestionPresentation,
-) {
-  const confirmed = presentation.resolved.get(questions.itemId);
-  const queued = confirmed ? undefined : presentation.delivery.get(questions.itemId);
-  const draft = confirmed ?? presentation.drafts.get(questions.itemId);
-  const answers = queued
-    ? parseGeneratedAsyncAnswer(questions, queued.text)
-    : draft?.status === "submitted"
-      ? draft.answers
-      : undefined;
-  const archived = presentation.archived.has(questions.itemId);
-  const deliveryLabel = confirmed
-    ? t("chat.asyncQuestions.sent")
-    : queued
-      ? t(
-          queued.sendState === "failed"
-            ? "chat.asyncQuestions.failed"
-            : queued.sendState === "unconfirmed"
-              ? "chat.queue.deliveryUnconfirmed"
-              : queued.sendState === "waiting-reconnect"
-                ? "chat.queue.states.waitingForReconnect"
-                : queued.sendState === "sending"
-                  ? "chat.asyncQuestions.sending"
-                  : "chat.asyncQuestions.queued",
-        )
-      : draft?.status === "submitted"
-        ? t("chat.asyncQuestions.awaitingConfirmation")
-        : undefined;
-  const retryable = queued?.sendState === "failed" || queued?.sendState === "unconfirmed";
-  return html`<div class="chat-question-summary" role="status" aria-live="polite">
-    ${questions.questions.map(
-      (question, index) => html`<div>
-        <strong>${question.title}</strong>
-        <div>
-          ${
-            answers
-              ? questionDraftValues(answers.get(String(index))).join(", ")
-              : queued
-                ? nothing
-                : t(
-                    draft?.status === "skipped"
-                      ? "chat.questions.skipped"
-                      : archived
-                        ? "chat.asyncQuestions.archived"
-                        : "chat.asyncQuestions.inComposer",
-                  )
-          }
-        </div>
-      </div>`,
-    )}
-    ${
-      deliveryLabel
-        ? html`<div class="chat-question-summary__delivery">
-            <span>${deliveryLabel}</span>
-            ${
-              retryable && presentation.retry
-                ? html`<button
-                    type="button"
-                    class="btn btn--sm"
-                    @click=${() => presentation.retry?.(queued.id)}
-                  >
-                    ${t("chat.asyncQuestions.retry")}
-                  </button>`
-                : nothing
-            }
-            ${queued?.sendError ? html`<div>${queued.sendError}</div>` : nothing}
-          </div>`
-        : nothing
-    }
-    ${
-      archived
-        ? html`<div>${t("chat.asyncQuestions.archivedReason")}</div>
-            <button
-              type="button"
-              class="btn btn--sm"
-              @click=${() => presentation.reopen(questions.itemId)}
-            >
-              ${t("chat.questions.answer")}
-            </button>`
-        : nothing
-    }
-  </div>`;
 }

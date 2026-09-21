@@ -51,6 +51,7 @@ describe("state lease heartbeat startup diagnostics", () => {
         identity: { scope: "test:startup", key: "delayed", owner: "live-owner" },
         leaseMs: 1_000,
         heartbeatMs: 333,
+        acquiredAt: Date.now(),
         expiresAt: Date.now() + 1_000,
         renewDuringStartup: () => Date.now() + 1_000,
         onLost,
@@ -99,6 +100,7 @@ describe("state lease heartbeat startup diagnostics", () => {
         },
         leaseMs: 60_000,
         heartbeatMs: 20_000,
+        acquiredAt: Date.now(),
         expiresAt: Date.now() + remainingMs,
         onLost,
       });
