@@ -73,7 +73,7 @@ export function buildProjectContextSection(files: ReturnType<typeof prepareConte
       "USER.md: durable user preferences and profile directives; follow unless higher-priority instructions override.",
     );
   }
-  if (files.some((file) => /(?:^|\/)users\/[^/]+\/USER\.md$/.test(file.path))) {
+  if (files.some(({ file }) => file.personalUser)) {
     lines.push(
       "The personal users/<profile-id>/USER.md applies only to the current requester and overrides conflicting shared USER.md preferences, not higher-priority rules.",
     );

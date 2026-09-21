@@ -22,8 +22,10 @@ Gateway's authenticated profile/People data; do not use a display name, GitHub
 login, email, or a profile ID pasted into a message. No new configuration is needed.
 
 For an authenticated external chat turn, OpenClaw loads the shared file first and
-that person's optional file second. The personal file overrides conflicting
-shared user preferences for that turn, not project rules or security policy.
+that person's optional file second. The personal file supplements, rather than
+replaces, the shared file, overriding conflicting shared user preferences for
+that turn, not project rules or security policy. The workspace-root `USER.md`
+remains shared regardless of the workspace directory's name.
 Files are refreshed on later turns, including when another person uses the same
 session. A message from another person cannot steer a running turn with frozen
 personal instructions; it follows the normal queued-turn path instead. Profile merges select the surviving canonical ID; move the preferences

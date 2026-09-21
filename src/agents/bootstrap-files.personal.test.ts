@@ -31,7 +31,8 @@ afterEach(async () => {
 });
 describe("personal bootstrap", () => {
   it("refreshes personal overlays without leaking between people in a shared session", async () => {
-    const workspaceDir = tempDirs.make("bootstrap-people-");
+    const workspaceDir = path.join(tempDirs.make("bootstrap-people-"), "users", "arbitrary");
+    await fs.mkdir(workspaceDir, { recursive: true });
     const alice = ensureProfileForEmail("alice@example.test");
     const bob = ensureProfileForEmail("bob@example.test");
     const writePersonal = async (id: string, content: string) => {
@@ -50,9 +51,13 @@ describe("personal bootstrap", () => {
       });
       return context.contextFiles.filter((file) => file.path.endsWith("USER.md"));
     };
-    expect((await load(alice.id)).map((file) => file.content)).toEqual([
-      "Shared defaults",
-      "Alice preferences",
+    expect(await load(alice.id)).toEqual([
+      { path: path.join(workspaceDir, "USER.md"), content: "Shared defaults" },
+      {
+        path: path.join(workspaceDir, "users", alice.id, "USER.md"),
+        content: "Alice preferences",
+        personalUser: true,
+      },
     ]);
     expect((await load(bob.id)).map((file) => file.content)).toEqual([
       "Shared defaults",
@@ -70,6 +75,25 @@ describe("personal bootstrap", () => {
     ]);
     await fs.unlink(path.join(workspaceDir, "users", bob.id, "USER.md"));
     expect((await load(bob.id)).map((file) => file.content)).toEqual(["Shared defaults"]);
+  });
+
+  it("retains the shared USER budget when the workspace resembles a personal directory", async () => {
+    const workspaceDir = path.join(tempDirs.make("bootstrap-solo-"), "users", "arbitrary");
+    await fs.mkdir(workspaceDir, { recursive: true });
+    await fs.writeFile(path.join(workspaceDir, "USER.md"), "Shared preferences. ".repeat(300));
+    const alice = ensureProfileForEmail("alice@example.test");
+    const warn = vi.fn();
+    const context = await resolveBootstrapContextForRun({
+      workspaceDir,
+      bootstrapUserProfileId: alice.id,
+      warn,
+    });
+    const users = context.contextFiles.filter((file) => file.path.endsWith("USER.md"));
+    expect(users).toHaveLength(1);
+    expect(users[0]?.content).toContain("Shared preferences.");
+    expect(users[0]?.content).toContain("read USER.md for full content");
+    expect(users[0]?.personalUser).toBeUndefined();
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("Personal USER.md"));
   });
 
   it.each(["file", "parent", "hardlink"] as const)(

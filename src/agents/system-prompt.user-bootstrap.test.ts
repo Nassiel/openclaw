@@ -13,12 +13,25 @@ describe("USER prompt context", () => {
     );
   });
 
+  it("does not infer personal instructions from an arbitrary workspace directory", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/srv/users/arbitrary",
+      contextFiles: [{ path: "/srv/users/arbitrary/USER.md", content: "Shared preferences" }],
+    });
+    expect(prompt).toContain("Shared preferences");
+    expect(prompt).not.toContain("applies only to the current requester");
+  });
+
   it("keeps shared preferences before the current person's overlay", () => {
     const prompt = buildAgentSystemPrompt({
       workspaceDir: "/workspace",
       contextFiles: [
         { path: "/workspace/USER.md", content: "Shared preferences" },
-        { path: "/workspace/users/person/USER.md", content: "Personal preferences" },
+        {
+          path: "/workspace/users/person/USER.md",
+          content: "Personal preferences",
+          personalUser: true,
+        },
       ],
     });
     expect(prompt.indexOf("Shared preferences")).toBeLessThan(
