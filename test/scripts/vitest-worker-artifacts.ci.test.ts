@@ -180,7 +180,9 @@ it.runIf(process.platform !== "win32").for([
         if (controlled) {
           const receipts = controlled.read();
           expect(receipts).toHaveLength(shared ? 1 : 2);
-          expect(new Set(receipts.map(({ pid }) => pid)).size).toBe(receipts.length);
+          expect(
+            new Set(receipts.map(({ pid, processStartedAt }) => `${pid}:${processStartedAt}`)).size,
+          ).toBe(receipts.length);
           console.log("Controlled compiler receipts", JSON.stringify(receipts));
         }
         const observations = fixture.read();

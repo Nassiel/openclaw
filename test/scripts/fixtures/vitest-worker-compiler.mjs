@@ -57,6 +57,7 @@ export async function runWorkerFixtureCompiler(directory, input, receipt) {
     receipt,
     JSON.stringify({
       pid: process.pid,
+      processStartedAt: performance.timeOrigin,
       directory,
       inputs: Object.keys(manifest.inputs).length,
       outputs: Object.keys(manifest.outputs).length,

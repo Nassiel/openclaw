@@ -217,7 +217,13 @@ export function createControlledWorkerCompiler(
       ...env,
       ...preloadEnv,
     },
-    read: (): Array<{ pid: number; directory: string; inputs: number; outputs: number }> =>
+    read: (): Array<{
+      pid: number;
+      processStartedAt: number;
+      directory: string;
+      inputs: number;
+      outputs: number;
+    }> =>
       fs
         .readFileSync(receipt, "utf8")
         .trim()
