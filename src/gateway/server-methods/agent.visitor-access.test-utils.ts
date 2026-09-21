@@ -385,7 +385,7 @@ describe("visitor access admitted caller", () => {
       });
       try {
         for (const profile of [unassigned, staff, owner]) {
-          expect(resolveGatewayOperatorAccessAuthority(profile.id, config)).toBeUndefined();
+          expect(resolveGatewayOperatorAccessAuthority(profile.id, config)).toBeNull();
         }
         const existing = createVisitorGrantStore(state.env);
         await existing.register(active.email, active);
@@ -431,9 +431,7 @@ describe("visitor access admitted caller", () => {
           resolveGatewayOperatorAccessAuthority(unassigned.id, restrictedConfig),
         ).toThrow(GatewayOperatorAccessDeniedError);
         for (const profile of [staff, owner]) {
-          expect(
-            resolveGatewayOperatorAccessAuthority(profile.id, restrictedConfig),
-          ).toBeUndefined();
+          expect(resolveGatewayOperatorAccessAuthority(profile.id, restrictedConfig)).toBeNull();
         }
         const reopenedOwner = getUserProfileListItem(owner.id);
         const connection = new AbortController();

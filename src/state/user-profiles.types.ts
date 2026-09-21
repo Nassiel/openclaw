@@ -18,7 +18,12 @@ export type UserProfilesDatabase = {
     created_at: number;
     updated_at: number;
   };
-  user_profile_emails: { email: string; profile_id: string; created_at: number };
+  user_profile_emails: {
+    email: string;
+    profile_id: string;
+    binding_id: string | null;
+    created_at: number;
+  };
   user_profile_identities: {
     provider: string;
     subject: string;

@@ -7,7 +7,11 @@ import { mergeUserPreferences } from "./user-preferences.store.js";
 import { publishUserProfileAliasChange } from "./user-profile-events.js";
 import { prepareUserProfileGitHubMerge } from "./user-profile-github-identity.js";
 import { stageUserProfileCatalogChange } from "./user-profile-list.js";
-import { requireResolvedUserProfileById, userProfilesDb } from "./user-profiles-internal.js";
+import {
+  requireResolvedUserProfileById,
+  setUserProfileEmailBinding,
+  userProfilesDb,
+} from "./user-profiles-internal.js";
 
 export function mergeUserProfiles(
   db: DatabaseSync,
@@ -48,13 +52,16 @@ export function mergeUserProfiles(
   for (const mergedProfileId of sourceProfileIds) {
     mergeUserPreferences(db, mergedProfileId, targetProfileId);
   }
-  executeSqliteQuerySync(
+  const sourceEmails = executeSqliteQuerySync(
     db,
     kysely
-      .updateTable("user_profile_emails")
-      .set({ profile_id: targetProfileId })
+      .selectFrom("user_profile_emails")
+      .select("email")
       .where("profile_id", "in", sourceProfileIds),
-  );
+  ).rows;
+  for (const { email } of sourceEmails) {
+    setUserProfileEmailBinding(db, email, targetProfileId, now);
+  }
   executeSqliteQuerySync(
     db,
     kysely

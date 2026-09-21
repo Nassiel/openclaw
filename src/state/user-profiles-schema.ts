@@ -1,4 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
+import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
+import { generateSecureUuid } from "../infra/secure-random.js";
 import { stageSqliteTransactionState } from "../infra/sqlite-post-commit.js";
 import { ensureColumn, tableHasColumn } from "./openclaw-state-db-schema-helpers.js";
 import {
@@ -6,6 +8,7 @@ import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "./openclaw-state-db.js";
+import type { UserProfilesDatabase } from "./user-profiles.types.js";
 
 // Canonical additive schema for durable user profiles. Kept feature-local so
 // ordinary shared-state opens do not create identity tables until they are used.
@@ -26,6 +29,7 @@ CREATE TABLE IF NOT EXISTS user_profiles (
 CREATE TABLE IF NOT EXISTS user_profile_emails (
   email TEXT NOT NULL PRIMARY KEY,
   profile_id TEXT NOT NULL,
+  binding_id TEXT,
   created_at INTEGER NOT NULL
 ) STRICT;
 
@@ -102,6 +106,22 @@ export function ensureUserProfilesSchema(
       db.exec(USER_PROFILES_SCHEMA_SQL); // sqlite-allow-raw -- Canonical feature-local additive DDL.
       ensureColumn(db, "user_profile_identities", "canonical_login TEXT");
       ensureColumn(db, "user_profiles", "primary_github_account_id INTEGER");
+      ensureColumn(db, "user_profile_emails", "binding_id TEXT");
+      const kysely = getNodeSqliteKysely<UserProfilesDatabase>(db);
+      const unboundEmails = executeSqliteQuerySync(
+        db,
+        kysely.selectFrom("user_profile_emails").select("email").where("binding_id", "is", null),
+      ).rows;
+      for (const { email } of unboundEmails) {
+        executeSqliteQuerySync(
+          db,
+          kysely
+            .updateTable("user_profile_emails")
+            .set({ binding_id: generateSecureUuid() })
+            .where("email", "=", email)
+            .where("binding_id", "is", null),
+        );
+      }
       hasRoleColumn = tableHasColumn(db, "user_profiles", "role");
     },
     options,

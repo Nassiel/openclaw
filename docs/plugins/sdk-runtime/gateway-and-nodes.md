@@ -53,6 +53,12 @@ A policy that supports deferred shared publication returns a stable UUID as
 original grant reference with the accepted requester and scope ceiling; it does
 not persist the authority callback, signal, credentials, or email aliases.
 
+The Gateway also retains opaque lifetime IDs for the person's original email
+bindings. Moving an original alias to another profile ends that publication
+authority, even if the alias is later restored. Display edits and changes to
+aliases added after admission preserve the original binding. The plugin's grant
+UUID remains independently checked; these identity facts cannot replace it.
+
 `resume` must check that exact original grant, even when the person's current role
 would otherwise be exempt. Return its current authority while it remains active,
 and `undefined` only when the grant is definitively ended, absent, or replaced.

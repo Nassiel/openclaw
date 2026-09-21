@@ -5,7 +5,7 @@ import {
   decodeGitHubPublicationRequester,
   type GitHubPublicationRequesterSnapshot,
 } from "../state/github-publication-requester.js";
-import { resolveUserProfileId } from "../state/user-profiles.js";
+import { readUserProfileEmailBindingIds, resolveUserProfileId } from "../state/user-profiles.js";
 import { GitHubPublicationRequesterUnavailableError } from "./github-publication-failure.js";
 import {
   GatewayOperatorAccessDeniedError,
@@ -36,11 +36,24 @@ function prepareRequesterPolicy(
     operatorRoleActor: snapshot.actor,
     scopes: [...snapshot.scopes],
   });
+  const assertIdentity = () => {
+    if (snapshot.actor.kind !== "operator") {
+      return;
+    }
+    if (resolveUserProfileId(snapshot.actor.profileId) !== snapshot.actor.profileId) {
+      throw new GitHubPublicationRequesterUnavailableError();
+    }
+    if (snapshot.grant) {
+      const bindings = new Set(readUserProfileEmailBindingIds(snapshot.actor.profileId));
+      if (snapshot.grant.aliasBindingIds.some((id) => !bindings.has(id))) {
+        throw new GitHubPublicationRequesterUnavailableError();
+      }
+    }
+  };
   return () => {
     const config = getCommittedRuntimeConfig();
+    assertIdentity();
     if (
-      (snapshot.actor.kind === "operator" &&
-        resolveUserProfileId(snapshot.actor.profileId) !== snapshot.actor.profileId) ||
       !roleScopesAllow({
         role: "operator",
         requestedScopes: ["operator.sessions.write"],
@@ -60,6 +73,8 @@ function prepareRequesterPolicy(
         }
         throw error;
       }
+      // A policy callback can synchronously change aliases before this guard returns.
+      assertIdentity();
     }
   };
 }
@@ -96,7 +111,15 @@ export function captureGitHubPublicationRequester(
           : { kind: "system" as const },
       ),
       scopes: Object.freeze([...(source?.authority.scopes ?? options.client.connect.scopes ?? [])]),
-      grant: grant ? Object.freeze({ ...grant }) : null,
+      grant:
+        source && grant
+          ? Object.freeze({
+              ...grant,
+              aliasBindingIds: Object.freeze(
+                readUserProfileEmailBindingIds(source.authority.profileId).toSorted(),
+              ),
+            })
+          : null,
     });
     const assertPolicy = prepareRequesterPolicy(
       snapshot,

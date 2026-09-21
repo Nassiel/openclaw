@@ -11,7 +11,7 @@ import {
 import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
 import {
   decodeGitHubPublicationRequester,
-  encodeGitHubPublicationRequester,
+  matchesGitHubPublicationRequester,
   type GitHubPublicationRequesterSnapshot,
 } from "../state/github-publication-requester.js";
 import {
@@ -441,11 +441,7 @@ export function insertGitHubPublicationRequest(
         db,
       )?.requester_authority_json,
     );
-    if (
-      !requester ||
-      encodeGitHubPublicationRequester(requester) !==
-        encodeGitHubPublicationRequester(input.requester)
-    ) {
+    if (!requester || !matchesGitHubPublicationRequester(requester, input.requester)) {
       throw new Error("GitHub publication requester changed; use a new idempotency key.");
     }
   }

@@ -8,7 +8,13 @@ const requesterSchema = z
       z.strictObject({ kind: z.literal("system") }),
     ]),
     scopes: z.array(z.string().min(1)),
-    grant: z.strictObject({ pluginId: z.string().min(1).max(128), grantId: z.uuid() }).nullable(),
+    grant: z
+      .strictObject({
+        pluginId: z.string().min(1).max(128),
+        grantId: z.uuid(),
+        aliasBindingIds: z.array(z.uuid()),
+      })
+      .nullable(),
   })
   .refine((value) => value.actor.kind !== "system" || value.grant === null);
 
@@ -17,7 +23,11 @@ export type GitHubPublicationRequesterSnapshot = Readonly<
   Omit<RequesterData, "actor" | "scopes" | "grant"> & {
     actor: Readonly<RequesterData["actor"]>;
     scopes: readonly string[];
-    grant: Readonly<NonNullable<RequesterData["grant"]>> | null;
+    grant: Readonly<
+      Omit<NonNullable<RequesterData["grant"]>, "aliasBindingIds"> & {
+        aliasBindingIds: readonly string[];
+      }
+    > | null;
   }
 >;
 
@@ -28,7 +38,12 @@ function immutableRequester(value: RequesterData): GitHubPublicationRequesterSna
     version: 1,
     actor: Object.freeze(value.actor),
     scopes: Object.freeze([...new Set(value.scopes)].toSorted()),
-    grant: value.grant ? Object.freeze(value.grant) : null,
+    grant: value.grant
+      ? Object.freeze({
+          ...value.grant,
+          aliasBindingIds: Object.freeze([...new Set(value.grant.aliasBindingIds)].toSorted()),
+        })
+      : null,
   });
 }
 
@@ -45,6 +60,23 @@ export function encodeGitHubPublicationRequester(
     throw new Error("GitHub publication requester is too large.");
   }
   return json;
+}
+
+/** Idempotency names the accepted request; effects still check its original alias bindings. */
+export function matchesGitHubPublicationRequester(
+  original: GitHubPublicationRequesterSnapshot,
+  current: GitHubPublicationRequesterSnapshot,
+): boolean {
+  return (
+    encodeGitHubPublicationRequester(original) ===
+    encodeGitHubPublicationRequester({
+      ...current,
+      grant:
+        current.grant && original.grant
+          ? { ...current.grant, aliasBindingIds: original.grant.aliasBindingIds }
+          : current.grant,
+    })
+  );
 }
 
 /** Historical or malformed bindings remain unproven; neither can imply System authority. */

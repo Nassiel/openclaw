@@ -34,6 +34,7 @@ import { publishUserProfilesChange } from "./user-profile-list.js";
 import {
   requireResolvedUserProfileMetadataById,
   selectResolvedUserProfileMetadataById,
+  setUserProfileEmailBinding,
   toUserProfile,
   type UserProfile,
   userProfileAvatarPresence,
@@ -130,6 +131,28 @@ export function resolveUserProfileId(
   ensureUserProfilesSchema(options);
   const { db } = openOpenClawStateDatabase(options);
   return selectResolvedUserProfileMetadataById(db, profileId)?.id;
+}
+
+/** Reads exact alias lifetimes without following a profile merge to a new owner. */
+export function readUserProfileEmailBindingIds(
+  profileId: string,
+  options: OpenClawStateDatabaseOptions = {},
+): string[] {
+  const database = openOpenClawStateDatabase(options);
+  ensureUserProfilesSchema(options, database);
+  return executeSqliteQuerySync(
+    database.db,
+    userProfilesDb(database.db)
+      .selectFrom("user_profile_emails")
+      .select("binding_id")
+      .where("profile_id", "=", profileId)
+      .orderBy("binding_id", "asc"),
+  ).rows.map(({ binding_id }) => {
+    if (binding_id === null) {
+      throw new Error("User profile email binding has not been initialized");
+    }
+    return binding_id;
+  });
 }
 
 /** Reads a profile's protocol-facing representation through its merge head. */
@@ -407,14 +430,7 @@ export function linkEmail(
         throw new UserProfileOwnerError("merge");
       }
       if (!existingAlias) {
-        executeSqliteQuerySync(
-          db,
-          kysely.insertInto("user_profile_emails").values({
-            email: normalizedEmail,
-            profile_id: target.id,
-            created_at: now,
-          }),
-        );
+        setUserProfileEmailBinding(db, normalizedEmail, target.id, now);
         executeSqliteQuerySync(
           db,
           kysely.updateTable("user_profiles").set({ updated_at: now }).where("id", "=", target.id),
@@ -425,13 +441,7 @@ export function linkEmail(
       if (existingAlias.profile_id === target.id) {
         return selectUserProfileListItemById(db, target.id);
       }
-      executeSqliteQuerySync(
-        db,
-        kysely
-          .updateTable("user_profile_emails")
-          .set({ profile_id: target.id })
-          .where("email", "=", normalizedEmail),
-      );
+      setUserProfileEmailBinding(db, normalizedEmail, target.id, now);
       const remainingAliases = executeSqliteQuerySync(
         db,
         kysely

@@ -36,7 +36,7 @@ Doctor completes recognized schema-1 databases that predate the audit ledger bef
 Schema 18 adds nullable `requester_authority_json TEXT` columns to
 `github_publication_session_lifecycles` and `github_repository_publication_requests`.
 Shared publication admission records its original requester, scope ceiling, and
-any required plugin grant identity in the existing request transaction. The
+any required plugin grant identity and original alias-binding IDs in the existing request transaction. The
 snapshot survives deferral and restart; it does not replace current role, grant,
 session, or execution authority checks. Publisher selection, repository routing,
 human attribution, and receipt retention are unchanged.
@@ -49,7 +49,16 @@ remain readable, and observing an already-dispatched GitHub result does not
 authorize another operation. Unused publication tables remain absent until their
 normal first write, which creates the canonical schema.
 
-The column additions and version facts commit in one schema transaction; failure
+The profile schema owner adds nullable `binding_id TEXT` to the existing
+`user_profile_emails` table and initializes missing IDs in its own transaction.
+Each email-to-profile binding has an opaque UUID. Creation or an actual ownership
+change starts a new binding; same-owner refreshes retain it. Removing and later
+restoring an alias cannot restore its former ID. Publication snapshots retain
+only those original IDs, without copying email addresses or updating accepted
+receipt bytes. Initializing existing aliases does not backfill missing authority
+into historical publication requests.
+
+The publication column additions and version facts commit in one schema transaction; failure
 rolls them back together. Both published markers normally advance to 18. The
 existing [older-updater publication deferral](/reference/database-schemas/versioning#schema-bumps-and-older-updaters)
 can retain earlier published markers while recording applied content version 18.

@@ -9,6 +9,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   decodeGitHubPublicationRequester,
   encodeGitHubPublicationRequester,
+  matchesGitHubPublicationRequester,
 } from "../state/github-publication-requester.js";
 import type { SessionRepositoryWorkspaceRecord } from "../state/session-repository-workspaces.js";
 import { personalGitHubStatus, type PersonalGitHubAction } from "./github-personal-oauth.js";
@@ -435,7 +436,7 @@ export function createRepositoryGitHubPublicationCoordinator(params: {
     }
     if (existing) {
       const original = decodeGitHubPublicationRequester(existing.requester_authority_json);
-      if (!original || encodeGitHubPublicationRequester(original) !== requesterAuthorityJson) {
+      if (!original || !matchesGitHubPublicationRequester(original, requester.snapshot)) {
         throw new Error("GitHub publication idempotency key was reused by a different requester.");
       }
     }

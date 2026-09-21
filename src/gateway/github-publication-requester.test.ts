@@ -20,7 +20,7 @@ import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { setRuntimeConfigSnapshot } from "../config/config.js";
 import { getPluginRegistryState } from "../plugins/runtime-state.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
-import { linkEmail, setUserProfileRole } from "../state/user-profiles.js";
+import { ensureProfileForEmail, linkEmail, setUserProfileRole } from "../state/user-profiles.js";
 import { GitHubPublicationRequesterUnavailableError } from "./github-publication-failure.js";
 import { GitHubPublicationRecoveryPendingError } from "./github-publication-git-index.js";
 import { captureGitHubPublicationRequester } from "./github-publication-requester.js";
@@ -227,16 +227,23 @@ describe("shared GitHub publication requester authority", () => {
     expect(f.publishedTitles).toEqual(["tentative-config"]);
   });
 
-  it.each(["local", "repository"] as const)(
-    "defers %s publication when the original policy disappears during a preparation read",
-    async (backend) => {
+  it.each(
+    (["local", "repository"] as const).flatMap((backend) =>
+      (["policy unavailable", "alias restored"] as const).map((change) => ({ backend, change })),
+    ),
+  )(
+    "rechecks $backend publication after $change during a preparation read",
+    async ({ backend, change }) => {
       const f = await fixture(backend);
+      const email = "publication-guest@example.test";
+      linkEmail("publication-secondary@example.test", f.guestProfile);
+      const other = ensureProfileForEmail("publication-alias-recipient@example.test");
       const visitors = await prepareVisitorPublicationFixture(f);
       const availability: { restore?: () => void; reached: boolean } = { reached: false };
       try {
         await visitors.start();
         await visitors.execute("visitor_invite", {
-          email: "publication-guest@example.test",
+          email,
           days: 1,
         });
         const original = await createGitHubPublicationRequesterFixture({
@@ -265,16 +272,31 @@ describe("shared GitHub publication requester authority", () => {
                 !argv.includes("POST") &&
                 !argv.includes("graphql"));
             if (!availability.reached && read) {
-              availability.restore = visitors.suspendRegistry();
+              if (change === "policy unavailable") {
+                availability.restore = visitors.suspendRegistry();
+              } else {
+                linkEmail(email, other.id);
+                linkEmail(email, f.guestProfile);
+              }
               availability.reached = true;
             }
             return result;
           },
         );
         const restarted = f.restart();
-        await expect(restarted.resumeSessionRequests()).rejects.toThrow(
-          new GatewayOperatorAccessUnavailableError().message,
-        );
+        const recovery = restarted.resumeSessionRequests();
+        if (change === "alias restored") {
+          await recovery;
+          expect(availability.reached).toBe(true);
+          expect(restarted.read(accepted.requestId)).toMatchObject({
+            status: "failed",
+            code: "identity_changed",
+          });
+          expect(f.readRequester(accepted.requestId)).toEqual(original.requester.snapshot);
+          expect(f.externalWrites).toEqual([]);
+          return;
+        }
+        await expect(recovery).rejects.toThrow(new GatewayOperatorAccessUnavailableError().message);
         expect(availability.reached).toBe(true);
         expect(["requested", "publishing"]).toContain(f.readReceipt(accepted.requestId)?.status);
         expect(f.readReceipt(accepted.requestId)?.error_code).toBeNull();
@@ -427,7 +449,7 @@ describe("shared GitHub publication requester authority", () => {
         scopes: guestScopes,
         ...f.guestSource.session,
       });
-      expect(original.requester.snapshot.grant).toEqual({
+      expect(original.requester.snapshot.grant).toMatchObject({
         pluginId: "visitor-access",
         grantId: first.grantId,
       });
@@ -503,7 +525,7 @@ describe("shared GitHub publication requester authority", () => {
           scopes: guestScopes,
           ...f.guestSource.session,
         });
-        expect(reinvited.requester.snapshot.grant).toEqual({
+        expect(reinvited.requester.snapshot.grant).toMatchObject({
           pluginId: "visitor-access",
           grantId: replacement.grantId,
         });

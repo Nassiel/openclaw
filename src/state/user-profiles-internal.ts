@@ -6,6 +6,7 @@ import {
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "../infra/kysely-sync.js";
+import { generateSecureUuid } from "../infra/secure-random.js";
 import { USER_PROFILE_AVATAR_MIME_TYPES } from "../shared/avatar-limits.js";
 import { tableHasColumn } from "./openclaw-state-db-schema-helpers.js";
 import {
@@ -50,6 +51,28 @@ type UserProfileAvatar = {
 
 export function userProfilesDb(db: DatabaseSync) {
   return getNodeSqliteKysely<UserProfilesDatabase>(db);
+}
+
+/** A binding survives same-owner refreshes; an actual transfer starts a new lifetime. */
+export function setUserProfileEmailBinding(
+  db: DatabaseSync,
+  email: string,
+  profileId: string,
+  now: number,
+): void {
+  const bindingId = generateSecureUuid();
+  executeSqliteQuerySync(
+    db,
+    userProfilesDb(db)
+      .insertInto("user_profile_emails")
+      .values({ email, profile_id: profileId, binding_id: bindingId, created_at: now })
+      .onConflict((conflict) =>
+        conflict
+          .column("email")
+          .doUpdateSet({ profile_id: profileId, binding_id: bindingId })
+          .where("user_profile_emails.profile_id", "!=", profileId),
+      ),
+  );
 }
 
 export const userProfileDisplaySelection = [

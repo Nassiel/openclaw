@@ -13,7 +13,11 @@ import {
   type OpenClawStateDatabaseOptions,
 } from "./openclaw-state-db.js";
 import { deleteUserPreference, selectUserPreferenceValues } from "./user-preferences.store.js";
-import { selectResolvedUserProfileMetadataById, userProfilesDb } from "./user-profiles-internal.js";
+import {
+  selectResolvedUserProfileMetadataById,
+  setUserProfileEmailBinding,
+  userProfilesDb,
+} from "./user-profiles-internal.js";
 import { ensureUserProfilesSchema, UserProfileOwnerError } from "./user-profiles-schema.js";
 
 const GITHUB_PROVIDER = "github";
@@ -374,15 +378,7 @@ export function applyVerifiedGitHubIdentity(params: {
       ),
   );
   if (params.alias.kind === "email") {
-    executeSqliteQuerySync(
-      db,
-      kysely
-        .insertInto("user_profile_emails")
-        .values({ email: params.alias.email, profile_id: targetProfileId, created_at: now })
-        .onConflict((conflict) =>
-          conflict.column("email").doUpdateSet({ profile_id: targetProfileId }),
-        ),
-    );
+    setUserProfileEmailBinding(db, params.alias.email, targetProfileId, now);
   } else {
     executeSqliteQuerySync(
       db,

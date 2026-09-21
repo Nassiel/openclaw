@@ -5,6 +5,7 @@ import { generateSecureUuid } from "../infra/secure-random.js";
 import { publishUserProfilesChange } from "./user-profile-list.js";
 import {
   requireResolvedUserProfileMetadataById,
+  setUserProfileEmailBinding,
   toUserProfile,
   type UserProfileRow,
   userProfilesDb,
@@ -60,14 +61,7 @@ export function ensureProfileForEmailInDatabase(
     initialDisplayName ??
     truncateUtf16Safe(email.split("@", 1)[0] || email, MAX_USER_PROFILE_DISPLAY_NAME_LENGTH);
   const row = insertUserProfile(db, displayName, now, beforeInsert);
-  executeSqliteQuerySync(
-    db,
-    kysely.insertInto("user_profile_emails").values({
-      email,
-      profile_id: row.id,
-      created_at: now,
-    }),
-  );
+  setUserProfileEmailBinding(db, email, row.id, now);
   publishUserProfilesChange(db, row.id);
   return toUserProfile(row);
 }

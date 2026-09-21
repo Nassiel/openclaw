@@ -7,6 +7,10 @@ import {
   iterateSqliteQuerySync,
 } from "../infra/kysely-sync.js";
 import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
+import {
+  decodeGitHubPublicationRequester,
+  matchesGitHubPublicationRequester,
+} from "../state/github-publication-requester.js";
 import { withExistingOpenClawStateDatabaseArtifactPreservingReadOnly } from "../state/openclaw-state-db-readonly.js";
 import { ensureRepositoryGitHubPublicationSchema } from "../state/openclaw-state-db-schema-additive.js";
 import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
@@ -269,7 +273,6 @@ export function insertRepositoryGitHubPublication(
             "identity_profile_id",
             "identity_account_id",
             "identity_login",
-            "requester_authority_json",
             "title",
             "body",
             "claim_id",
@@ -281,6 +284,13 @@ export function insertRepositoryGitHubPublication(
         ).some((key) => stored[key] !== row[key])
       ) {
         throw new Error("GitHub publication idempotency key was reused.");
+      }
+      if (stored.requester_authority_json !== row.requester_authority_json) {
+        const original = decodeGitHubPublicationRequester(stored.requester_authority_json);
+        const current = decodeGitHubPublicationRequester(row.requester_authority_json);
+        if (!original || !current || !matchesGitHubPublicationRequester(original, current)) {
+          throw new Error("GitHub publication idempotency key was reused.");
+        }
       }
       checked(stored);
       assertCurrent();
