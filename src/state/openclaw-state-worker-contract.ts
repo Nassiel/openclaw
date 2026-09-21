@@ -22,6 +22,10 @@ import type {
   ManagedImageRecordEntry,
 } from "../gateway/managed-image-record-store.types.js";
 import type { OperatorApprovalWorkerOperations } from "../gateway/operator-approval-store.worker-contract.js";
+import type {
+  SessionGroupCatalogMutation,
+  SessionGroupCatalogMutationResult,
+} from "../gateway/session-group-catalog.types.js";
 import type { DeferredPluginMigration } from "../infra/deferred-plugin-migrations.js";
 import type { DeliveryQueueWorkerOperations } from "../infra/delivery-queue.worker-contract.js";
 import type * as deviceAuth from "../infra/device-auth-store.kernel.js";
@@ -178,7 +182,10 @@ export type OpenClawStateWorkerOperations = CurrentConversationBindingWorkerOper
     "subagents.persistChanges": { input: SubagentRegistryWrite; output: { writeId: string } };
     "sessionUpstream.listWatched": { input: undefined; output: SessionUpstreamLink[] };
     "backup.recordOutcome": { input: PreparedBackupRunRecord; output: void };
-    "sessionGroups.register": { input: { name: string }; output: boolean };
+    "sessionGroups.mutate": {
+      input: SessionGroupCatalogMutation;
+      output: SessionGroupCatalogMutationResult;
+    };
     "projects.findRoot": { input: { repoRoot: string }; output: string | undefined };
     "projects.list": { input: undefined; output: ProjectRegistryRecord[] };
     "worktrees.list": { input: undefined; output: ManagedWorktreeRecord[] };

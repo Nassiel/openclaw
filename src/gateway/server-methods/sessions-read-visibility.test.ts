@@ -3,10 +3,10 @@ import { setRuntimeConfigSnapshot } from "../../config/config.js";
 import { resolveSessionStorePathCore as resolveStorePath } from "../../config/sessions.js";
 import {
   patchSessionEntryCore,
-  recordSessionParticipant,
   replaceSessionEntry,
 } from "../../config/sessions/session-accessor.js";
-import { addSessionMember } from "../../config/sessions/session-sharing-store.js";
+import { recordSessionParticipant } from "../../config/sessions/session-accessor.sqlite-participants.native.js";
+import { addSessionMember } from "../../config/sessions/session-sharing-store.native.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";

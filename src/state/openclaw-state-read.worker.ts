@@ -13,6 +13,8 @@ import { inspectExecutionIdentityRunInDatabase } from "../audit/execution-identi
 import { observeCronRunRecoveryInDatabase } from "../cron/store/run-recovery.read.js";
 import { getFleetCellInDatabase, listFleetCellsInDatabase } from "../fleet/registry.kernel.js";
 import { listTerminalOperatorApprovalsInDatabase } from "../gateway/operator-approval-store.kernel.js";
+import { readSessionGroupCatalogSnapshot } from "../gateway/session-group-catalog.kernel.js";
+import { readSessionGroupMembership } from "../gateway/session-group-membership.read.js";
 import { readWorkerSessionPlacementProjectionInDatabase } from "../gateway/worker-environments/placement-read-projection.js";
 import { executeDevicePairingRead } from "../infra/device-pairing-read.kernel.js";
 import { readExecApprovalsConfigRow } from "../infra/exec-approvals-sqlite.js";
@@ -110,6 +112,8 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
             isRecord(pin) && typeof pin.skillId === "string" && typeof pin.revision === "string",
         )) ||
       input.command.type === "agentDatabaseRegistry.read" ||
+      input.command.type === "sessionGroups.snapshot" ||
+      (input.command.type === "sessionGroups.members" && isRecord(input.command.cfg)) ||
       (input.command.type === "userProfiles.reconcile" &&
         typeof input.command.profileId === "string") ||
       (input.command.type === "userProfiles.email.resolve" &&
@@ -205,6 +209,22 @@ serveOwnedWorkerTasks(
             return withOpenClawStateReadOnlyLocation(
               ({ db }) => {
                 sourceAdmitted = true;
+                if (command.type === "sessionGroups.snapshot") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted: true,
+                    snapshot: readSessionGroupCatalogSnapshot(db),
+                  };
+                }
+                if (command.type === "sessionGroups.members") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted: true,
+                    snapshot: readSessionGroupMembership(command.cfg, input.context.environment),
+                  };
+                }
                 if (command.type === "conversationBindings.inspect") {
                   return {
                     ok: true,

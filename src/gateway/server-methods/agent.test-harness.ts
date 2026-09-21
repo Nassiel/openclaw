@@ -62,7 +62,7 @@ const mocks = vi.hoisted(() => ({
   patchSessionEntryTarget: vi.fn(),
   persistSessionTranscriptTurn: vi.fn(),
   stageSessionPendingInput: vi.fn<typeof stageSessionPendingInput>(),
-  recordSessionParticipant: vi.fn<typeof recordSessionParticipant>(() => "inserted"),
+  recordSessionParticipant: vi.fn<typeof recordSessionParticipant>(async () => "inserted"),
   listSessionParticipantsReadOnly: vi.fn<typeof listSessionParticipantsReadOnly>(() => new Map()),
   hasSessionTranscriptEventsSync: vi.fn<typeof hasSessionTranscriptEventsSync>(() => false),
   readTranscriptMutationStateSync: vi.fn<typeof readTranscriptMutationStateSync>(() => ({
@@ -589,7 +589,7 @@ function resetSessionAccessorMocks() {
         }
       : undefined;
   });
-  mocks.recordSessionParticipant.mockReset().mockReturnValue("inserted");
+  mocks.recordSessionParticipant.mockReset().mockResolvedValue("inserted");
   mocks.listSessionParticipantsReadOnly.mockReset().mockReturnValue(new Map());
   mocks.hasSessionTranscriptEventsSync.mockReset().mockReturnValue(false);
   mocks.readTranscriptMutationStateSync.mockReset().mockReturnValue({

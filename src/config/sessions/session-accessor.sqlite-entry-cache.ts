@@ -65,6 +65,11 @@ const sessionEntryCaches = new WeakMap<DatabaseSync, SqliteSessionEntryCache>();
 export function readCommittedSessionEntryCache(database: DatabaseSync) {
   return sessionEntryCaches.get(database)?.entries;
 }
+
+/** A settled worker with an unknown write outcome cannot publish a trustworthy field patch. */
+export function discardCommittedSessionEntryCache(database: DatabaseSync): void {
+  sessionEntryCaches.delete(database);
+}
 const sessionNodesGenerationTrackerSchemaVersions = new WeakMap<DatabaseSync, number>();
 
 function ensureSessionNodesGenerationTracker(database: DatabaseSync): void {
@@ -494,6 +499,30 @@ export function publishSessionEntryCacheInvalidation(
   );
 }
 
+/** The category worker publishes only its changed field; native freshness tokens still expose other commits. */
+export function publishSessionEntryCacheCategoryUpdate(
+  database: SessionEntryCacheDatabase,
+  sessionKeys: readonly string[],
+  category: string | undefined,
+): void {
+  publishTrackedCacheUpdate(database, () => {
+    const cached = sessionEntryCaches.get(database.db);
+    for (const sessionKey of sessionKeys) {
+      const current = cached?.entries.get(sessionKey);
+      if (!current) {
+        continue;
+      }
+      const next = { ...current };
+      if (category === undefined) {
+        delete next.category;
+      } else {
+        next.category = category;
+      }
+      cached?.entries.set(sessionKey, next);
+    }
+  });
+}
+
 /** Refresh participant projections without reloading unchanged session-entry JSON. */
 export function publishSessionEntryCacheParticipantUpdate(
   database: OpenClawAgentDatabase,
@@ -504,14 +533,16 @@ export function publishSessionEntryCacheParticipantUpdate(
   },
 ): void {
   const { writeGeneration, projectionChanged } = params;
-  if (writeGeneration && !projectionChanged) {
-    // Nested contributions advance the generation at commit without replacing borrowed entries.
-    publishTrackedCacheUpdate(database, () => {
-      const cached = sessionEntryCaches.get(database.db);
-      if (cached) {
-        advanceSessionEntryCacheGeneration(cached, writeGeneration);
-      }
-    });
+  if (!projectionChanged) {
+    // Count-only contributions do not change list facts, including when the cache is cold.
+    if (writeGeneration) {
+      publishTrackedCacheUpdate(database, () => {
+        const cached = sessionEntryCaches.get(database.db);
+        if (cached) {
+          advanceSessionEntryCacheGeneration(cached, writeGeneration);
+        }
+      });
+    }
     return;
   }
   publishSessionEntryCacheInvalidation(database, { sessionKey }, writeGeneration);

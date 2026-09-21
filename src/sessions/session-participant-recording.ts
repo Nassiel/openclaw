@@ -13,7 +13,7 @@ export function recordSessionParticipantBestEffort(params: {
   const promptedAt = params.promptedAt ?? Date.now();
   queueMicrotask(() => {
     try {
-      recordSessionParticipant(
+      void recordSessionParticipant(
         {
           agentId: params.agentId,
           sessionKey: params.sessionKey,
@@ -24,7 +24,7 @@ export function recordSessionParticipantBestEffort(params: {
           promptedAt,
           sessionAgentId: params.agentId,
         },
-      );
+      ).catch((error: unknown) => params.onError?.(error));
     } catch (error) {
       params.onError?.(error);
     }

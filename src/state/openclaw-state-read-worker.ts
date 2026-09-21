@@ -86,6 +86,9 @@ function readPool(): ReadPool {
 }
 
 function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCommand {
+  if (command.type === "sessionGroups.members") {
+    return { ...command, cfg: structuredClone(command.cfg) };
+  }
   if (command.type === "conversationBindings.inspect") {
     const { channel, accountId, conversationId, parentConversationId } = command.conversation;
     return {
@@ -163,6 +166,9 @@ function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCom
 
 function commandBytes(command: OpenClawStateReadRequest["command"]): number {
   let bytes = Buffer.byteLength(command.type, "utf8");
+  if (command.type === "sessionGroups.members") {
+    return bytes + Buffer.byteLength(JSON.stringify(command.cfg), "utf8");
+  }
   if (command.type === "conversationBindings.inspect") {
     return (
       bytes +

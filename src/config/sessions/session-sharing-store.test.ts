@@ -14,12 +14,8 @@ import {
   loadSessionEntry,
   upsertSessionEntryCore,
 } from "./session-accessor.js";
-import {
-  addSessionMember,
-  isSessionMember,
-  listSessionMembers,
-  removeSessionMember,
-} from "./session-sharing-store.js";
+import { isSessionMember, listSessionMembers } from "./session-sharing-store.js";
+import { addSessionMember, removeSessionMember } from "./session-sharing-store.native.js";
 
 afterEach(() => closeOpenClawAgentDatabasesForTest());
 
@@ -48,6 +44,7 @@ describe("session sharing store", () => {
             agentId: scope.agentId,
             sessionKey: scope.sessionKey,
             storePath: resolveOpenClawAgentSqlitePath({ agentId: scope.agentId, env }),
+            membership: ["guest"],
           }),
         ]);
         expect(members).toEqual([["guest"]]);
@@ -66,6 +63,20 @@ describe("session sharing store", () => {
         expect(changes).toEqual([]);
         removeSessionMember(scope, "guest");
         expect(members).toEqual([[]]);
+        changes.length = 0;
+        members.length = 0;
+        runOpenClawAgentWriteTransaction(
+          () => {
+            addSessionMember(scope, { identityId: "transient", addedBy: "owner" });
+            removeSessionMember(scope, "transient");
+            expect(changes).toEqual([]);
+          },
+          { agentId: scope.agentId, env },
+        );
+        expect(members).toEqual([[], []]);
+        expect(
+          changes.map((change) => ("sessionKey" in change ? change.membership : undefined)),
+        ).toEqual([[], []]);
       } finally {
         stop();
       }

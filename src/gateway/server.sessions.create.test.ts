@@ -40,7 +40,7 @@ import {
   resolveSqliteStoreScope,
   runExclusiveSqliteSessionWrite,
 } from "../config/sessions/session-accessor.sqlite-scope.js";
-import { addSessionMember, removeSessionMember } from "../config/sessions/session-sharing-store.js";
+import * as sessionMembers from "../config/sessions/session-sharing-store.native.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import type { GatewayOperatorRoleDefinition } from "../config/types.gateway.js";
 import { peekSystemEvents } from "../infra/system-events.js";
@@ -1148,7 +1148,7 @@ test("sessions.create revalidates parent participation before committing a fork 
     storePath,
     messages: [{ role: "user", content: "private parent context" }],
   });
-  addSessionMember(
+  sessionMembers.addSessionMember(
     { agentId: "main", sessionKey: parentSessionKey, storePath },
     { identityId: "member", addedBy: "owner", expectedSessionId: parentSessionId },
   );
@@ -1221,7 +1221,7 @@ test("sessions.create revalidates parent participation before committing a fork 
 
   try {
     await firstGuard.promise;
-    removeSessionMember(
+    sessionMembers.removeSessionMember(
       { agentId: "main", sessionKey: parentSessionKey, storePath },
       "member",
       undefined,
