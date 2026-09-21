@@ -10,6 +10,10 @@ import type {
   ExecutionIdentityInspectionOutcome,
 } from "../audit/execution-identity-inspection.types.js";
 import type { FleetCellRecord } from "../fleet/registry.types.js";
+import type {
+  WorkerPlacementConflictBinding,
+  WorkerSessionPlacementReadResult,
+} from "../gateway/worker-environments/placement-read-projection.types.js";
 import type { WorkerSessionPlacementChangeSnapshot } from "../gateway/worker-environments/placement-record.js";
 import type { readExecApprovalsConfigRow } from "../infra/exec-approvals-sqlite.js";
 import type {
@@ -73,7 +77,12 @@ export type OpenClawStateReadCommand =
   | { type: "sandboxRegistry.list" }
   | { type: "sandboxRegistry.get"; containerName: string }
   | { type: "sandboxRegistry.runtimeIds"; backendId: string; scopeKey: string }
-  | { type: "sandboxRegistry.browsers" };
+  | { type: "sandboxRegistry.browsers" }
+  | {
+      type: "workers.placementProjection";
+      sessionIds: readonly string[];
+      conflictBindings: readonly WorkerPlacementConflictBinding[];
+    };
 export type OpenClawStateReadRequest = {
   context: SqliteWorkerStateContext;
   databasePath: string;
@@ -181,6 +190,12 @@ export type OpenClawStateReadReply = (
       type: "sandboxRegistry.browsers";
       sourceAdmitted: true;
       entries: SandboxBrowserRegistryEntry[];
+    }
+  | {
+      ok: true;
+      type: "workers.placementProjection";
+      sourceAdmitted: true;
+      result: WorkerSessionPlacementReadResult;
     }
   | {
       ok: false;

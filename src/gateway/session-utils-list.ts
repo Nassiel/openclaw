@@ -22,6 +22,7 @@ import {
 } from "./session-list-filters.js";
 import { sortAndLimitSessionEntries, type SessionEntryPair } from "./session-list-order.js";
 import { bindSessionListRowRead } from "./session-list-read-result.js";
+import { withReadySessionRows } from "./session-row-prepared-read.js";
 import { prepareProjectedSessionPresentation } from "./session-row-presentation.js";
 import type { Query as SessionRowQuery } from "./session-row-projection-record.js";
 import type { SessionRowProjection } from "./session-row-projection.js";
@@ -339,7 +340,7 @@ export function prepareProjectedSessionList(params: {
   return { prepared, presentation, filters };
 }
 
-/** One readiness await, then one synchronous selection/authorization/presentation boundary. */
+/** Prepare selected rows, then authorize and present them in one synchronous boundary. */
 export async function listProjectedSessions(params: {
   projection: SessionRowProjection;
   opts: SessionsListParams;
@@ -359,95 +360,114 @@ export async function listProjectedSessions(params: {
     yieldCount++;
     await projection.ensureMaterialized();
   } while (projection.needsMaterialization);
-  const resumed = performance.now();
-  const now = Date.now();
-  let cpuPhase: "prepareThreadCpuMs" | "rowThreadCpuMs" = "prepareThreadCpuMs";
-  let syncCpu = diagnostics?.startSyncCpu();
-  try {
-    diagnostics?.mark("storeLoad");
-    const { presentation, prepared, filters } = prepareProjectedSessionList({
-      projection,
-      opts,
-      key: exactKey,
-      context,
-      client,
-      now,
-    });
-    const { cfg, getTarget } = prepared;
-    diagnostics?.mark("filterSetup");
-    const selection = withAgentRosterFactsBatch(cfg, () =>
-      runSynchronousWork(
-        selectSessionEntries({
-          ...filters,
-          defaultLimit: 100,
-        }),
-      ),
-    );
-    diagnostics?.mark("sharing");
-    diagnostics?.mark("rows");
-    const rowsStarted = performance.now();
-    diagnostics?.finishSyncCpu(cpuPhase, syncCpu);
-    syncCpu = undefined;
-    cpuPhase = "rowThreadCpuMs";
-    syncCpu = diagnostics?.startSyncCpu();
-    let materializedRowCount = 0;
-    projection.setArchivePageSize(selection.entries.length);
-    const sessions = selection.entries.flatMap(([key], index) => {
-      const target = getTarget(key);
-      const record =
-        target && projection.describe({ ...target, storePath: target.storeTarget.storePath });
-      if (!record) {
-        return [];
-      }
-      const includeTranscriptFields = index < 100 + selection.ownerCount;
-      const row = presentation.present(record, {
-        includeDerivedTitles: opts.includeDerivedTitles && includeTranscriptFields,
-        includeLastMessage: opts.includeLastMessage && includeTranscriptFields,
-        includeActivitySummary: opts.includeActivitySummary === true,
+  let prepareSyncMs = 0;
+  const selectPage = () => {
+    const started = performance.now();
+    const syncCpu = diagnostics?.startSyncCpu();
+    try {
+      diagnostics?.mark("storeLoad");
+      const now = Date.now();
+      const { presentation, prepared, filters } = prepareProjectedSessionList({
+        projection,
+        opts,
+        key: exactKey,
+        context,
+        client,
+        now,
       });
-      if (!row) {
-        return [];
+      diagnostics?.mark("filterSetup");
+      const selection = withAgentRosterFactsBatch(prepared.cfg, () =>
+        runSynchronousWork(selectSessionEntries({ ...filters, defaultLimit: 100 })),
+      );
+      return { now, presentation, prepared, selection };
+    } finally {
+      diagnostics?.finishSyncCpu("prepareThreadCpuMs", syncCpu);
+      prepareSyncMs += performance.now() - started;
+      if (diagnostics) {
+        diagnostics.projection.prepareSyncMs = prepareSyncMs;
       }
-      bindSessionListRowRead(row, { projection, record, client });
-      if ((record.materializedSequence ?? 0) > materializedBefore) {
-        materializedRowCount++;
-      }
-      if (opts.activeOnly && sentinel(record.key)) {
-        row.childSessions = undefined;
-        row.hasActiveSubagentRun = undefined;
-      }
-      return [row];
-    });
-    diagnostics?.mark("decoration");
-    const result = buildSessionsListResult(
-      prepared,
-      { ...selection, now, storePath: prepared.storePath },
-      sessions,
-    );
-    if (client !== undefined) {
-      result.defaults.modelSelectionTarget = resolveGatewayModelSelectionPolicy({
-        callerScopes: client?.connect?.scopes ?? [],
-        cfg,
-      }).target;
+      diagnostics?.mark("materialize");
     }
-    diagnostics?.mark("visibilityRepair");
-    if (diagnostics) {
-      Object.assign(diagnostics.projection, {
-        prepareSyncMs: rowsStarted - resumed,
-        rowSyncMs: performance.now() - rowsStarted,
-        yieldWaitMs: resumed - waitStarted,
-        yieldCount,
-        selectedRowCount: sessions.length,
-        dirtyRowCount,
-        materializedRowCount,
-        reusedRowCount: sessions.length - materializedRowCount,
+  };
+  let page: ReturnType<typeof selectPage>;
+  return withReadySessionRows(
+    projection,
+    () => {
+      page = selectPage();
+      return page.selection.entries.flatMap(([key]) => {
+        const target = page.prepared.getTarget(key);
+        return target ? [{ ...target, storePath: target.storeTarget.storePath }] : [];
       });
-    }
-    diagnostics?.finishSyncCpu(cpuPhase, syncCpu);
-    syncCpu = undefined;
-    params.onResult?.(result);
-    return result;
-  } finally {
-    diagnostics?.finishSyncCpu(cpuPhase, syncCpu);
-  }
+    },
+    () => {
+      const resumed = performance.now();
+      const { now, presentation, prepared, selection } = page;
+      const { cfg, getTarget } = prepared;
+      diagnostics?.mark("sharing");
+      diagnostics?.mark("rows");
+      const rowsStarted = performance.now();
+      let syncCpu = diagnostics?.startSyncCpu();
+      try {
+        let materializedRowCount = 0;
+        projection.setArchivePageSize(selection.entries.length);
+        const sessions = selection.entries.flatMap(([key], index) => {
+          const target = getTarget(key);
+          const record =
+            target && projection.describe({ ...target, storePath: target.storeTarget.storePath });
+          if (!record) {
+            return [];
+          }
+          const includeTranscriptFields = index < 100 + selection.ownerCount;
+          const row = presentation.present(record, {
+            includeDerivedTitles: opts.includeDerivedTitles && includeTranscriptFields,
+            includeLastMessage: opts.includeLastMessage && includeTranscriptFields,
+            includeActivitySummary: opts.includeActivitySummary === true,
+          });
+          if (!row) {
+            return [];
+          }
+          bindSessionListRowRead(row, { projection, record, client });
+          if ((record.materializedSequence ?? 0) > materializedBefore) {
+            materializedRowCount++;
+          }
+          if (opts.activeOnly && sentinel(record.key)) {
+            row.childSessions = undefined;
+            row.hasActiveSubagentRun = undefined;
+          }
+          return [row];
+        });
+        diagnostics?.mark("decoration");
+        const result = buildSessionsListResult(
+          prepared,
+          { ...selection, now, storePath: prepared.storePath },
+          sessions,
+        );
+        if (client !== undefined) {
+          result.defaults.modelSelectionTarget = resolveGatewayModelSelectionPolicy({
+            callerScopes: client?.connect?.scopes ?? [],
+            cfg,
+          }).target;
+        }
+        diagnostics?.mark("visibilityRepair");
+        if (diagnostics) {
+          Object.assign(diagnostics.projection, {
+            prepareSyncMs,
+            rowSyncMs: performance.now() - rowsStarted,
+            yieldWaitMs: resumed - waitStarted - prepareSyncMs,
+            yieldCount,
+            selectedRowCount: sessions.length,
+            dirtyRowCount,
+            materializedRowCount,
+            reusedRowCount: sessions.length - materializedRowCount,
+          });
+        }
+        diagnostics?.finishSyncCpu("rowThreadCpuMs", syncCpu);
+        syncCpu = undefined;
+        params.onResult?.(result);
+        return result;
+      } finally {
+        diagnostics?.finishSyncCpu("rowThreadCpuMs", syncCpu);
+      }
+    },
+  );
 }

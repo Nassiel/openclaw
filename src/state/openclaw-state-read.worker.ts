@@ -11,6 +11,7 @@ import { readWorkspaceStateSnapshotForDirectoryInDatabase } from "../agents/work
 import { ExecutionDecisionCursorError } from "../audit/execution-decision-receipts.js";
 import { inspectExecutionIdentityRunInDatabase } from "../audit/execution-identity-context.js";
 import { getFleetCellInDatabase, listFleetCellsInDatabase } from "../fleet/registry.kernel.js";
+import { readWorkerSessionPlacementProjectionInDatabase } from "../gateway/worker-environments/placement-read-projection.js";
 import { readWorkerPlacementChangeSnapshotInDatabase } from "../gateway/worker-environments/placement-row-codec.js";
 import { readExecApprovalsConfigRow } from "../infra/exec-approvals-sqlite.js";
 import { inspectCurrentConversationBindingRecordInDatabase } from "../infra/outbound/current-conversation-bindings.kernel.js";
@@ -119,7 +120,11 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
       (input.command.type === "sandboxRegistry.runtimeIds" &&
         typeof input.command.backendId === "string" &&
         typeof input.command.scopeKey === "string") ||
-      (input.command.type === "fleet.get" && typeof input.command.tenantId === "string"))
+      (input.command.type === "fleet.get" && typeof input.command.tenantId === "string") ||
+      (input.command.type === "workers.placementProjection" &&
+        Array.isArray(input.command.sessionIds) &&
+        input.command.sessionIds.every((id) => typeof id === "string") &&
+        Array.isArray(input.command.conflictBindings)))
   );
 }
 
@@ -366,6 +371,18 @@ serveOwnedWorkerTasks(
                     type: command.type,
                     sourceAdmitted,
                     entries: readSandboxBrowserRegistryInDatabase(db),
+                  };
+                }
+                if (command.type === "workers.placementProjection") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    result: readWorkerSessionPlacementProjectionInDatabase(
+                      db,
+                      command.sessionIds,
+                      command.conflictBindings,
+                    ),
                   };
                 }
                 return command.type === "fleet.list"

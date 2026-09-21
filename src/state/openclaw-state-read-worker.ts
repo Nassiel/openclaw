@@ -138,6 +138,9 @@ function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCom
             },
     };
   }
+  if (command.type === "workers.placementProjection") {
+    return structuredClone(command);
+  }
   return { ...command };
 }
 
@@ -223,6 +226,9 @@ function commandBytes(command: OpenClawStateReadRequest["command"]): number {
       (input.executionOffset === undefined ? 0 : 8) +
       (input.executionLimit === undefined ? 0 : 8)
     );
+  }
+  if (command.type === "workers.placementProjection") {
+    return Buffer.byteLength(JSON.stringify(command), "utf8");
   }
   return bytes;
 }

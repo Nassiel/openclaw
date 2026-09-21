@@ -217,23 +217,27 @@ describe("conversation position rail", () => {
           await flush();
           expect(marks.scrollTop).toBeLessThan(677);
         } else if (scenario === "focus") {
-          marks.scrollTop = 40 * 12 - 100;
+          marks.scrollTop = 60 * 12 - 100;
           await flush();
           document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
-          marker(40).focus();
-          expect(marker(40).matches(":focus-visible")).toBe(true);
+          marker(60).focus();
+          expect(marker(60).matches(":focus-visible")).toBe(true);
           await flush();
-          expect(Number.parseFloat(marker(40).style.top)).toBeGreaterThanOrEqual(marks.scrollTop);
-          expect(Number.parseFloat(marker(40).style.top) + 12).toBeLessThanOrEqual(
+          expect(Number.parseFloat(marker(60).style.top)).toBeGreaterThanOrEqual(marks.scrollTop);
+          expect(Number.parseFloat(marker(60).style.top) + 12).toBeLessThanOrEqual(
             marks.scrollTop + marks.clientHeight,
           );
           const focusedOffset = marks.scrollTop;
           activeMessage.mockReturnValue("message-77");
           await flush();
-          expect(document.activeElement).toBe(marker(40));
+          expect(document.activeElement).toBe(marker(60));
           expect(marks.scrollTop).toBe(focusedOffset);
-          marker(40).blur();
+          marker(60).blur();
           activeMessage.mockReturnValue("message-79");
+          publishVisibility(root.querySelector(".chat-bubble")!);
+          // Tab entry must follow the published reader position before the next layout frame.
+          expect(marker(79).getAttribute("aria-current")).toBe("true");
+          expect([...marks.querySelectorAll('[tabindex="0"]')]).toEqual([marker(79)]);
           await flush();
           expect(marks.scrollTop).toBe(677);
         } else if (scenario === "focus-resize") {
