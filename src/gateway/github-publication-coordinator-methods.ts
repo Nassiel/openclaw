@@ -128,7 +128,7 @@ export function createGitHubPublicationCoordinatorMethods(params: {
   processRow: (
     initial: PublicationRow,
     validateCustody: () => boolean,
-    assertRequester?: () => void,
+    assertInvocationCurrent?: () => void,
   ) => Promise<SessionGitHubPublicationResult>;
 }) {
   const { readById, requestForClaim, sameWorktree, processRow } = params;
@@ -219,7 +219,7 @@ export function createGitHubPublicationCoordinatorMethods(params: {
         return await processRow(
           row,
           () => params.placements.validateTurnClaim(claim),
-          assertRequester,
+          input.requester.assertInvocationCurrent,
         );
       }
       if (claim && placement?.state === "local") {
@@ -262,7 +262,11 @@ export function createGitHubPublicationCoordinatorMethods(params: {
           requestId: existing.request_id,
         });
         if (!lifecycle || lifecycle.lifecycle_revision !== lifecycleRevision) {
-          return await processRow(existing, validateLocalExecution, assertRequester);
+          return await processRow(
+            existing,
+            validateLocalExecution,
+            input.requester.assertInvocationCurrent,
+          );
         }
       }
       assertRequester();
@@ -360,7 +364,7 @@ export function createGitHubPublicationCoordinatorMethods(params: {
         },
       });
       const row = insertSessionRequest(snapshot);
-      return await processRow(row, validateLocalExecution, assertRequester);
+      return await processRow(row, validateLocalExecution, input.requester.assertInvocationCurrent);
     },
 
     async resumeSessionRequests(): Promise<void> {

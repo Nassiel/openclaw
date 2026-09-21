@@ -47,6 +47,7 @@ const expectedSystemRequester = {
     grant: null,
   },
   assertCurrent: expect.any(Function),
+  assertInvocationCurrent: expect.any(Function),
 };
 
 async function invoke(
@@ -266,6 +267,7 @@ describe("sessions.github.publish", () => {
               grant: null,
             },
             assertCurrent: expect.any(Function),
+            assertInvocationCurrent: expect.any(Function),
           },
         });
         expect(respond).toHaveBeenCalledWith(true, {

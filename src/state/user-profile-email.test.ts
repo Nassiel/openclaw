@@ -6,8 +6,13 @@ import {
 } from "./openclaw-state-db.js";
 import { ensureProfileIdForEmail } from "./user-profile-email.js";
 import { readUserProfileVersion } from "./user-profile-events.js";
-import { readResidentUserProfileId, retainUserProfileCatalog } from "./user-profile-list.js";
-import { ensureProfileForEmail } from "./user-profiles.js";
+import { readUserProfileEmailBindings } from "./user-profile-identity.read.js";
+import {
+  prepareUserProfileIdentity,
+  readResidentUserProfileId,
+  retainUserProfileCatalog,
+} from "./user-profile-list.js";
+import { ensureProfileForEmail, linkEmail } from "./user-profiles.js";
 
 const delivery = vi.hoisted(() => ({ afterResult: undefined as (() => void) | undefined }));
 vi.mock("./openclaw-state-worker-store.js", async (importOriginal) => {
@@ -42,6 +47,8 @@ afterEach(() => {
 it("publishes a created email profile after lost result delivery while its database closes", async () => {
   await withOpenClawTestState({ layout: "state-only" }, async () => {
     const pathname = openOpenClawStateDatabase().path;
+    const existing = ensureProfileForEmail("existing@example.test");
+    const prepared = await prepareUserProfileIdentity(existing.id);
     const release = retainUserProfileCatalog();
     let closing: ReturnType<typeof closeOpenClawStateDatabaseByPathAsync> | undefined;
     try {
@@ -57,9 +64,50 @@ it("publishes a created email profile after lost result delivery while its datab
       const profile = ensureProfileForEmail("new@example.test");
       expect(readResidentUserProfileId(profile.id)).toBe(profile.id);
       expect(readUserProfileVersion()).toBe(before + 1);
+      const created = await prepareUserProfileIdentity(profile.id);
+      try {
+        expect(created.emailBindingIds).toEqual([expect.any(String)]);
+        expect(() => created.assertCurrent(created.emailBindingIds)).not.toThrow();
+      } finally {
+        created.release();
+      }
     } finally {
       await closing;
       release();
+      prepared.release();
+    }
+  });
+});
+
+it("does not restore an old binding from a creation reply delivered after alias reassignment", async () => {
+  await withOpenClawTestState({ layout: "state-only" }, async () => {
+    const target = ensureProfileForEmail("target@example.test");
+    const retained = await prepareUserProfileIdentity(target.id);
+    let originalBinding: string | null | undefined;
+    try {
+      delivery.afterResult = () => {
+        const created = ensureProfileForEmail("delayed@example.test");
+        originalBinding = readUserProfileEmailBindings(
+          openOpenClawStateDatabase().db,
+          created.id,
+        )[0]?.bindingId;
+        linkEmail("retained@example.test", created.id);
+        linkEmail("delayed@example.test", target.id);
+        linkEmail("delayed@example.test", created.id);
+      };
+      const profileId = await ensureProfileIdForEmail("delayed@example.test");
+      expect(originalBinding).toEqual(expect.any(String));
+      const current = await prepareUserProfileIdentity(profileId);
+      try {
+        expect(current.emailBindingIds).toHaveLength(2);
+        expect(current.emailBindingIds).not.toContain(originalBinding);
+        expect(() => current.assertCurrent([originalBinding!])).toThrow("user profile not found");
+        expect(() => current.assertCurrent(current.emailBindingIds)).not.toThrow();
+      } finally {
+        current.release();
+      }
+    } finally {
+      retained.release();
     }
   });
 });

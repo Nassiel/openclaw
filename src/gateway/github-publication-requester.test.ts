@@ -60,7 +60,7 @@ describe("shared GitHub publication requester authority", () => {
   it("distinguishes explicit System authority from missing, unclassified, and closed sources", async () => {
     const f = await fixture("local");
     const { context, session } = f.guestSource;
-    const system = captureGitHubPublicationRequester(
+    const system = await captureGitHubPublicationRequester(
       {
         client: createSyntheticPluginRuntimeClient({
           operatorRoleActor: { kind: "system" },
@@ -82,13 +82,14 @@ describe("shared GitHub publication requester authority", () => {
       ["unknown", createSyntheticPluginRuntimeClient({ scopes: ["operator.admin"] })],
       ["unclassified", { ...f.guestSource.client, internal: undefined }],
     ] as const) {
-      expect(() => captureGitHubPublicationRequester({ client, context }, session), label).toThrow(
-        GitHubPublicationRequesterUnavailableError,
-      );
+      await expect(
+        captureGitHubPublicationRequester({ client, context }, session),
+        label,
+      ).rejects.toThrow(GitHubPublicationRequesterUnavailableError);
     }
     const source = captureGatewayOperatorRunAuthority({ client: f.guestSource.client, context })!;
     source.release();
-    expect(() =>
+    await expect(
       captureGitHubPublicationRequester(
         {
           client: {
@@ -102,7 +103,7 @@ describe("shared GitHub publication requester authority", () => {
         },
         session,
       ),
-    ).toThrow("no longer active");
+    ).rejects.toThrow("no longer active");
     expect(f.externalWrites).toEqual([]);
   });
 
@@ -111,7 +112,7 @@ describe("shared GitHub publication requester authority", () => {
     const { client, context, session } = f.maintainerSource;
     const source = captureGatewayOperatorRunAuthority({ client, context })!;
     onTestFinished(source.release);
-    const captured = captureGitHubPublicationRequester(
+    const captured = await captureGitHubPublicationRequester(
       {
         client: {
           ...client,

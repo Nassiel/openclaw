@@ -146,7 +146,7 @@ export const sessionsGitHubHandlers: GatewayRequestHandlers = {
         sessionKey: loaded.canonicalKey,
         agentId: caller?.agentId ?? loaded.agentId,
       };
-      const admitted = captureGitHubPublicationRequester(options, session);
+      const admitted = await captureGitHubPublicationRequester(options, session);
       try {
         const result = await coordinator.requestForSession({
           ...params,

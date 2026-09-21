@@ -195,17 +195,15 @@ export function createRepositoryGitHubPublicationCoordinator(params: {
     ) {
       throw new Error("My GitHub publication owner changed.");
     }
-    let requester: GitHubPublicationRequester | undefined;
+    let requester: Awaited<ReturnType<typeof restoreGitHubPublicationRequester>> | undefined;
     const assertExecution = () => {
       // Classify source loss before personal preparation can turn it into a retryable error.
       assertReceiptOwner(row);
       assertCustody();
       if (row.owner_profile_id === null) {
-        requester ??= restoreGitHubPublicationRequester(
-          row.requester_authority_json,
-          { sessionKey: row.session_key, agentId: row.agent_id },
-          getCommittedRuntimeConfig,
-        );
+        if (!requester) {
+          throw new GitHubPublicationRequesterUnavailableError();
+        }
         requester.assertCurrent();
       }
       context.assertCurrent?.();
@@ -260,6 +258,13 @@ export function createRepositoryGitHubPublicationCoordinator(params: {
       });
     };
     try {
+      if (row.owner_profile_id === null) {
+        requester = await restoreGitHubPublicationRequester(
+          row.requester_authority_json,
+          { sessionKey: row.session_key, agentId: row.agent_id },
+          getCommittedRuntimeConfig,
+        );
+      }
       assertExecution();
       if (!row.checkpoint_ref) {
         if (row.owner_profile_id === null && !assertReceiptOwner(row).workspace.checkpointRef) {
@@ -313,6 +318,7 @@ export function createRepositoryGitHubPublicationCoordinator(params: {
       }
       throw error;
     } finally {
+      requester?.release();
       if (execution) {
         active.delete(row.request_id);
       }
@@ -531,7 +537,7 @@ export function createRepositoryGitHubPublicationCoordinator(params: {
         async (assertCustody) =>
           await execute(row, {
             assertCustody,
-            assertCurrent: input.requester.assertCurrent,
+            assertCurrent: input.requester.assertInvocationCurrent,
           }),
       );
     },

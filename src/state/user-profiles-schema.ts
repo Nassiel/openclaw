@@ -8,6 +8,7 @@ import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "./openclaw-state-db.js";
+import { stageUserProfileEmailBindingChange } from "./user-profile-events.js";
 import type { UserProfilesDatabase } from "./user-profiles.types.js";
 
 // Canonical additive schema for durable user profiles. Kept feature-local so
@@ -110,17 +111,26 @@ export function ensureUserProfilesSchema(
       const kysely = getNodeSqliteKysely<UserProfilesDatabase>(db);
       const unboundEmails = executeSqliteQuerySync(
         db,
-        kysely.selectFrom("user_profile_emails").select("email").where("binding_id", "is", null),
+        kysely
+          .selectFrom("user_profile_emails")
+          .select(["email", "profile_id"])
+          .where("binding_id", "is", null),
       ).rows;
-      for (const { email } of unboundEmails) {
+      for (const { email, profile_id } of unboundEmails) {
+        const bindingId = generateSecureUuid();
         executeSqliteQuerySync(
           db,
           kysely
             .updateTable("user_profile_emails")
-            .set({ binding_id: generateSecureUuid() })
+            .set({ binding_id: bindingId })
             .where("email", "=", email)
             .where("binding_id", "is", null),
         );
+        stageUserProfileEmailBindingChange(db, email, {
+          email,
+          profileId: profile_id,
+          bindingId,
+        });
       }
       hasRoleColumn = tableHasColumn(db, "user_profiles", "role");
     },

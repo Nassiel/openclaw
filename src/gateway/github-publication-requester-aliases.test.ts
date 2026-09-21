@@ -5,7 +5,8 @@ import {
   githubPublicationTestMocks,
   installGitHubPublicationTestHarness,
 } from "./github-publication.test-support.js";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
+import * as userProfileList from "../state/user-profile-list.js";
 import {
   ensureProfileForEmail,
   getUserProfileListItem,
@@ -13,6 +14,7 @@ import {
   setDisplayName,
 } from "../state/user-profiles.js";
 import { GitHubPublicationRequesterUnavailableError } from "./github-publication-failure.js";
+import { captureGitHubPublicationRequester } from "./github-publication-requester.js";
 import {
   createRequesterPublicationFixture,
   guestScopes,
@@ -124,6 +126,178 @@ describe("shared GitHub publication requester alias bindings", () => {
             ? ["independent-maintainer"]
             : ["interrupted-visitor-identity"],
         );
+      } finally {
+        await visitors.close();
+      }
+    },
+  );
+
+  it.each(
+    (["local", "repository"] as const).flatMap((backend) =>
+      (["later alias removed", "request cancelled"] as const).map((change) => ({
+        backend,
+        change,
+      })),
+    ),
+  )(
+    "checks the accepted $backend policy during an immediate retry with $change",
+    async ({ backend, change }) => {
+      const f = await fixture(backend);
+      const email = "publication-guest@example.test";
+      const later = "publication-later-alias@example.test";
+      const other = ensureProfileForEmail("publication-alias-recipient@example.test");
+      const visitors = await prepareVisitorPublicationFixture(f);
+      try {
+        await visitors.start();
+        await visitors.execute("visitor_invite", { email, days: 1 });
+        const grant = (await visitors.store.lookup(email))!;
+        const original = await createGitHubPublicationRequesterFixture({
+          profileId: f.guestProfile,
+          scopes: guestScopes,
+          ...f.guestSource.session,
+        });
+        const claim =
+          backend === "repository"
+            ? holdWorkerTurn(f)
+            : f.placements.claimTurn({
+                ...f.session,
+                agentId: "main",
+                owner: { kind: "local" },
+                claimId: "immediate-alias-retry-claim",
+                runId: "immediate-alias-retry-run",
+              });
+        const input = f.request("immediate-alias-retry", original.requester);
+        const queued = await f.coordinator.requestForClaim({ ...input, claim });
+        expect(queued.status).toBe("requested");
+        expect(f.externalWrites).toEqual([]);
+        if (backend === "repository") {
+          f.placements.markWorkspaceResultPending(claim);
+          await f.coordinator.prepareClaimWorkspace(claim);
+          f.placements.acceptWorkspaceResult(claim);
+        }
+        const accepted = f.readReceipt(queued.requestId)!;
+        if (backend === "repository") {
+          expect(accepted).toMatchObject({
+            checkpoint_ref: expect.any(String),
+            checkpoint_digest: expect.any(String),
+          });
+        }
+        expect(original.requester.snapshot.grant?.aliasBindingIds).toHaveLength(1);
+
+        linkEmail(later, f.guestProfile);
+        const controller = new AbortController();
+        const retry = await captureGitHubPublicationRequester(
+          {
+            client: original.client,
+            context: original.context,
+            signal: controller.signal,
+          },
+          original.session,
+        );
+        onTestFinished(retry.release);
+        expect(retry.requester.snapshot.grant?.aliasBindingIds).toHaveLength(2);
+        if (backend === "repository") {
+          f.placements.completeWorkspaceResultAndReleaseTurn(claim);
+        } else {
+          f.placements.releaseTurn(claim);
+        }
+        const prepare = mocks.prepareIdentity.getMockImplementation()!;
+        let preparations = 0;
+        mocks.prepareIdentity.mockImplementation(async (...args) => {
+          const identity = await prepare(...args);
+          preparations += 1;
+          // The first preparation admits the retry; the next belongs to its execution.
+          if (preparations === 2) {
+            if (change === "later alias removed") {
+              linkEmail(later, other.id);
+            } else {
+              controller.abort(new Error("publication retry cancelled"));
+            }
+            expect(original.requester.assertCurrent).not.toThrow();
+          }
+          return identity;
+        });
+        const result = await f.coordinator.requestForSession({
+          ...input,
+          requester: retry.requester,
+        });
+        expect(preparations).toBeGreaterThanOrEqual(2);
+        expect(result).toMatchObject({
+          requestId: queued.requestId,
+          status: change === "later alias removed" ? "published" : "failed",
+          ...(change === "request cancelled" ? { code: "identity_changed" } : {}),
+        });
+        expect(f.readRequester(queued.requestId)).toEqual(original.requester.snapshot);
+        expect(f.readReceipt(queued.requestId)?.request_digest).toBe(accepted.request_digest);
+        expect(await visitors.store.lookup(email)).toEqual(grant);
+        expect(f.publishedTitles).toEqual(change === "later alias removed" ? [input.title] : []);
+        if (change === "request cancelled") {
+          expect(f.externalWrites).toEqual([]);
+        }
+      } finally {
+        await visitors.close();
+      }
+    },
+  );
+
+  it.each(["local", "repository"] as const)(
+    "keeps an accepted %s request pending when profile preparation is unavailable",
+    async (backend) => {
+      const f = await fixture(backend);
+      const visitors = await prepareVisitorPublicationFixture(f);
+      try {
+        await visitors.start();
+        await visitors.execute("visitor_invite", {
+          email: "publication-guest@example.test",
+          days: 1,
+        });
+        const original = await createGitHubPublicationRequesterFixture({
+          profileId: f.guestProfile,
+          scopes: guestScopes,
+          ...f.guestSource.session,
+        });
+        const claim = holdWorkerTurn(f);
+        const queued = await f.coordinator.requestForSession(
+          f.request("profile-preparation-recovery", original.requester),
+        );
+        expect(queued.status).toBe("requested");
+        if (backend === "repository") {
+          f.placements.markWorkspaceResultPending(claim);
+          await f.coordinator.prepareClaimWorkspace(claim);
+          f.placements.acceptWorkspaceResult(claim);
+        }
+        const accepted = f.readReceipt(queued.requestId)!;
+        if (backend === "repository") {
+          expect(accepted).toMatchObject({
+            checkpoint_ref: expect.any(String),
+            checkpoint_digest: expect.any(String),
+          });
+          f.placements.completeWorkspaceResultAndReleaseTurn(claim);
+        } else {
+          f.placements.releaseTurn(claim);
+        }
+        original.release();
+        const restarted = f.restart();
+        const preparation = vi
+          .spyOn(userProfileList, "prepareUserProfileIdentity")
+          .mockRejectedValueOnce(new Error("synthetic profile read unavailable"));
+        try {
+          await expect(restarted.resumeSessionRequests()).rejects.toBeInstanceOf(AggregateError);
+          expect(preparation).toHaveBeenCalledOnce();
+          expect(restarted.read(queued.requestId)).toMatchObject({
+            status: backend === "local" ? "publishing" : "requested",
+          });
+          expect(f.readRequester(queued.requestId)).toEqual(original.requester.snapshot);
+          expect(f.readReceipt(queued.requestId)?.request_digest).toBe(accepted.request_digest);
+          expect(f.externalWrites).toEqual([]);
+        } finally {
+          preparation.mockRestore();
+        }
+        await restarted.resumeSessionRequests();
+        expect(restarted.read(queued.requestId)).toMatchObject({ status: "published" });
+        expect(f.readRequester(queued.requestId)).toEqual(original.requester.snapshot);
+        expect(f.readReceipt(queued.requestId)?.request_digest).toBe(accepted.request_digest);
+        expect(f.publishedTitles).toEqual(["profile-preparation-recovery"]);
       } finally {
         await visitors.close();
       }

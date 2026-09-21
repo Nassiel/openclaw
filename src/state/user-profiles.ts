@@ -133,28 +133,6 @@ export function resolveUserProfileId(
   return selectResolvedUserProfileMetadataById(db, profileId)?.id;
 }
 
-/** Reads exact alias lifetimes without following a profile merge to a new owner. */
-export function readUserProfileEmailBindingIds(
-  profileId: string,
-  options: OpenClawStateDatabaseOptions = {},
-): string[] {
-  const database = openOpenClawStateDatabase(options);
-  ensureUserProfilesSchema(options, database);
-  return executeSqliteQuerySync(
-    database.db,
-    userProfilesDb(database.db)
-      .selectFrom("user_profile_emails")
-      .select("binding_id")
-      .where("profile_id", "=", profileId)
-      .orderBy("binding_id", "asc"),
-  ).rows.map(({ binding_id }) => {
-    if (binding_id === null) {
-      throw new Error("User profile email binding has not been initialized");
-    }
-    return binding_id;
-  });
-}
-
 /** Reads a profile's protocol-facing representation through its merge head. */
 export function getUserProfileListItem(
   profileId: string,

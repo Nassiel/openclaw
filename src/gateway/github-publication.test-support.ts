@@ -112,6 +112,7 @@ export const systemPublicationRequester: GitHubPublicationRequester = Object.fre
     grant: null,
   }),
   assertCurrent: () => {},
+  assertInvocationCurrent: () => {},
 });
 
 export async function createGitHubPublicationRequesterFixture(params: {
@@ -142,7 +143,7 @@ export async function createGitHubPublicationRequesterFixture(params: {
     getCommittedRuntimeConfig: params.getCommittedRuntimeConfig ?? currentGitHubPublicationConfig,
   };
   const session = { sessionKey: params.sessionKey, agentId: params.agentId };
-  const captured = captureGitHubPublicationRequester({ client, context }, session);
+  const captured = await captureGitHubPublicationRequester({ client, context }, session);
   onTestFinished(captured.release);
   return { ...captured, client, context, session };
 }
@@ -165,6 +166,10 @@ function bindPublicationFixtureRequest<
           snapshot: requester.snapshot,
           assertCurrent: () => {
             requester.assertCurrent();
+            assertCurrent();
+          },
+          assertInvocationCurrent: () => {
+            requester.assertInvocationCurrent();
             assertCurrent();
           },
         }

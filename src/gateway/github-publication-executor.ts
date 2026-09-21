@@ -170,6 +170,7 @@ export async function executeGitHubPublication<Row extends PublicationRow>(param
     observed?: { headCommit?: string; url?: string },
   ) => void;
   validateAuthority: () => boolean;
+  prepareAuthority?: () => Promise<void>;
   validateCustody: () => boolean;
   projectResult: (row: Row) => SessionGitHubPublicationResult;
   bindWorkspaceSnapshot: (input: {
@@ -223,6 +224,10 @@ export async function executeGitHubPublication<Row extends PublicationRow>(param
     const { loaded, worktree } = currentWorktree();
     await custodyCommands.step(() => assertSafeGitPublicationWorkspace(worktree.path, runCommand));
     await recoverGitHubPublicationWorkspace(initial, custodyCommands.require, assertCustody);
+    // Accepted workspace recovery retains custody even when the requester can no longer publish.
+    if (params.prepareAuthority) {
+      await params.prepareAuthority();
+    }
     let sourceHeadCommit = row.source_head_commit;
     let sourceIndexTree = row.source_index_tree;
     let workspaceTree = row.workspace_tree;

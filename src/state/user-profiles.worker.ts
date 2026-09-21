@@ -10,7 +10,10 @@ import {
 } from "./openclaw-state-db.js";
 import { ensureProfileForEmailInDatabase } from "./user-profile-email.kernel.js";
 import { listUserProfileGitHubLogins } from "./user-profile-github-identity.js";
-import { listUserProfilesSync } from "./user-profile-list.js";
+import {
+  listUserProfilesSync,
+  readUserProfileEmailBindings,
+} from "./user-profile-identity.read.js";
 import {
   selectProfileDisplayEntries,
   selectResolvedUserProfileById,
@@ -18,7 +21,11 @@ import {
   userProfilesDb,
 } from "./user-profiles-internal.js";
 import { ensureUserProfilesSchema } from "./user-profiles-schema.js";
-import type { ProfileDisplayRow, UserProfileAvatarMime } from "./user-profiles.types.js";
+import type {
+  ProfileDisplayRow,
+  UserProfileAvatarMime,
+  UserProfileEmailBinding,
+} from "./user-profiles.types.js";
 
 type UserProfileReadWorkerOperations = {
   "userProfiles.list": { input: undefined; output: ReturnType<typeof listUserProfilesSync> };
@@ -126,7 +133,11 @@ export type UserProfileWorkerOperations = UserProfileReadWorkerOperations &
   UserProfileAvatarWorkerOperations & {
     "userProfiles.email.ensure": {
       input: { email: string };
-      output: { profileId: string; committed?: ProfileDisplayRow };
+      output: {
+        profileId: string;
+        committed?: ProfileDisplayRow;
+        emailBindings?: UserProfileEmailBinding[];
+      };
     };
   };
 
@@ -158,7 +169,11 @@ export function executeUserProfileCommand(
         if (created) {
           requestSqliteWorkerOperationAdmission({ stage: "commit", facts: undefined });
         }
-        return { profileId: profile.id, committed };
+        return {
+          profileId: profile.id,
+          committed,
+          emailBindings: created ? readUserProfileEmailBindings(db, profile.id) : undefined,
+        };
       },
       options,
       { operationLabel: "user-profiles.ensure" },

@@ -10,6 +10,7 @@ import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "./openclaw-state-db.js";
+import { stageUserProfileEmailBindingChange } from "./user-profile-events.js";
 import { githubAuthenticationSubject } from "./user-profile-github-identity.js";
 import { ensureUserProfilesSchema } from "./user-profiles-schema.js";
 import { classifyTailscaleLogin } from "./user-profiles-tailscale-login.js";
@@ -87,6 +88,7 @@ export function migrateLegacyTailscaleProfileIdentities(
             .where("email", "=", row.email)
             .where("profile_id", "=", row.profile_id),
         );
+        stageUserProfileEmailBindingChange(db, row.email, null);
         migrated += 1;
       }
       return {

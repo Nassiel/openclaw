@@ -48,7 +48,7 @@ import type { OpenClawAgentDatabaseRegistryReadResult } from "./openclaw-agent-d
 import type { ConfigMachineState } from "./openclaw-state-db.generated.js";
 import type { OpenClawStateWorkerContext } from "./openclaw-state-worker-context.types.js";
 import type { OpenClawStateWorkerErrorPayload } from "./openclaw-state-worker-error.js";
-import type { ProfileDisplayRow } from "./user-profiles.types.js";
+import type { ProfileDisplayRow, UserProfileEmailBinding } from "./user-profiles.types.js";
 
 export type OpenClawStateReadLocation = {
   context: OpenClawStateWorkerContext;
@@ -82,6 +82,7 @@ export type OpenClawStateReadCommand =
   | { type: "agentDatabaseRegistry.read" }
   | { type: "onboardingRecommendations.read"; configKey: string }
   | { type: "userProfiles.reconcile"; profileId: string }
+  | { type: "userProfiles.catalog" }
   | { type: "userProfiles.email.resolve"; email: string }
   | { type: "audit.run.inspect"; input: ExecutionIdentityInspectionQuery }
   | { type: "updateRuns.get"; runId: string }
@@ -160,6 +161,14 @@ export type OpenClawStateReadReply = (
       type: "userProfiles.reconcile";
       sourceAdmitted: true;
       profile: ProfileDisplayRow | undefined;
+      emailBindings: UserProfileEmailBinding[];
+    }
+  | {
+      ok: true;
+      type: "userProfiles.catalog";
+      sourceAdmitted: true;
+      profiles: Array<[string, ProfileDisplayRow]>;
+      emailBindings: UserProfileEmailBinding[];
     }
   | {
       ok: true;

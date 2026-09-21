@@ -165,18 +165,22 @@ export function createRepositoryGitHubPublicationRecovery(params: {
             matchesRepositoryGitHubPublicationClaim(candidate, claim)),
       )) {
         try {
-          const requester = restoreGitHubPublicationRequester(
+          const requester = await restoreGitHubPublicationRequester(
             row.requester_authority_json,
             { sessionKey: row.session_key, agentId: row.agent_id },
             params.getCommittedRuntimeConfig,
           );
-          const assertPreparation = () => {
-            assertCurrent();
-            requester.assertCurrent();
-          };
-          await captureCheckpoint(row, assertPreparation, async (facts) => {
-            bindRepositoryGitHubPublicationCheckpoint(row, facts, assertPreparation);
-          });
+          try {
+            const assertPreparation = () => {
+              assertCurrent();
+              requester.assertCurrent();
+            };
+            await captureCheckpoint(row, assertPreparation, async (facts) => {
+              bindRepositoryGitHubPublicationCheckpoint(row, facts, assertPreparation);
+            });
+          } finally {
+            requester.release();
+          }
         } catch (error) {
           if (!(error instanceof GitHubPublicationRequesterUnavailableError)) {
             throw error;

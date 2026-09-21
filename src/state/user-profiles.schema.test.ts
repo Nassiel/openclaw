@@ -7,17 +7,18 @@ import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
 } from "./openclaw-state-db.js";
+import { readUserProfileEmailBindings } from "./user-profile-identity.read.js";
 import {
   listUserProfilesSync,
   readUserProfileIdentity,
   retainUserProfileCatalog,
 } from "./user-profile-list.js";
+import { ensureUserProfilesSchema } from "./user-profiles-schema.js";
 import {
   ensureProfileForEmail,
   getUserProfileDisplay,
   getUserProfileListItem,
   getUserProfileRole,
-  readUserProfileEmailBindingIds,
   resolveUserProfileId,
   setUserProfileRole,
 } from "./user-profiles.js";
@@ -65,6 +66,21 @@ function createLegacyEmailDatabase(options: ReturnType<typeof stateOptions>) {
       VALUES ('one@example.test', 'legacy-one', 5), ('two@example.test', 'legacy-two', 6);
   `);
   return database;
+}
+
+function readUserProfileEmailBindingIds(
+  profileId: string,
+  options: ReturnType<typeof stateOptions>,
+): string[] {
+  ensureUserProfilesSchema(options);
+  return readUserProfileEmailBindings(openOpenClawStateDatabase(options).db, profileId)
+    .map(({ bindingId }) => {
+      if (bindingId === null) {
+        throw new Error("Test alias binding was not initialized");
+      }
+      return bindingId;
+    })
+    .toSorted();
 }
 
 describe("user profile email binding schema", () => {

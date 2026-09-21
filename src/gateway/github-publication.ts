@@ -32,10 +32,7 @@ import {
 } from "./github-publication-executor.js";
 import { GitHubPublicationRequesterUnavailableError } from "./github-publication-failure.js";
 import { captureGitHubPublicationWorkspaceSnapshot } from "./github-publication-git-transport.js";
-import {
-  restoreGitHubPublicationRequester,
-  type GitHubPublicationRequester,
-} from "./github-publication-requester.js";
+import { restoreGitHubPublicationRequester } from "./github-publication-requester.js";
 import {
   claimGitHubPublicationExecution as claimExecution,
   createGitHubPublicationExecutionStore,
@@ -304,7 +301,7 @@ export function createGitHubPublicationCoordinator(params: {
   const processRow = (
     initial: PublicationRow,
     validateExecution: () => boolean,
-    assertRequester?: () => void,
+    assertInvocationCurrent?: () => void,
   ): Promise<SessionGitHubPublicationResult> => {
     if (initial.status === "published" || initial.status === "failed") {
       return Promise.resolve(publicationResult(initial));
@@ -326,17 +323,14 @@ export function createGitHubPublicationCoordinator(params: {
           };
           let effect: SessionGitHubPublicationResult["effect"];
           let dispatched = false;
-          let requester: GitHubPublicationRequester | undefined;
+          let requester: Awaited<ReturnType<typeof restoreGitHubPublicationRequester>> | undefined;
           try {
             assertOwned();
             return await executeGitHubPublication({
               initial: claimed,
               validateCustody,
-              validateAuthority: () => {
-                if (!validateCustody()) {
-                  return false;
-                }
-                requester ??= restoreGitHubPublicationRequester(
+              prepareAuthority: async () => {
+                requester = await restoreGitHubPublicationRequester(
                   readGitHubPublicationSessionLifecycle({
                     publicationKind: "shared",
                     requestId: claimed.request_id,
@@ -344,8 +338,16 @@ export function createGitHubPublicationCoordinator(params: {
                   { sessionKey: claimed.session_key, agentId: claimed.agent_id },
                   params.getCommittedRuntimeConfig,
                 );
+              },
+              validateAuthority: () => {
+                if (!validateCustody()) {
+                  return false;
+                }
+                if (!requester) {
+                  throw new GitHubPublicationRequesterUnavailableError();
+                }
                 requester.assertCurrent();
-                assertRequester?.();
+                assertInvocationCurrent?.();
                 return true;
               },
               projectResult: publicationResult,
@@ -412,6 +414,7 @@ export function createGitHubPublicationCoordinator(params: {
               }),
             );
           } finally {
+            requester?.release();
             await lease.release();
           }
         });

@@ -13,12 +13,17 @@ import {
   openOpenClawStateDatabase,
   type OpenClawStateDatabaseOptions,
 } from "./openclaw-state-db.js";
+import { stageUserProfileEmailBindingChange } from "./user-profile-events.js";
 import {
   ensureUserProfilesSchema,
   hasEnsuredUserProfileRoleSchema,
   UserProfileNotFoundError,
 } from "./user-profiles-schema.js";
-import type { UserProfileAvatarMime, UserProfilesDatabase } from "./user-profiles.types.js";
+import type {
+  ProfileDisplayRow,
+  UserProfileAvatarMime,
+  UserProfilesDatabase,
+} from "./user-profiles.types.js";
 
 export type UserProfileRow = UserProfilesDatabase["user_profiles"];
 export type UserProfileMetadataRow = Omit<UserProfileRow, "avatar">;
@@ -61,7 +66,7 @@ export function setUserProfileEmailBinding(
   now: number,
 ): void {
   const bindingId = generateSecureUuid();
-  executeSqliteQuerySync(
+  const result = executeSqliteQuerySync(
     db,
     userProfilesDb(db)
       .insertInto("user_profile_emails")
@@ -73,6 +78,9 @@ export function setUserProfileEmailBinding(
           .where("user_profile_emails.profile_id", "!=", profileId),
       ),
   );
+  if (result.numAffectedRows === 1n) {
+    stageUserProfileEmailBindingChange(db, email, { email, profileId, bindingId });
+  }
 }
 
 export const userProfileDisplaySelection = [
@@ -200,4 +208,17 @@ export function getProfileAvatar(
   return profile?.avatar && mime && profile.avatar_sha256
     ? { bytes: profile.avatar, mime, sha256: profile.avatar_sha256, updatedAt: profile.updated_at }
     : undefined;
+}
+
+export function projectUserProfileDisplay(profile: Omit<ProfileDisplayRow, "role">) {
+  const avatarMime = normalizeUserProfileAvatarMime(profile.avatar_mime);
+  return {
+    id: profile.id,
+    displayName: profile.display_name,
+    avatarRevision:
+      profile.avatar_sha256 && avatarMime
+        ? `${profile.avatar_sha256}-${avatarMime.slice("image/".length)}`
+        : String(profile.updated_at),
+    hasAvatar: profile.has_avatar === 1,
+  };
 }

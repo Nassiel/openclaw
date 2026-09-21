@@ -13,86 +13,39 @@ import {
   readDatabasePathIdentitySync,
   type DatabasePathIdentity,
 } from "../infra/sqlite-worker-identity.js";
-import { registerOpenClawStateDatabaseLifecycleListener } from "./openclaw-state-db-cache.js";
-import { withExistingOpenClawStateDatabaseReadOnly } from "./openclaw-state-db-readonly.js";
-import { tableExists, tableHasColumn } from "./openclaw-state-db-schema-helpers.js";
+import {
+  openClawStateDatabaseCache,
+  registerOpenClawStateDatabaseLifecycleListener,
+} from "./openclaw-state-db-cache.js";
+import {
+  executeExistingOpenClawStateRead,
+  withExistingOpenClawStateDatabaseReadOnly,
+} from "./openclaw-state-db-readonly.js";
+import { tableExists } from "./openclaw-state-db-schema-helpers.js";
 import {
   openOpenClawStateDatabase,
   type OpenClawStateDatabaseOptions,
 } from "./openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "./openclaw-state-db.paths.js";
-import { emitUserProfilesChanged } from "./user-profile-events.js";
-import { selectUserProfileGitHubIdentities } from "./user-profile-github-identity.js";
+import { captureOpenClawStateWorkerContext } from "./openclaw-state-worker-context.js";
+import {
+  emitUserProfilesChanged,
+  onUserProfileEmailBindingChanged,
+  readUserProfileEmailBindingRevision,
+  readUserProfileVersion,
+} from "./user-profile-events.js";
 import {
   selectResolvedUserProfile,
   selectResolvedUserProfileMetadataById,
-  normalizeUserProfileAvatarMime,
+  projectUserProfileDisplay,
   userProfileDisplaySelection,
   selectProfileDisplayEntries,
   userProfilesDb,
 } from "./user-profiles-internal.js";
-import {
-  ensureUserProfilesSchema,
-  UserProfileNotFoundError,
-  hasEnsuredUserProfileRoleSchema,
-} from "./user-profiles-schema.js";
-import type { ProfileDisplayRow } from "./user-profiles.types.js";
+import { ensureUserProfilesSchema, UserProfileNotFoundError } from "./user-profiles-schema.js";
+import type { ProfileDisplayRow, UserProfileEmailBinding } from "./user-profiles.types.js";
 
-export function listUserProfilesSync(options: OpenClawStateDatabaseOptions = {}) {
-  ensureUserProfilesSchema(options);
-  const database = openOpenClawStateDatabase(options);
-  return runSqliteDeferredTransactionSync(
-    database.db,
-    () => {
-      const kysely = userProfilesDb(database.db);
-      const profiles = executeSqliteQuerySync(
-        database.db,
-        kysely
-          .selectFrom("user_profiles")
-          .select([
-            ...userProfileDisplaySelection,
-            "created_at",
-            // The native role writer can add this column after a worker has opened.
-            ...(hasEnsuredUserProfileRoleSchema(database.db) ||
-            tableHasColumn(database.db, "user_profiles", "role")
-              ? (["role"] as const)
-              : []),
-          ])
-          .orderBy("created_at", "asc")
-          .orderBy("id", "asc"),
-      ).rows;
-      const emails = executeSqliteQuerySync(
-        database.db,
-        kysely
-          .selectFrom("user_profile_emails")
-          .select(["profile_id", "email"])
-          .orderBy("email", "asc"),
-      ).rows;
-      const githubIdentities = selectUserProfileGitHubIdentities(database.db);
-      const emailsByProfile = new Map<string, string[]>(profiles.map(({ id }) => [id, []]));
-      for (const { profile_id, email } of emails) {
-        emailsByProfile.get(profile_id)?.push(email);
-      }
-      return profiles.map((profile) =>
-        Object.assign(
-          {
-            id: profile.id,
-            displayName: profile.display_name,
-            avatarMime: normalizeUserProfileAvatarMime(profile.avatar_mime),
-            mergedInto: profile.merged_into,
-            createdAt: profile.created_at,
-            updatedAt: profile.updated_at,
-            emails: emailsByProfile.get(profile.id) ?? [],
-            githubIdentity: githubIdentities.get(profile.id) ?? null,
-            hasAvatar: profile.has_avatar === 1,
-          },
-          profile.role ? { role: profile.role } : {},
-        ),
-      );
-    },
-    { databaseLabel: database.path, operationLabel: "user-profiles.list" },
-  );
-}
+export { listUserProfilesSync } from "./user-profile-identity.read.js";
 
 /** Disclosure scopes need current aliases, never the resident display catalog. */
 export function readCurrentUserProfileAliases(
@@ -206,11 +159,14 @@ type ProfileCatalog = {
   identity: DatabasePathIdentity;
   valid: boolean;
   leases: Set<symbol>;
+  asyncOnly?: boolean;
 };
 const profileCatalogs = new Map<string, ProfileCatalog>();
 type ProfilePublication = {
   identity: DatabasePathIdentity;
   profileId: string;
+  createdEmail?: string;
+  bindingSuperseded: boolean;
   witnesses: Map<
     Map<string, ProfileDisplayRow>,
     { row: ProfileDisplayRow | undefined; late: boolean }
@@ -219,7 +175,58 @@ type ProfilePublication = {
 };
 const profilePublications = new Set<ProfilePublication>();
 let stopCatalogEvents: (() => void) | undefined;
+let stopBindingEvents: (() => void) | undefined;
 let profileCatalogHandles = new WeakMap<DatabaseSync, Map<string, ProfileDisplayRow>>();
+type ProfileBindings = {
+  byEmail: Map<string, UserProfileEmailBinding>;
+  byId: Map<string, string>;
+};
+const profileBindings = new WeakMap<Map<string, ProfileDisplayRow>, ProfileBindings>();
+
+function applyEmailBinding(
+  bindings: ProfileBindings,
+  email: string,
+  binding: UserProfileEmailBinding | null,
+): string | undefined {
+  const previous = bindings.byEmail.get(email);
+  if (previous?.bindingId) {
+    bindings.byId.delete(previous.bindingId);
+  }
+  if (binding) {
+    bindings.byEmail.set(email, binding);
+    if (binding.bindingId) {
+      bindings.byId.set(binding.bindingId, binding.profileId);
+    }
+  } else {
+    bindings.byEmail.delete(email);
+  }
+  return previous?.profileId;
+}
+
+function observeEmailBindings(): void {
+  stopBindingEvents ??= onUserProfileEmailBindingChanged(({ db, email, binding }) => {
+    const rows = profileCatalogHandles.get(db);
+    if (rows) {
+      for (const publication of profilePublications) {
+        if (publication.createdEmail === email && publication.witnesses.has(rows)) {
+          publication.bindingSuperseded = true;
+        }
+      }
+    }
+    const bindings = rows && profileBindings.get(rows);
+    if (!rows || !bindings) {
+      return;
+    }
+    const previous = applyEmailBinding(bindings, email, binding);
+    // Both owners' witnesses change even when GitHub enrichment only publishes its target.
+    for (const id of new Set([previous, binding?.profileId])) {
+      const row = id && rows.get(id);
+      if (row) {
+        rows.set(row.id, { ...row });
+      }
+    }
+  });
+}
 const profileCatalogPath = (options: OpenClawStateDatabaseOptions) =>
   path.resolve(options.path ?? resolveOpenClawStateSqlitePath(options.env ?? process.env));
 
@@ -287,6 +294,8 @@ function releaseProfileCatalog(catalog: ProfileCatalog, lease: symbol) {
   if (profileCatalogs.size === 0) {
     stopCatalogEvents?.();
     stopCatalogEvents = undefined;
+    stopBindingEvents?.();
+    stopBindingEvents = undefined;
     profileCatalogHandles = new WeakMap();
   }
 }
@@ -296,10 +305,13 @@ export function retainUserProfilePublication(
   identity: DatabasePathIdentity,
   profileId: string,
   before: ProfileDisplayRow | undefined,
+  createdEmail?: string,
 ) {
   const publication: ProfilePublication = {
     identity,
     profileId,
+    createdEmail,
+    bindingSuperseded: false,
     witnesses: new Map(),
     catalogs: new Map(),
   };
@@ -308,7 +320,11 @@ export function retainUserProfilePublication(
     retainProfilePublicationCatalog(publication, catalog, false);
   }
   return {
-    reconcile(this: void, observed: ProfileDisplayRow | undefined) {
+    reconcile(
+      this: void,
+      observed: ProfileDisplayRow | undefined,
+      emailBindings?: readonly UserProfileEmailBinding[],
+    ) {
       let changed = false;
       for (const catalog of publication.catalogs.keys()) {
         const witness = publication.witnesses.get(catalog.rows);
@@ -317,9 +333,27 @@ export function retainUserProfilePublication(
           catalog.identity.key === identity.key &&
           witness &&
           catalog.rows.get(profileId) === witness.row &&
-          (!witness.late || isDeepStrictEqual(witness.row, before)) &&
-          !isDeepStrictEqual(witness.row, observed)
+          (!witness.late || isDeepStrictEqual(witness.row, before))
         ) {
+          const bindings = profileBindings.get(catalog.rows);
+          if (
+            bindings &&
+            emailBindings &&
+            publication.createdEmail !== undefined &&
+            !publication.bindingSuperseded
+          ) {
+            for (const [email, binding] of bindings.byEmail) {
+              if (binding.profileId === profileId) {
+                applyEmailBinding(bindings, email, null);
+              }
+            }
+            for (const binding of emailBindings) {
+              applyEmailBinding(bindings, binding.email, binding);
+            }
+          }
+          if (isDeepStrictEqual(witness.row, observed)) {
+            continue;
+          }
           if (observed) {
             catalog.rows.set(profileId, observed);
           } else {
@@ -342,6 +376,49 @@ export function retainUserProfilePublication(
   };
 }
 
+function observeProfileCatalogs(refresh = false): void {
+  observeEmailBindings();
+  if (stopCatalogEvents && !refresh) {
+    return;
+  }
+  stopCatalogEvents?.();
+  stopCatalogEvents = registerOpenClawStateDatabaseLifecycleListener((event) => {
+    let changed = false;
+    for (const [locator, current] of profileCatalogs) {
+      if (event.kind === "opened") {
+        if (
+          event.database.path !== locator &&
+          event.identity.key !== current.identity.key &&
+          event.identity.canonicalPath !== current.identity.canonicalPath
+        ) {
+          continue;
+        }
+        if (current.asyncOnly) {
+          if (current.identity.key !== event.identity.key) {
+            current.rows = new Map();
+            current.identity = event.identity;
+            current.valid = false;
+            changed = true;
+          }
+        } else {
+          changed = loadProfileCatalog(current, event.database.db, event.identity) || changed;
+        }
+        profileCatalogHandles.set(event.database.db, current.rows);
+      } else if (
+        event.kind !== "closed" &&
+        (event.path === locator || event.identity?.key === current.identity.key)
+      ) {
+        current.rows.clear();
+        current.valid = false;
+        changed = true;
+      }
+    }
+    if (changed) {
+      emitUserProfilesChanged();
+    }
+  });
+}
+
 /** Retain exact identity and display/navigation facts; physical admission updates every locator before observers. */
 export function retainUserProfileCatalog(options: OpenClawStateDatabaseOptions = {}): () => void {
   const pathname = profileCatalogPath(options);
@@ -358,36 +435,140 @@ export function retainUserProfileCatalog(options: OpenClawStateDatabaseOptions =
     );
     profileCatalogs.set(pathname, catalog);
   }
-  stopCatalogEvents?.();
-  stopCatalogEvents = registerOpenClawStateDatabaseLifecycleListener((event) => {
-    let changed = false;
-    for (const [locator, current] of profileCatalogs) {
-      if (event.kind === "opened") {
-        if (
-          event.database.path !== locator &&
-          event.identity.key !== current.identity.key &&
-          event.identity.canonicalPath !== current.identity.canonicalPath
-        ) {
-          continue;
-        }
-        changed = loadProfileCatalog(current, event.database.db, event.identity) || changed;
-        profileCatalogHandles.set(event.database.db, current.rows);
-      } else if (
-        event.kind !== "closed" &&
-        (event.path === locator || event.identity?.key === current.identity.key)
-      ) {
-        current.rows.clear();
-        current.valid = false;
-        changed = true;
-      }
-    }
-    if (changed) {
-      emitUserProfilesChanged();
-    }
-  });
+  observeProfileCatalogs(true);
   const lease = Symbol("profile catalog lease");
   catalog.leases.add(lease);
   return () => releaseProfileCatalog(catalog, lease);
+}
+
+/** Prepare once off-thread; execution reads only committed facts retained by this owner. */
+export async function prepareUserProfileIdentity(
+  profileId: string,
+  options: OpenClawStateDatabaseOptions = {},
+): Promise<{
+  readonly emailBindingIds: readonly string[];
+  assertCurrent(this: void, requiredEmailBindingIds?: readonly string[]): void;
+  release(this: void): void;
+}> {
+  const context = captureOpenClawStateWorkerContext(options);
+  const pathname = context.admission.databasePath;
+  let refreshObserver = false;
+  let catalog =
+    profileCatalogs.get(pathname) ??
+    [...profileCatalogs.values()].find(
+      (candidate) => candidate.valid && candidate.identity.key === context.admission.identity.key,
+    );
+  if (catalog) {
+    profileCatalogs.set(pathname, catalog);
+  }
+  while (
+    !catalog?.valid ||
+    catalog.identity.key !== context.admission.identity.key ||
+    !profileBindings.has(catalog.rows)
+  ) {
+    const profileRevision = readUserProfileVersion();
+    const bindingRevision = readUserProfileEmailBindingRevision();
+    const reply = await executeExistingOpenClawStateRead(
+      { ...options, path: pathname },
+      { type: "userProfiles.catalog" },
+      { current: true },
+    );
+    context.admission.assertCurrent();
+    if (reply && (!reply.ok || reply.type !== "userProfiles.catalog")) {
+      throw new Error(reply.ok ? "Unexpected profile catalog reply" : reply.message);
+    }
+    if (
+      profileRevision !== readUserProfileVersion() ||
+      bindingRevision !== readUserProfileEmailBindingRevision()
+    ) {
+      catalog = profileCatalogs.get(pathname);
+      continue;
+    }
+    catalog =
+      profileCatalogs.get(pathname) ??
+      [...profileCatalogs.values()].find(
+        (candidate) => candidate.valid && candidate.identity.key === context.admission.identity.key,
+      );
+    if (
+      catalog?.valid &&
+      catalog.identity.key === context.admission.identity.key &&
+      profileBindings.has(catalog.rows)
+    ) {
+      profileCatalogs.set(pathname, catalog);
+      break;
+    }
+    if (!catalog?.valid || catalog.identity.key !== context.admission.identity.key) {
+      if (catalog) {
+        catalog.valid = false;
+      }
+      catalog = {
+        rows: new Map(reply?.profiles ?? []),
+        identity: context.admission.identity,
+        valid: true,
+        leases: new Set(),
+        asyncOnly: true,
+      };
+      refreshObserver = true;
+      profileCatalogs.set(pathname, catalog);
+      for (const publication of profilePublications) {
+        retainProfilePublicationCatalog(publication, catalog, true);
+      }
+    }
+    const bindings: ProfileBindings = { byEmail: new Map(), byId: new Map() };
+    for (const binding of reply?.emailBindings ?? []) {
+      applyEmailBinding(bindings, binding.email, binding);
+    }
+    profileBindings.set(catalog.rows, bindings);
+    // Registration now sees prepared rows and never needs a cold host read.
+    const cached = openClawStateDatabaseCache.getCachedOpenClawStateDatabase(pathname);
+    if (cached) {
+      profileCatalogHandles.set(cached.db, catalog.rows);
+    }
+  }
+  observeProfileCatalogs(refreshObserver);
+  const retained = catalog;
+  const identity = retained.identity.key;
+  const rows = retained.rows;
+  const bindings = profileBindings.get(rows)!;
+  const initial = [...bindings.byEmail.values()].filter(
+    (binding) => binding.profileId === profileId,
+  );
+  const ids = Object.freeze(
+    initial.flatMap((binding) => (binding.bindingId ? [binding.bindingId] : [])).toSorted(),
+  );
+  const lease = Symbol("prepared profile identity");
+  retained.leases.add(lease);
+  let active = true;
+  const assertCurrent = (requiredEmailBindingIds: readonly string[] = []) => {
+    context.admission.assertCurrent();
+    if (
+      !active ||
+      !retained.valid ||
+      context.admission.identity.key !== identity ||
+      retained.identity.key !== identity ||
+      retained.rows !== rows ||
+      resolveCatalogProfile(rows, profileId)?.id !== profileId ||
+      requiredEmailBindingIds.some((id) => bindings.byId.get(id) !== profileId)
+    ) {
+      throw new UserProfileNotFoundError(profileId);
+    }
+  };
+  return {
+    get emailBindingIds() {
+      assertCurrent();
+      if (initial.some((binding) => binding.bindingId === null)) {
+        throw new UserProfileNotFoundError(profileId);
+      }
+      return ids;
+    },
+    assertCurrent,
+    release(this: void) {
+      if (active) {
+        active = false;
+        releaseProfileCatalog(retained, lease);
+      }
+    },
+  };
 }
 
 /** Stage exact changed keys before commit so observers always see the whole committed catalog. */
@@ -427,19 +608,6 @@ export function getUserProfileDisplay(
     throw new UserProfileNotFoundError(profileId);
   }
   return projectUserProfileDisplay(profile);
-}
-
-function projectUserProfileDisplay(profile: Omit<ProfileDisplayRow, "role">) {
-  const avatarMime = normalizeUserProfileAvatarMime(profile.avatar_mime);
-  return {
-    id: profile.id,
-    displayName: profile.display_name,
-    avatarRevision:
-      profile.avatar_sha256 && avatarMime
-        ? `${profile.avatar_sha256}-${avatarMime.slice("image/".length)}`
-        : String(profile.updated_at),
-    hasAvatar: profile.has_avatar === 1,
-  };
 }
 
 /** Read a bounded display cohort and its one-hop merge targets without initializing storage. */

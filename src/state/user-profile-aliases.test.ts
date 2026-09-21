@@ -14,13 +14,14 @@ import {
   readUserProfileAliasRevision,
   readUserProfileVersion,
 } from "./user-profile-events.js";
+import { readUserProfileEmailBindings } from "./user-profile-identity.read.js";
 import { listUserProfilesSync } from "./user-profile-list.js";
+import { ensureUserProfilesSchema } from "./user-profiles-schema.js";
 import { migrateLegacyTailscaleProfileIdentities } from "./user-profiles-tailscale-migration.js";
 import {
   ensureProfileForEmail,
   linkEmail,
   readUserProfileAliases,
-  readUserProfileEmailBindingIds,
   resolveUserProfileId,
   setAvatar,
   setDisplayName,
@@ -40,6 +41,21 @@ afterEach(() => {
   }
   roots.cleanup();
 });
+
+function readUserProfileEmailBindingIds(
+  profileId: string,
+  options: ReturnType<typeof stateOptions>,
+): string[] {
+  ensureUserProfilesSchema(options);
+  return readUserProfileEmailBindings(openOpenClawStateDatabase(options).db, profileId)
+    .map(({ bindingId }) => {
+      if (bindingId === null) {
+        throw new Error("Test alias binding was not initialized");
+      }
+      return bindingId;
+    })
+    .toSorted();
+}
 
 describe("profile alias reader lifecycle", () => {
   it.each(["email", "github"])(

@@ -5,6 +5,12 @@ export const MAX_USER_PROFILE_DISPLAY_NAME_LENGTH = 256;
 
 export type UserProfileAvatarMime = (typeof USER_PROFILE_AVATAR_MIME_TYPES)[number];
 
+export type UserProfileEmailBinding = {
+  email: string;
+  profileId: string;
+  bindingId: string | null;
+};
+
 export type UserProfilesDatabase = {
   user_profiles: {
     id: string;

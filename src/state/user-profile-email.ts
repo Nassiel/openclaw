@@ -38,7 +38,7 @@ export async function ensureProfileIdForEmail(
           type: "userProfiles.email.ensure",
           input: { email: normalized },
         });
-        settlementRead.acknowledge(result.committed);
+        settlementRead.acknowledge(result.committed, result.emailBindings);
         return result.profileId;
       },
       {
@@ -65,6 +65,7 @@ export async function ensureProfileIdForEmail(
                 context.admission.identity,
                 request.facts.profileId,
                 undefined,
+                normalized,
               );
               try {
                 settlementRead.bind(
