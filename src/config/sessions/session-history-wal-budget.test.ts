@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { channel } from "node:diagnostics_channel";
 import fs from "node:fs";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import { afterEach, expect, it, vi } from "vitest";
 import { getNodeSqliteKysely, iterateSqliteQuerySync } from "../../infra/kysely-sync.js";
 import { openNodeSqliteDatabase } from "../../infra/node-sqlite.js";
@@ -226,7 +227,18 @@ it.each(["transaction", "iterator"] as const)(
       expect(database.walMaintenance.checkpoint()).toBe(true);
       expect(fs.statSync(`${database.path}-wal`).size).toBe(0);
       const recovered = await enforce();
-      expect(recovered?.deferredReason).toBeUndefined();
+      expect(
+        recovered?.deferredReason,
+        recovered?.deferredReason === undefined
+          ? undefined
+          : JSON.stringify({
+              recoveredCheckpoint: recovered?.checkpoint,
+              hostCheckpoint: database.walMaintenance.health,
+              now: Date.now(),
+              realClock: performance.timeOrigin + performance.now(),
+              dateNowMocked: vi.isMockFunction(Date.now),
+            }),
+      ).toBeUndefined();
       expect(recovered?.totalBytesAfter).toBeLessThanOrEqual(maintenance.highWaterBytes!);
       expect(diagnostics.at(-1)).toMatchObject({
         archivePruning: { completed: true, checkpointIncomplete: 0 },
