@@ -22,6 +22,7 @@ import {
   ASSISTANT_DISPLAY_CONTENT_FIELD,
   readAssistantDisplayContent,
 } from "../../shared/assistant-display-content.js";
+import { createArtifactDownload } from "../artifact-downloads.js";
 import {
   parseManagedOutgoingArtifactId,
   resolveManagedOutgoingMediaArtifactDownload,
@@ -285,6 +286,7 @@ async function loadArtifacts(
   sessionKey?: string;
   nextCursor?: string;
   omittedOversized?: boolean;
+  assertCurrent?: () => void;
 }> {
   const resolveSession = await prepareArtifactSessionResolution(query);
   const resolved = resolveSession(getRuntimeConfig(), client);
@@ -300,6 +302,31 @@ async function loadArtifacts(
   if (!sessionId || !storePath) {
     return { sessionKey, artifacts: [] };
   }
+  const lifecycleRevision = entry.lifecycleRevision;
+  const assertCurrent = () => {
+    const authorized = resolveSession(getRuntimeConfig(), client);
+    const current = loadGatewaySessionEntryReadOnly(
+      sessionKey,
+      unscopedAgentId ? { agentId: unscopedAgentId } : {},
+    );
+    if (
+      authorized?.sessionKey !== sessionKey ||
+      authorized.agentId !== resolved.agentId ||
+      current.storePath !== storePath ||
+      current.entry?.sessionId !== sessionId ||
+      current.entry.lifecycleRevision !== lifecycleRevision
+    ) {
+      throw new ArtifactSessionResolutionError(
+        errorShape(
+          ErrorCodes.UNAVAILABLE,
+          "session changed while reading artifact; reload the conversation",
+          {
+            retryable: true,
+          },
+        ),
+      );
+    }
+  };
   const artifacts: ArtifactRecord[] = [];
   const collection = { artifacts, count: 0 };
   const scope = {
@@ -341,7 +368,8 @@ async function loadArtifacts(
           .toReversed();
       },
     });
-    return { ...page, sessionKey };
+    assertCurrent();
+    return { ...page, sessionKey, assertCurrent };
   }
   await visitSessionMessagesAsync(scope, (message, seq) => {
     collectArtifactsFromMessage({
@@ -356,9 +384,11 @@ async function loadArtifacts(
       downloadArtifactId: opts.downloadArtifactId,
     });
   });
+  assertCurrent();
   return {
     sessionKey,
     artifacts,
+    assertCurrent,
   };
 }
 
@@ -424,6 +454,7 @@ async function findArtifact(
   return {
     sessionKey: loaded.sessionKey,
     artifact: loaded.artifacts.find((artifact) => artifact.id === params.artifactId),
+    assertCurrent: loaded.assertCurrent,
   };
 }
 
@@ -607,6 +638,34 @@ export const artifactsHandlers: GatewayRequestHandlers = {
         }),
       );
       return;
+    }
+    if (query.transport === "http") {
+      const assertArtifactCurrent = found.value.assertCurrent;
+      const download = createArtifactDownload({
+        client,
+        artifact,
+        assertCurrent: () => {
+          assertCurrent();
+          assertArtifactCurrent?.();
+        },
+        read: async () => {
+          const current = await findArtifact(
+            query,
+            getRuntimeConfig,
+            { downloadArtifactId: query.artifactId },
+            client,
+          );
+          current.assertCurrent?.();
+          return current.artifact;
+        },
+      });
+      if (download) {
+        respond(true, {
+          artifact: { ...toSummary(artifact), download: { mode: "url" as const } },
+          ...download,
+        });
+        return;
+      }
     }
     const managedUrl =
       artifact.download.mode === "url" && artifact.url && artifact.sessionKey
