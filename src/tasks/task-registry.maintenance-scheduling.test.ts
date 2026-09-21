@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetGatewayWorkAdmission } from "../process/gateway-work-admission.js";
+import { getTaskById } from "./task-registry.js";
+import { registerTaskRegistryScheduledMaintenanceTests } from "./task-registry.maintenance-scheduling.test-utils.js";
 import {
   resetTaskRegistryMaintenanceRuntimeForTests,
   setTaskRegistryMaintenanceRuntimeForTests,
@@ -7,7 +9,11 @@ import {
   stopTaskRegistryMaintenance,
 } from "./task-registry.maintenance.js";
 import { createPreparedMaintenanceRead } from "./task-registry.maintenance.test-support.js";
-import { flushAsyncWork, withTaskRegistryTempDir } from "./task-registry.test-support.js";
+import {
+  createTaskFixture,
+  flushAsyncWork,
+  withTaskRegistryTempDir,
+} from "./task-registry.test-support.js";
 
 beforeEach(() => {
   resetGatewayWorkAdmission();
@@ -76,4 +82,31 @@ describe("task-registry maintenance scheduling", () => {
       }
     });
   });
+
+  it("cancels the deferred maintenance sweep during test teardown", async () => {
+    await withTaskRegistryTempDir(async () => {
+      vi.useFakeTimers();
+      const now = Date.now();
+
+      const task = createTaskFixture("acp", {
+        childSessionKey: "agent:main:acp:missing",
+        runId: "run-deferred-maintenance-stop",
+        task: "Missing child",
+        deliveryStatus: "pending",
+        lastEventAt: now - 10 * 60_000,
+      });
+
+      startTaskRegistryMaintenance();
+      stopTaskRegistryMaintenance();
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      await flushAsyncWork();
+
+      expect(getTaskById(task.taskId)).toMatchObject({
+        status: "running",
+      });
+    });
+  });
+
+  registerTaskRegistryScheduledMaintenanceTests();
 });

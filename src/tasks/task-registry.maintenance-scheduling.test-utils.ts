@@ -88,7 +88,11 @@ export function registerTaskRegistryScheduledMaintenanceTests() {
         expect(gatewayWorkAdmission.getActiveGatewayRootWorkCount()).toBe(0);
       } finally {
         releaseInspection([]);
-        stopTaskRegistryMaintenance();
+        try {
+          await waitForScheduledMaintenance(admissions);
+        } finally {
+          stopTaskRegistryMaintenance();
+        }
       }
     });
   });
