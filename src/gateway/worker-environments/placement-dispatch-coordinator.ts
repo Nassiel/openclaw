@@ -51,6 +51,7 @@ export function coordinateWorkerPlacementDispatch(
   service: WorkerPlacementDispatchService,
   admitDispatch: WorkerPlacementDispatchAdmission,
   recoverInitialPlacement?: (placement: WorkerProvisioningDispatchPlacement) => Promise<void>,
+  reportReconciliation?: (operation: () => Promise<void>) => Promise<void>,
 ): WorkerPlacementDispatchService & {
   isPlacementOperationInFlight(sessionId: string): boolean;
   getPendingDeviceDispatchCount(deviceId: string, excludeSessionId?: string): number;
@@ -139,6 +140,18 @@ export function coordinateWorkerPlacementDispatch(
       acceptingJoins: true,
       joinedRecoveries: new Set(),
     };
+    const settleRecoveries = () => {
+      // Late recoveries queue behind this fence instead of joining its report.
+      sweep.acceptingJoins = false;
+      return Promise.allSettled(sweep.joinedRecoveries);
+    };
+    const execute = async () => {
+      try {
+        await operation();
+      } finally {
+        await settleRecoveries();
+      }
+    };
     const current = (async () => {
       try {
         if (predecessor) {
@@ -146,11 +159,10 @@ export function coordinateWorkerPlacementDispatch(
         }
         await waitForDispatchIdle();
         await enterMaintenance(sweep.admission);
-        await operation();
+        // Reserve and admit the sweep before its reporting reader can yield.
+        await (reportReconciliation ? reportReconciliation(execute) : execute());
       } finally {
-        // Close admission before draining so late recoveries queue behind the existing fence.
-        sweep.acceptingJoins = false;
-        await Promise.allSettled(sweep.joinedRecoveries);
+        await settleRecoveries();
         reconciliationSweeps.delete(sweep);
         if (placementFence === sweep) {
           placementFence = undefined;

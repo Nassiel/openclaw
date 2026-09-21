@@ -30,6 +30,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/node-host/worker-runtime.test.ts",
   "src/skills/workshop/store.test.ts",
   "src/state/onboarding-recommendations.test.ts",
+  "src/gateway/worker-environments/placement-change-snapshot.test.ts",
   "src/commands/onboard-recommendations.test.ts",
   "src/wizard/setup.app-recommendations.test.ts",
   "test/loopback-ask-user-telegram-channel.test.ts",

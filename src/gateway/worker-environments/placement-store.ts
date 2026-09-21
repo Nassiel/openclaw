@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
+import { executeExistingOpenClawStateRead } from "../../state/openclaw-state-db-readonly.js";
 import type { DB as StateDatabase } from "../../state/openclaw-state-db.generated.js";
 import {
   openOpenClawStateDatabase,
@@ -635,6 +636,17 @@ export function createWorkerSessionPlacementStore(
         db,
         query(db).selectFrom("worker_session_placements").selectAll().orderBy("session_id"),
       ).rows.map((row) => withWorkspaceResultConflict(fromRow(row))!);
+    },
+
+    async readChangeSnapshot() {
+      const reply = await executeExistingOpenClawStateRead(
+        { path },
+        { type: "workerPlacements.changeSnapshot" },
+      );
+      if (!reply || !reply.ok || reply.type !== "workerPlacements.changeSnapshot") {
+        throw new Error("Worker placement change snapshot is unavailable");
+      }
+      return reply.placements;
     },
   };
   attachWorkerTurnExecutionIdentityStore(store, path);

@@ -10,6 +10,7 @@ import type {
   ExecutionIdentityInspectionOutcome,
 } from "../audit/execution-identity-inspection.types.js";
 import type { FleetCellRecord } from "../fleet/registry.types.js";
+import type { WorkerSessionPlacementChangeSnapshot } from "../gateway/worker-environments/placement-record.js";
 import type { readExecApprovalsConfigRow } from "../infra/exec-approvals-sqlite.js";
 import type { SqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import type {
@@ -59,6 +60,7 @@ export type OpenClawStateReadCommand =
   | { type: "updateRuns.get"; runId: string }
   | { type: "updateRuns.list"; input: UpdateRunListInput }
   | { type: "fleet.list" }
+  | { type: "workerPlacements.changeSnapshot" }
   | { type: "fleet.get"; tenantId: string }
   | { type: "nodeHost.config" }
   | { type: "workspace.snapshot"; workspaceDir: string }
@@ -129,6 +131,12 @@ export type OpenClawStateReadReply = (
       runs: ReturnType<typeof readUpdateRuns>;
     }
   | { ok: true; type: "fleet.list"; sourceAdmitted: true; cells: FleetCellRecord[] }
+  | {
+      ok: true;
+      type: "workerPlacements.changeSnapshot";
+      sourceAdmitted: true;
+      placements: WorkerSessionPlacementChangeSnapshot[];
+    }
   | { ok: true; type: "fleet.get"; sourceAdmitted: true; cell: FleetCellRecord | undefined }
   | {
       ok: true;
