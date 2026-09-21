@@ -5,7 +5,7 @@ import {
   OpenAIQuicksilverPendingAudio,
   OPENAI_QUICKSILVER_RELAY_FRAME_BYTES,
 } from "./realtime-quicksilver-audio-buffer.js";
-import { OpenAIQuicksilverAudioPeer } from "./realtime-quicksilver-peer.runtime.js";
+import { OpenAIQuicksilverAudioPeer } from "./realtime-quicksilver-media.runtime.js";
 
 type LibopusModule = typeof import("libopus-wasm");
 type LibopusDecoder = Awaited<ReturnType<LibopusModule["createDecoder"]>>;
@@ -270,6 +270,71 @@ describe("GPT-Live werift audio peer", () => {
       await vi.advanceTimersByTimeAsync(1);
 
       expect(decodeOrder).toEqual([40, "plc", 42, 43, 44]);
+      expect(onError).not.toHaveBeenCalled();
+    } finally {
+      peer.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    { first: 10, buffered: [12], retired: [11, 12], next: 13, expected: [10, "plc", 12] },
+    {
+      first: 10,
+      buffered: [12, 14],
+      retired: [11, 12, 13, 14],
+      next: 15,
+      expected: [10, "plc", 12, "plc", 14],
+    },
+    {
+      first: 65_534,
+      buffered: [0, 2],
+      retired: [65_535, 0, 1, 2],
+      next: 3,
+      expected: [254, "plc", 0, "plc", 2],
+    },
+    { first: 10, buffered: [], retired: [10], next: 11, expected: [10] },
+  ])("retires buffered RTP $buffered and delayed PCM at clear", async (scenario) => {
+    const { decode, decodeOrder, onAudio, onError, packet, peer, testPeer } =
+      await createInboundAudioHarness();
+    let cleared = false;
+    decode.mockImplementation((opus) => {
+      decodeOrder.push(opus?.[0] ?? -1);
+      return new Int16Array(960 * 2).fill(cleared ? 0 : 12_000);
+    });
+    vi.useFakeTimers();
+    try {
+      testPeer.handleInboundRtp(packet(scenario.first));
+      for (const sequence of scenario.buffered) {
+        testPeer.handleInboundRtp(packet(sequence));
+      }
+      expect(decodeOrder).toEqual([scenario.first & 0xff]);
+      expect(onAudio).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(scenario.buffered.length > 0 ? 1 : 0);
+
+      peer.clearOutputAudio();
+      // Advance Opus/sequence state while discarding output, rather than
+      // forgetting the stream and admitting a late pre-clear packet as fresh.
+      expect(decodeOrder).toEqual(scenario.expected);
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(80);
+      for (const sequence of scenario.retired) {
+        testPeer.handleInboundRtp(packet(sequence));
+      }
+      expect(decodeOrder).toEqual(scenario.expected);
+      expect(onAudio).toHaveBeenCalledOnce();
+
+      cleared = true;
+      testPeer.handleInboundRtp(packet(scenario.next));
+      expect(decodeOrder).toEqual([...scenario.expected, scenario.next]);
+      expect(onAudio).toHaveBeenCalledTimes(2);
+      // A fresh silent packet must not release the filter's old audible tail.
+      expect(onAudio.mock.calls[1]?.[0]).toEqual(Buffer.alloc((480 - 7) * 2));
+
+      testPeer.handleInboundRtp(packet(scenario.next + 2));
+      await vi.advanceTimersByTimeAsync(80);
+      expect(decodeOrder).toEqual([...scenario.expected, scenario.next, "plc", scenario.next + 2]);
+      expect(onAudio).toHaveBeenCalledTimes(4);
       expect(onError).not.toHaveBeenCalled();
     } finally {
       peer.close();

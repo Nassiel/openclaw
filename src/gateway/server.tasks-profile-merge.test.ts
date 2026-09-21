@@ -7,6 +7,7 @@ import type {
 import { writeConfigFile } from "../config/config.js";
 import { loadSessionEntry, upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import type { GatewayAuthConfig } from "../config/types.gateway.js";
+import { closeOpenClawStateDatabaseByPathAsync } from "../state/openclaw-state-db-cache.js";
 import { ensureProfileForEmail, setUserProfileRole } from "../state/user-profiles.js";
 import { readTaskRegistryRevision, tasks as residentTasks } from "../tasks/task-registry-state.js";
 import { runTaskRegistryMaintenance } from "../tasks/task-registry.maintenance.js";
@@ -155,6 +156,9 @@ test("expires task cursors when a profile merge changes the same caller's sessio
         expect(first.payload?.tasks.map((task) => task.id)).toEqual(["task-1"]);
         const cursor = first.payload?.nextCursor;
         expect(cursor).toEqual(expect.any(String));
+        await closeOpenClawStateDatabaseByPathAsync(
+          path.join(stateDir, "admin@example.test.sqlite"),
+        );
         const beforeContinuation = await rpcReq<TasksListResult>(viewer, "tasks.list", {
           limit: 1,
           cursor,

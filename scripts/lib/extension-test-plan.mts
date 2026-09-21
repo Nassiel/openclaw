@@ -97,19 +97,17 @@ const EXTENSION_TEST_COST_MULTIPLIERS: Record<string, number> = {
   "test/vitest/vitest.extension-zalo.config.ts": 0.523,
   "test/vitest/vitest.extensions.config.ts": 0.642,
 };
-// A 34-file changed shard starved real-time watches and the no-output watchdog.
-// Keep serial, non-isolated Codex processes small enough for prompt output (#125768, #125839).
-const CODEX_EXTENSION_TEST_PROCESS_FILE_LIMIT = 12;
+// Isolated Codex workers retire each mocked graph instead of accumulating it (#125839).
+// Bound cold imports per envelope while sharing startup across parallel files.
+const CODEX_EXTENSION_TEST_PROCESS_FILE_LIMIT = 24;
+// Native app-server files already run in isolated forks. Preserve their measured
+// 12-file envelope boundary independently of the ordinary Codex lane.
+const CODEX_DATABASE_WORKER_TEST_PROCESS_FILE_LIMIT = 12;
 const MATRIX_EXTENSION_TEST_PROCESS_FILE_LIMIT = 40;
 const TELEGRAM_EXTENSION_TEST_PROCESS_FILE_LIMIT = 1;
 const TELEGRAM_EXTENSION_TEST_JOB_FILE_LIMIT = 10;
 const EXTENSION_TEST_PROCESS_FILE_LIMITS = new Map<string, number>([
-  [
-    "test/vitest/vitest.extension-codex.config.ts",
-    // This non-isolated fileParallelism:false lane accumulates every mocked module graph.
-    // At ~166 files, one worker exhausted its heap during teardown (#124413).
-    CODEX_EXTENSION_TEST_PROCESS_FILE_LIMIT,
-  ],
+  ["test/vitest/vitest.extension-codex.config.ts", CODEX_EXTENSION_TEST_PROCESS_FILE_LIMIT],
   // The non-isolated Matrix suite intentionally shares module state within a process.
   // Bound its lifetime so Vite's transformed module graph cannot grow across the whole suite.
   ["test/vitest/vitest.extension-matrix.config.ts", MATRIX_EXTENSION_TEST_PROCESS_FILE_LIMIT],
@@ -308,13 +306,16 @@ function splitWorkerTargetsByOriginalConfig(
     group.push(target);
     groups.set(config, group);
   }
-  return [...groups].flatMap(([config, files]) =>
-    config === DATABASE_WORKER_CONFIG
+  return [...groups].flatMap(([config, files]) => {
+    if (config === "test/vitest/vitest.extension-codex.config.ts") {
+      return splitTargetsByFileLimit(files, CODEX_DATABASE_WORKER_TEST_PROCESS_FILE_LIMIT);
+    }
+    return config === DATABASE_WORKER_CONFIG
       ? nativeFileLimit
         ? splitTargetsByFileLimit(files, nativeFileLimit)
         : [files]
-      : split(config, files),
-  );
+      : split(config, files);
+  });
 }
 
 function resolveExtensionTestJobFileLimit(config: string) {
