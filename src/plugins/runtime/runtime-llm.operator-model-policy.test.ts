@@ -179,6 +179,7 @@ describe("operator model policy on plugin completions", () => {
           };
         },
       });
+      const firstStarted = createDeferredCore();
       const started = createDeferredCore();
       const finishA = createDeferredCore();
       const finishB = createDeferredCore();
@@ -201,6 +202,9 @@ describe("operator model policy on plugin completions", () => {
           throw new Error("model execution has no cancellation signal");
         }
         signals.set(params.model.id, signal);
+        if (params.model.id === "model-a") {
+          firstStarted.resolve();
+        }
         if (signals.size === 2) {
           started.resolve();
         }
@@ -212,8 +216,16 @@ describe("operator model policy on plugin completions", () => {
       const first = work.track(() =>
         asOperator(authority, () => llm.complete({ ...request("direct"), model: "model-a" })),
       );
-      const second = work.track(() =>
-        asOperator(authority, () => llm.complete({ ...request("direct"), model: "model-b" })),
+      // Vitest's manual mock loader shares import callstacks; overlap provider work after import.
+      const second = Promise.race([
+        firstStarted.promise,
+        first.then(() => {
+          throw new Error("first completion settled before provider work started");
+        }),
+      ]).then(() =>
+        work.track(() =>
+          asOperator(authority, () => llm.complete({ ...request("direct"), model: "model-b" })),
+        ),
       );
       try {
         await Promise.race([
