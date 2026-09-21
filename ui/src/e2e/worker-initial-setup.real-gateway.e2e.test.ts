@@ -235,6 +235,9 @@ suite.define(() => {
           reconcileActivePlacement: async () => {
             throw new Error("unexpected recovery");
           },
+          waitForRuntimeRefreshNode: async () => {
+            throw new Error("unexpected runtime refresh");
+          },
           redispatchReclaimed: async () => {
             throw new Error("unexpected redispatch");
           },

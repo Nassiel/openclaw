@@ -7,6 +7,7 @@ import type {
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { emitAgentRunStatusEvent } from "../../infra/agent-run-status-events.js";
 import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
+import { WORKER_ADMISSION_DEADLINE_MS } from "../../worker/worker-connection-contract.js";
 import { StaleWorkerBuildError } from "./admission.js";
 import { matchesWorkerPlacementTarget } from "./placement-reclaim-contract.js";
 import { placementTurnOwner, sameWorkerSessionTurnClaim } from "./placement-record.js";
@@ -51,6 +52,11 @@ type WorkerTurnLauncherOptions = {
     identity: ReturnType<typeof resolvePlacementIdentity>,
   ) => Promise<WorkerSessionWorkspace>;
   reconcileActivePlacement: (environmentId: string) => Promise<void>;
+  waitForRuntimeRefreshNode: (params: {
+    placement: ActiveWorkerPlacement;
+    signal: AbortSignal;
+    assertCurrent: () => void;
+  }) => Promise<void>;
   workspaceOperations: WorkerWorkspaceOperationCoordinator;
   waitForInitialPlacement?: (
     placement: WorkerSessionPlacementRecord,
@@ -424,6 +430,54 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
               turn.abortSignal?.throwIfAborted();
               // Reconciliation may supersede the placement captured by initial setup.
               assertInitialSetupCurrent = undefined;
+              if (!recoveredStaleBuild) {
+                const waitTimeoutMs = Math.min(WORKER_ADMISSION_DEADLINE_MS, turn.timeoutMs);
+                if (waitTimeoutMs <= 0) {
+                  throw new WorkerRunnerUnavailableError();
+                }
+                const reconnect = new AbortController();
+                const reconnectSignal = turn.abortSignal
+                  ? AbortSignal.any([turn.abortSignal, reconnect.signal])
+                  : reconnect.signal;
+                const timeout = setTimeout(
+                  () => reconnect.abort(new WorkerRunnerUnavailableError()),
+                  waitTimeoutMs,
+                );
+                timeout.unref?.();
+                try {
+                  emitAgentRunStatusEvent({
+                    runId: claim.runId,
+                    phase: "provisioning_environment",
+                    sessionKey: identity.sessionKey,
+                    agentId: identity.agentId,
+                  });
+                  await options.waitForRuntimeRefreshNode({
+                    placement,
+                    signal: reconnectSignal,
+                    assertCurrent: () => {
+                      reconnectSignal.throwIfAborted();
+                      assertAdmissionCurrent();
+                      const waitingPlacement = options.placements.get(placement.sessionId);
+                      if (
+                        !matchesWorkerPlacementTarget(waitingPlacement, placement) ||
+                        waitingPlacement?.turnClaim ||
+                        waitingPlacement?.sessionKey !== identity.sessionKey ||
+                        waitingPlacement?.agentId !== identity.agentId ||
+                        waitingPlacement?.executionMode !== placement.executionMode ||
+                        options.placements.listPendingWorkspaceResults(placement.sessionId).length >
+                          0
+                      ) {
+                        throw new Error(
+                          "Worker placement changed while waiting for runtime refresh",
+                          { cause: error },
+                        );
+                      }
+                    },
+                  });
+                } finally {
+                  clearTimeout(timeout);
+                }
+              }
             }
             await options.reconcileActivePlacement(placement.environmentId);
             const reconciled = options.placements.get(placement.sessionId);
