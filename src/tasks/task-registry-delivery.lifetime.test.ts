@@ -56,6 +56,9 @@ vi.mock("./task-notification-mutation.async.js", async () => {
   const { captureTaskNotificationTarget, updateTaskNotificationDelivery } =
     await import("./task-notification.operation.js");
   return {
+    settleNotificationMutationAfterPreparationFailure: async (pending: unknown) => {
+      expect(pending).toBeUndefined();
+    },
     captureTaskNotificationMutationOwner: (assertCurrent: () => void) => ({
       async prepare<T>(
         consume: (flows: import("./task-flow-registry.read.js").TaskFlowRegistryRead) => T,
@@ -320,15 +323,24 @@ it.each(["resume", "restart"] as const)(
   },
 );
 
-it("preserves initial restore failure in its admitted delivery lifetime", async () => {
-  const task = seed("terminal");
-  const caller = await closeCaller("absent");
-  const failure = new Error("Task registry restore failed");
-  storage.ensureReady.mockImplementation(() => {
-    throw failure;
-  });
-  await expect(caller.run(() => maybeDeliverTaskTerminalUpdate(task.taskId))).rejects.toBe(failure);
-  expect(storage.send).not.toHaveBeenCalled();
-  expect(storage.update).not.toHaveBeenCalled();
-  expect(storage.tasks.get(task.taskId)).toEqual(task);
-});
+it.each(["terminal", "state"] as const)(
+  "preserves initial restore failure in its admitted %s delivery lifetime",
+  async (kind) => {
+    const task = seed(kind);
+    const caller = await closeCaller("absent");
+    const failure = new Error("Task registry restore failed");
+    storage.ensureReady.mockImplementation(() => {
+      throw failure;
+    });
+    await expect(
+      caller.run(() =>
+        kind === "terminal"
+          ? maybeDeliverTaskTerminalUpdate(task.taskId)
+          : maybeDeliverTaskStateChangeUpdate(task, event),
+      ),
+    ).rejects.toBe(failure);
+    expect(storage.send).not.toHaveBeenCalled();
+    expect(storage.update).not.toHaveBeenCalled();
+    expect(storage.tasks.get(task.taskId)).toEqual(task);
+  },
+);

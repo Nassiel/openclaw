@@ -8,9 +8,12 @@ import {
   resetGatewayWorkAdmission,
 } from "../process/gateway-work-admission.js";
 import { getAsyncWorkSignal, trackAsyncWork } from "../shared/async-work-scope.js";
+import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
+import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { captureTaskDeliveryWork } from "./task-registry-delivery.test-support.js";
-import { tasks } from "./task-registry-state.js";
+import { invalidateTaskRegistryProjection, taskRegistryLog, tasks } from "./task-registry-state.js";
+import { recordTaskProgressByRunId } from "./task-registry.js";
 import { getTaskRegistryStore } from "./task-registry.store.js";
 import { loadTaskRegistryStateFromSqliteReadOnly } from "./task-registry.store.sqlite.js";
 import {
@@ -172,3 +175,77 @@ it.each(["start", "end"] as const)(
     });
   },
 );
+
+it("reports retired background notification reads without sending or losing their rejected outcomes", async () => {
+  await withOpenClawTestState({ layout: "state-only" }, async () => {
+    const task = createTaskFixture("cli", {
+      requesterSessionKey: "agent:main:main",
+      requesterAgentId: "main",
+      requesterOrigin: { channel: "telegram", to: "synthetic-retired-notification" },
+      runId: "retired-background-notification",
+      task: "Publish progress before storage retires",
+      status: "running",
+      notifyPolicy: "state_changes",
+      deliveryStatus: "pending",
+    });
+    const store = getTaskRegistryStore();
+    const read = store.loadMutationSnapshotAsync.bind(store);
+    const entered = createDeferred();
+    const release = createDeferred();
+    const sendMessage = vi.fn();
+    const report = vi.spyOn(taskRegistryLog, "warn").mockImplementation(() => {});
+    vi.spyOn(store, "loadMutationSnapshotAsync").mockImplementation(async (...args) => {
+      const snapshot = await read(...args);
+      entered.resolve();
+      await release.promise;
+      return snapshot;
+    });
+    setTaskRegistryDeliveryRuntimeForTests({ sendMessage });
+    using deliveries = captureTaskDeliveryWork();
+    try {
+      recordTaskProgressByRunId({ runId: task.runId!, progressSummary: "Captured progress" });
+      invalidateTaskRegistryProjection();
+      await entered.promise;
+      await withTestTimeout(
+        closeOpenClawStateDatabaseAsync(),
+        5_000,
+        "Retire the completed read owner",
+      );
+      release.resolve();
+      await expect(deliveries.settle()).rejects.toMatchObject({
+        code: "STATE_DATABASE_READ_ADMISSION_INVALIDATED",
+      });
+      await setImmediate();
+      expect(
+        report.mock.calls.filter(([message]) => message === "Background task notification failed"),
+      ).toEqual([
+        [
+          "Background task notification failed",
+          {
+            taskId: task.taskId,
+            error: expect.objectContaining({ code: "STATE_DATABASE_READ_ADMISSION_INVALIDATED" }),
+          },
+        ],
+        [
+          "Background task notification failed",
+          {
+            taskId: task.taskId,
+            error: expect.objectContaining({ code: "STATE_DATABASE_READ_ADMISSION_INVALIDATED" }),
+          },
+        ],
+      ]);
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(getActiveGatewayRootWorkCount()).toBe(0);
+      const stored = await read(captureOpenClawStateWorkerContext(), { taskId: task.taskId });
+      expect(stored.tasks.get(task.taskId)).toMatchObject({
+        status: "running",
+        deliveryStatus: "pending",
+      });
+      expect(stored.deliveryStates.get(task.taskId)?.lastNotifiedEventAt).toBeUndefined();
+    } finally {
+      release.resolve();
+      await Promise.allSettled([deliveries.settle()]);
+      await closeOpenClawStateDatabaseAsync();
+    }
+  });
+});

@@ -675,8 +675,11 @@ joins its captured store's pending acknowledgements and accepted event prefix, t
 prepares task and flow projections asynchronously. Its synchronous consumer uses
 only those maps and rechecks the delivery claim and registry owners before effects.
 Full and scoped task snapshots use the existing shared-state read worker, retaining
-the original database admission without entering the writer queue. Storage
-representation, schemas, retention, and update behavior are unchanged.
+the original database admission without entering the writer queue. The delivery
+owner observes and reports notification failures while returning the same rejecting
+promise to awaiting callers. Synchronous producers therefore cannot leak an
+unhandled preparation rejection; owner retirement still forbids late effects.
+Storage representation, schemas, retention, and update behavior are unchanged.
 
 Terminal subagent cancellation prepares retained child-session rows in the same
 fixed read worker, retries after registry publication changes, and applies current

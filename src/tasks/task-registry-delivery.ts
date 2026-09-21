@@ -46,8 +46,8 @@ function resolveMissingOwnerDeliveryStatus(task: TaskRecord): "parent_missing" |
   return task.scopeKind === "system" ? "not_applicable" : "parent_missing";
 }
 
-export async function maybeDeliverTaskTerminalUpdate(taskId: string): Promise<TaskRecord | null> {
-  return await runTaskDeliveryWithDetachedAdmission(taskId, async (assertCurrent) =>
+export function maybeDeliverTaskTerminalUpdate(taskId: string): Promise<TaskRecord | null> {
+  return runTaskDeliveryWithDetachedAdmission(taskId, async (assertCurrent) =>
     maybeDeliverTaskTerminalUpdateUnderAdmission(taskId, assertCurrent),
   );
 }
@@ -460,13 +460,13 @@ async function maybeDeliverTaskTerminalUpdateUnderAdmission(
   }
 }
 
-export async function maybeDeliverTaskStateChangeUpdate(
+export function maybeDeliverTaskStateChangeUpdate(
   task: TaskRecord,
   latestEvent?: TaskEventRecord,
 ): Promise<TaskRecord | null> {
   const expectedTask = captureTaskNotificationTarget(task);
   const requestedEvent = latestEvent ? Object.freeze({ ...latestEvent }) : undefined;
-  return await runTaskDeliveryWithDetachedAdmission(expectedTask.taskId, async (assertCurrent) =>
+  return runTaskDeliveryWithDetachedAdmission(expectedTask.taskId, async (assertCurrent) =>
     maybeDeliverTaskStateChangeUpdateUnderAdmission(expectedTask, requestedEvent, assertCurrent),
   );
 }

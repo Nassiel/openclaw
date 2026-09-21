@@ -4,10 +4,22 @@ import {
   runWithGatewayDetachedWorkContinuation,
 } from "../process/gateway-work-admission.js";
 import { cloneTaskRecord } from "./task-registry-records.js";
-import { tasks } from "./task-registry-state.js";
+import { taskRegistryLog, tasks } from "./task-registry-state.js";
 import type { TaskRecord } from "./task-registry.types.js";
 
-export async function runTaskDeliveryWithDetachedAdmission(
+export function runTaskDeliveryWithDetachedAdmission(
+  taskId: string,
+  deliver: (assertCurrent: () => void) => Promise<TaskRecord | null>,
+): Promise<TaskRecord | null> {
+  const pending = runAdmittedTaskDelivery(taskId, deliver);
+  // Entry points return this exact promise: background failures are reported; awaited calls reject.
+  void pending.catch((error: unknown) => {
+    taskRegistryLog.warn("Background task notification failed", { taskId, error });
+  });
+  return pending;
+}
+
+async function runAdmittedTaskDelivery(
   taskId: string,
   deliver: (assertCurrent: () => void) => Promise<TaskRecord | null>,
 ): Promise<TaskRecord | null> {
