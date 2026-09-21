@@ -1,24 +1,32 @@
+// Install transport mocks before the native tool loads publication owners.
+// oxfmt-ignore
+import {
+  SESSION_ID,
+  SESSION_KEY,
+  BRANCH,
+  commandResult,
+  createGitHubPublicationRequesterFixture,
+  githubPublicationTestMocks,
+  installGitHubPublicationTestHarness,
+  root,
+} from "./github-publication.test-support.js";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { assert, describe, expect, it, onTestFinished, vi } from "vitest";
+import { withGatewayToolCallerIdentity } from "../agents/tools/gateway-caller-context.js";
+import { callGatewayTool } from "../agents/tools/gateway.js";
+import { createGitHubPublishTool } from "../agents/tools/github-publish-tool.js";
+import { withPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
 import { setUserProfileRole } from "../state/user-profiles.js";
 import { GitHubPublicationRecoveryPendingError } from "./github-publication-git-index.js";
 import {
   createRequesterPublicationFixture,
   guestScopes,
 } from "./github-publication-requester.test-support.js";
-import {
-  SESSION_ID,
-  SESSION_KEY,
-  BRANCH,
-  commandResult,
-  githubPublicationTestMocks,
-  installGitHubPublicationTestHarness,
-  root,
-} from "./github-publication.test-support.js";
 import { invalidateOperatorRolePolicy } from "./operator-role-policy.js";
+import { captureGatewayOperatorRunAuthority } from "./operator-run-authority.js";
 import { handleGatewayRequest } from "./server-methods.js";
-import type { GatewayRequestContext } from "./server-methods/types.js";
+import { createContext } from "./server-plugin-in-process-dispatch.test-support.js";
 import { createSyntheticPluginRuntimeClient } from "./server-plugin-runtime-client.js";
 
 const mocks = githubPublicationTestMocks();
@@ -44,14 +52,28 @@ describe("accepted GitHub workflow publication", () => {
   });
 
   it.each([
-    ...cases.map((operation) => ({ operation, allowed: false, actor: "operator" })),
-    { operation: "modify", allowed: true, actor: "operator" },
-    { operation: "ordinary", allowed: false, actor: "operator" },
-    { operation: "modify", allowed: false, actor: "system" },
-    { operation: "modify", allowed: true, actor: "system" },
+    ...cases.map((operation) => ({ operation, allowed: false, actor: "operator", route: "rpc" })),
+    { operation: "modify", allowed: true, actor: "operator", route: "rpc" },
+    { operation: "ordinary", allowed: false, actor: "operator", route: "rpc" },
+    { operation: "modify", allowed: false, actor: "system", route: "rpc" },
+    { operation: "modify", allowed: true, actor: "system", route: "rpc" },
+    { operation: "modify", allowed: true, actor: "operator", route: "tool" },
+    { operation: "modify", allowed: false, actor: "operator", route: "tool" },
+    { operation: "ordinary", allowed: false, actor: "operator", route: "tool" },
+    { operation: "modify", allowed: true, actor: "admin", route: "tool" },
+    { operation: "modify", allowed: false, actor: "narrowed", route: "tool" },
+    { operation: "modify", allowed: true, actor: "system", route: "tool" },
+    { operation: "modify", allowed: false, actor: "system", route: "tool" },
+    { operation: "modify", allowed: false, actor: "unscoped-system", route: "tool" },
+    { operation: "modify", allowed: true, actor: "admin", route: "gateway" },
+    { operation: "modify", allowed: false, actor: "admin", route: "gateway-session" },
+    { operation: "modify", allowed: false, actor: "admin", route: "gateway-empty" },
+    { operation: "modify", allowed: false, actor: "system", route: "gateway-write" },
+    { operation: "modify", allowed: true, actor: "system", route: "gateway-write" },
+    { operation: "modify", allowed: false, actor: "system-missing-scopes", route: "gateway-write" },
   ] as const)(
-    "checks $operation for $actor with full workflow authority=$allowed",
-    async ({ operation, allowed, actor }) => {
+    "checks $operation for $actor with full workflow authority=$allowed through $route",
+    async ({ operation, allowed, actor, route }) => {
       const f = await createRequesters();
       const workspace = f.local;
       const workflowPath = path.join(workspace.cwd, ".github/workflows/example.yml");
@@ -94,41 +116,125 @@ describe("accepted GitHub workflow publication", () => {
       const index = await fs.readFile(path.join(workspace.cwd, ".git/index"));
       const before = await workspace.git("diff", "HEAD");
 
-      const source = allowed ? f.maintainerSource : f.guestSource;
-      const client =
-        actor === "system"
-          ? createSyntheticPluginRuntimeClient({
-              operatorRoleActor: { kind: "system" },
-              scopes: allowed ? ["operator.write"] : guestScopes,
-            })
-          : source.client;
-      const respond = vi.fn();
-      const params = { sessionKey: SESSION_KEY, idempotencyKey: operation };
-      await handleGatewayRequest({
-        req: { type: "req", id: operation, method: "sessions.github.publish", params },
-        context: {
-          ...source.context,
-          githubPublicationService: f.coordinator,
-        } as GatewayRequestContext,
-        client,
-        isWebchatConnect: () => false,
-        respond,
-      });
-      if (allowed || operation === "ordinary") {
-        expect(respond).toHaveBeenCalledWith(
-          true,
-          expect.objectContaining({ status: "published" }),
+      const system =
+        actor === "system" || actor === "unscoped-system" || actor === "system-missing-scopes";
+      const nativeFullSource =
+        route !== "rpc" && !system && (allowed || actor === "admin" || actor === "narrowed");
+      if (nativeFullSource) {
+        setUserProfileRole(f.guestProfile, "maintainer");
+        invalidateOperatorRolePolicy(f.guestProfile);
+      }
+      const source = nativeFullSource
+        ? await createGitHubPublicationRequesterFixture({
+            profileId: f.guestProfile,
+            scopes:
+              actor === "admin" || actor === "narrowed" ? ["operator.admin"] : ["operator.write"],
+            agentId: "main",
+            sessionKey: SESSION_KEY,
+          })
+        : allowed
+          ? f.maintainerSource
+          : f.guestSource;
+      const client = system
+        ? createSyntheticPluginRuntimeClient({
+            operatorRoleActor: { kind: "system" },
+            scopes: allowed ? ["operator.write"] : guestScopes,
+          })
+        : source.client;
+      if (actor === "system-missing-scopes") {
+        delete client.connect.scopes;
+      }
+      const context = {
+        ...createContext(),
+        ...source.context,
+        githubPublicationService: f.coordinator,
+      };
+      let result: unknown;
+      if (route !== "rpc") {
+        const original = captureGatewayOperatorRunAuthority({ client, context });
+        if (!system) {
+          assert(original, "Expected original operator authority");
+        }
+        if (original) {
+          onTestFinished(original.release);
+        }
+        const accepted = vi.spyOn(f.coordinator, "requestForSession");
+        const pending = withPluginRuntimeGatewayRequestScope(
+          {
+            context,
+            client:
+              actor === "unscoped-system"
+                ? undefined
+                : actor === "narrowed"
+                  ? { ...client, connect: { ...client.connect, scopes: guestScopes } }
+                  : client,
+            isWebchatConnect: () => false,
+          },
+          () =>
+            withGatewayToolCallerIdentity(
+              {
+                agentId: "main",
+                sessionKey: SESSION_KEY,
+                ...(original ? { operatorAuthority: original.authority } : {}),
+                operationalRunInstance: {
+                  instanceId: "publication-tool",
+                  runId: "publication-run",
+                },
+                receiptAuthority: () => original?.authority.assertCurrent(),
+                gatewayContextResolver: () => context,
+              },
+              async () =>
+                route === "tool"
+                  ? (await createGitHubPublishTool().execute(operation, {})).details
+                  : await callGatewayTool(
+                      "sessions.github.publish",
+                      {},
+                      { sessionKey: SESSION_KEY, idempotencyKey: operation },
+                      route === "gateway"
+                        ? undefined
+                        : {
+                            scopes:
+                              route === "gateway-empty"
+                                ? []
+                                : route === "gateway-write"
+                                  ? ["operator.write"]
+                                  : ["operator.sessions.write"],
+                          },
+                    ),
+            ),
         );
+        if (route === "gateway-empty" || (route === "gateway-write" && !allowed)) {
+          await expect(pending).rejects.toThrow("missing scope: operator.sessions.write");
+          expect(accepted).not.toHaveBeenCalled();
+          expect(workspace.effects).toEqual([]);
+          return;
+        }
+        result = await pending;
+        expect(accepted.mock.lastCall?.[0].requester?.snapshot.actor).toEqual(
+          system ? { kind: "system" } : { kind: "operator", profileId: f.guestProfile },
+        );
+      } else {
+        const respond = vi.fn();
+        const params = { sessionKey: SESSION_KEY, idempotencyKey: operation };
+        await handleGatewayRequest({
+          req: { type: "req", id: operation, method: "sessions.github.publish", params },
+          context,
+          client,
+          isWebchatConnect: () => false,
+          respond,
+        });
+        expect(respond).toHaveBeenCalledWith(true, expect.anything());
+        result = respond.mock.calls[0]?.[1];
+      }
+      if (allowed || operation === "ordinary") {
+        expect(result, JSON.stringify(result)).toMatchObject({ status: "published" });
         expect(workspace.effects).toEqual(["push", "pull_request"]);
       } else {
-        expect(respond).toHaveBeenCalledWith(
-          true,
-          expect.objectContaining({
-            status: "failed",
-            code: "github_rejected",
-            nextAction: expect.stringContaining("Ask a maintainer"),
-          }),
-        );
+        expect(result).toMatchObject({
+          status: "failed",
+          code: "github_rejected",
+          nextAction: expect.stringContaining("Ask a maintainer"),
+        });
         expect(workspace.effects).toEqual([]);
         expect(await workspace.git("rev-parse", "HEAD")).toBe(head);
         expect(await fs.readFile(path.join(workspace.cwd, ".git/index"))).toEqual(index);
