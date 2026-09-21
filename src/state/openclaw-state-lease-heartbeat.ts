@@ -10,6 +10,7 @@ import { runInDetachedAsyncContext } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
   leaseHeartbeatState as state,
+  leaseHeartbeatStartupPhase,
   LEASE_HEARTBEAT_START_TIMEOUT_MS,
   type LeaseHeartbeatWorkerData,
 } from "./openclaw-state-lease-heartbeat-shared.js";
@@ -25,7 +26,9 @@ export function startOpenClawStateLeaseHeartbeat(
   },
 ) {
   const startedAt = performance.now();
-  const shared = new BigInt64Array(new SharedArrayBuffer(4 * BigInt64Array.BYTES_PER_ELEMENT));
+  const shared = new BigInt64Array(
+    new SharedArrayBuffer((state.startupPhase + 1) * BigInt64Array.BYTES_PER_ELEMENT),
+  );
   Atomics.store(shared, state.expiresAt, BigInt(params.expiresAt));
   const url = resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.stateLeaseHeartbeat);
   const workerArgv = resolveRuntimeWorkerArgv(url);
@@ -79,6 +82,10 @@ export function startOpenClawStateLeaseHeartbeat(
     release();
     throw error;
   }
+  let onlineObserved = false;
+  worker.once("online", () => {
+    onlineObserved = true;
+  });
   let handleReleaseError: Error | undefined;
   worker.once("exit", () => {
     try {
@@ -145,9 +152,15 @@ export function startOpenClawStateLeaseHeartbeat(
           : observedStatus === state.lost
             ? "lost"
             : "closed";
+      // This is the phase sampled at failure, not a deadline timestamp. A queued
+      // online event also cannot prove whether the worker has entered its module.
+      const observedPhase = Atomics.load(shared, state.startupPhase);
+      const startupPhase = Object.entries(leaseHeartbeatStartupPhase).find(
+        ([, value]) => value === observedPhase,
+      )?.[0];
       fail(
         new Error(
-          `state lease heartbeat did not become ready (phase=startup, trigger=${trigger}, status=${status}, elapsedMs=${Math.round(performance.now() - startedAt)}, timeoutMs=${startupTimeoutMs})`,
+          `state lease heartbeat did not become ready (phase=startup, trigger=${trigger}, status=${status}, elapsedMs=${Math.round(performance.now() - startedAt)}, timeoutMs=${startupTimeoutMs}, onlineObserved=${onlineObserved}, startupPhase=${startupPhase})`,
         ),
       );
     }

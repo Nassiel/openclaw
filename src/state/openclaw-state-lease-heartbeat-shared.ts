@@ -8,10 +8,20 @@ export const leaseHeartbeatState = {
   request: 1,
   ack: 2,
   expiresAt: 3,
+  startupPhase: 4,
   starting: 0n,
   ready: 1n,
   closed: 2n,
   lost: 3n,
+} as const;
+
+// Startup observations never grant readiness or lease authority.
+export const leaseHeartbeatStartupPhase = {
+  "entry-not-observed": 0n,
+  "body-entry": 1n,
+  "open-complete": 2n,
+  "initial-renew-start": 3n,
+  "initial-renew-returned": 4n,
 } as const;
 
 export type LeaseHeartbeatWorkerData = {
