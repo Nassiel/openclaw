@@ -206,6 +206,7 @@ function evaluateWorkflowExpression(
   );
   return runInNewContext(evaluableSource, {
     always: () => true,
+    success: () => !context.failed && !context.cancelled,
     failure: () => context.failed ?? false,
     cancelled: () => context.cancelled ?? false,
     // GitHub expression builtins the runner-routing clauses use.
@@ -2191,7 +2192,8 @@ function runCheckShardFixture(options: {
       `import { appendFileSync } from "node:fs";
 const args = process.argv.slice(2);
 appendFileSync(process.env.TYPE_CALLS, [process.env.TYPE_ROW, process.env.OPENCLAW_LOCAL_CHECK ?? "<unset>", "node " + args.join(" ")].join("\\t") + "\\n");
-if (args[args.indexOf("--stripe") + 1] === process.env.FAIL_TYPE_STRIPE) process.exit(17);
+const stripe = args[args.indexOf("--stripe") + 1];
+if (stripe === process.env.FAIL_TYPE_STRIPE || stripe?.replace(/-\\d+\\//, "/") === process.env.FAIL_TYPE_STRIPE) process.exit(17);
 `,
     );
   }
@@ -12948,6 +12950,61 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     }
   });
 
+  it("reuses isolated test-type caches without bypassing compilation or cache authority", () => {
+    const workflow = readCiWorkflow();
+    for (const [jobId, runName] of [
+      ["check-shard", "Run check shard"],
+      ["check-test-types-hosted-core-shard", "Run hosted core test-types stripe"],
+    ] as const) {
+      const steps = workflow.jobs[jobId].steps as WorkflowStep[];
+      const restore = expectDefined(
+        steps.find((step) => step.id === "test-type-cache"),
+        `${jobId} compiler cache`,
+      );
+      const save = expectDefined(
+        steps.find(
+          (step) => step.name?.startsWith("Save") && step.with?.path === ".artifacts/tsgo-cache",
+        ),
+        `${jobId} compiler cache writer`,
+      );
+      const run = expectDefined(
+        steps.find((step) => step.name === runName),
+        `${jobId} compiler`,
+      );
+      expect(steps.indexOf(restore)).toBeLessThan(steps.indexOf(run));
+      expect(steps.indexOf(save)).toBeGreaterThan(steps.indexOf(run));
+      expect(run.if).toBeUndefined();
+      expect(run.run).not.toContain("cache-hit");
+      expect(restore.with?.path).toBe(".artifacts/tsgo-cache");
+      expect(restore.with?.key).toContain("pnpm-lock.yaml");
+      expect(restore.with?.key).toContain("test/tsconfig/*.json");
+      expect(restore.with?.key).toContain(
+        jobId === "check-shard" ? "matrix.task" : "matrix.stripe",
+      );
+      expect(save.with?.key).toBe("${{ steps.test-type-cache.outputs.cache-primary-key }}");
+      for (const [cacheMode, writable, frozen, failed, canRestore, canSave] of [
+        ["restore", false, false, false, true, false],
+        ["restore", true, false, false, true, true],
+        ["off", true, false, false, false, false],
+        ["restore", true, true, false, false, false],
+        ["restore", true, false, true, true, false],
+      ] as const) {
+        const context: Parameters<typeof evaluateWorkflowExpression>[1] = {
+          eventName: writable ? "push" : "pull_request",
+          repository: "openclaw/openclaw",
+          runAttempt: 1,
+          frozenTarget: frozen,
+          failed,
+          matrix: { task: "test-types", stripe: 1 },
+          preflightOutputs: { cache_mode: cacheMode, cache_write_allowed: String(writable) },
+          steps: { "test-type-cache": { outputs: { "cache-hit": "false" } } },
+        };
+        expect(evaluateWorkflowExpression("${{ " + restore.if + " }}", context)).toBe(canRestore);
+        expect(evaluateWorkflowExpression("${{ " + save.if + " }}", context)).toBe(canSave);
+      }
+    }
+  });
+
   it.each([
     ["hybrid", "pull_request", false, true, true, true],
     ["github", "workflow_dispatch", false, true, true, true],
@@ -12976,7 +13033,11 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
               .filter((call) => call.row === row.name)
               .map((call) => call.command.split(" ")[2]),
           ),
-        ).toEqual([["1/5", "2/5"], ["3/5", "4/5"], ["5/5"]]);
+        ).toEqual(
+          frozenTarget
+            ? [["1/5", "2/5"], ["3/5", "4/5"], ["5/5"]]
+            : [["1-2/5"], ["3-4/5"], ["5/5"]],
+        );
         for (const call of stripes) {
           const args = call.command.split(" ").slice(1);
           expect(args).toEqual(["--stripe", expect.any(String), "--concurrency", "2"]);
@@ -13006,7 +13067,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     expect(result.rows.filter((row) => row.status === 0)).toHaveLength(2);
     expect(
       result.typeCalls.filter((call) => call.row === failed[0]!.name).map((call) => call.command),
-    ).toEqual([`node --stripe ${failStripe} --concurrency 2`]);
+    ).toEqual([`node --stripe ${failStripe === "1/5" ? "1-2/5" : failStripe} --concurrency 2`]);
   });
 
   it.each(["main", "trunk/release"])(
