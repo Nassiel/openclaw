@@ -115,6 +115,18 @@ function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCom
   if (command.type === "operatorApprovals.history") {
     return { ...command, input: { ...command.input } };
   }
+  if (command.type === "tasks.mutationSnapshot") {
+    const scope = command.input;
+    return {
+      type: command.type,
+      input:
+        scope === undefined
+          ? undefined
+          : "taskId" in scope
+            ? { ...scope }
+            : scope.map((entry) => Object.assign({}, entry)),
+    };
+  }
   if (command.type === "pluginBlob.lookup") {
     const { pluginId, namespace, key } = command.input;
     return { type: command.type, input: { pluginId, namespace, key } };
@@ -208,6 +220,19 @@ function commandBytes(command: OpenClawStateReadRequest["command"]): number {
       16
     );
   }
+  if (command.type === "tasks.mutationSnapshot") {
+    const scope = command.input;
+    const scopes = scope === undefined ? [] : "taskId" in scope ? [scope] : scope;
+    return scopes.reduce(
+      (total, entry) =>
+        total +
+        Buffer.byteLength(entry.taskId, "utf8") +
+        Buffer.byteLength(entry.flowId ?? "", "utf8") +
+        Buffer.byteLength(entry.runId ?? "", "utf8") +
+        Buffer.byteLength(entry.childSessionKey ?? "", "utf8"),
+      bytes,
+    );
+  }
   if (command.type === "pluginBlob.lookup" || command.type === "pluginBlob.entries") {
     return (
       bytes +
@@ -215,6 +240,9 @@ function commandBytes(command: OpenClawStateReadRequest["command"]): number {
       Buffer.byteLength(command.input.namespace, "utf8") +
       (command.type === "pluginBlob.lookup" ? Buffer.byteLength(command.input.key, "utf8") : 0)
     );
+  }
+  if (command.type === "subagents.forChildSession") {
+    return bytes + Buffer.byteLength(command.childSessionKey, "utf8");
   }
   if (command.type === "sandboxRegistry.get") {
     return bytes + Buffer.byteLength(command.containerName, "utf8");
