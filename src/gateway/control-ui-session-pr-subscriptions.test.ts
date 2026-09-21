@@ -283,6 +283,7 @@ describe("control UI session PR subscriptions", () => {
     expect(load).toHaveBeenCalledExactlyOnceWith(
       { sessionKey: "added", agentId: "main" },
       expect.any(AbortSignal),
+      expect.objectContaining({ assertCurrent: expect.any(Function) }),
     );
     expect(broadcastToConnIds).toHaveBeenCalledExactlyOnceWith(
       CHANGED_EVENT,
@@ -362,6 +363,7 @@ describe("control UI session PR subscriptions", () => {
     expect(load).toHaveBeenCalledExactlyOnceWith(
       { sessionKey: "session", agentId: "main" },
       expect.any(AbortSignal),
+      expect.objectContaining({ assertCurrent: expect.any(Function) }),
     );
     expect(broadcastToConnIds).toHaveBeenCalledExactlyOnceWith(
       CHANGED_EVENT,
@@ -418,6 +420,7 @@ describe("control UI session PR subscriptions", () => {
     expect(load).toHaveBeenCalledWith(
       { sessionKey: "global", agentId: "work" },
       expect.any(AbortSignal),
+      expect.objectContaining({ assertCurrent: expect.any(Function) }),
     );
   });
 
@@ -440,6 +443,7 @@ describe("control UI session PR subscriptions", () => {
     expect(load).toHaveBeenCalledWith(
       { sessionKey: "refresh-me", agentId: "main", refresh: true },
       expect.any(AbortSignal),
+      expect.objectContaining({ assertCurrent: expect.any(Function) }),
     );
     expect(broadcastToConnIds.mock.calls).toEqual(
       ["conn-a", "conn-b"].map((connId) => [
@@ -737,6 +741,7 @@ describe("control UI session PR subscriptions", () => {
       expect(load).toHaveBeenCalledWith(
         { sessionKey: "old", agentId: "main" },
         expect.any(AbortSignal),
+        expect.objectContaining({ assertCurrent: expect.any(Function) }),
       ),
     );
     await active.replace("conn-a", ["current"]);

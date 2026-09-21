@@ -178,7 +178,7 @@ describe("watched session PR retention", () => {
       expect(fetchImpl.mock.calls).toHaveLength(300);
       expect(runGitWorkerOperation).toHaveBeenCalledTimes(1_200);
       expect(signals.size).toBe(300);
-      expect([...signals].every((signal) => getEventListeners(signal, "abort").length === 3)).toBe(
+      expect([...signals].every((signal) => getEventListeners(signal, "abort").length === 4)).toBe(
         true,
       );
     } finally {
@@ -238,11 +238,11 @@ describe("watched session PR retention", () => {
     const pins = () => getEventListeners(cacheLifetime.signal, "abort").length;
     try {
       await load();
-      expect(pins()).toBe(3);
+      expect(pins()).toBe(4);
       root = "/retained/second";
       branch = "feature-b";
       await load();
-      expect(pins()).toBe(3);
+      expect(pins()).toBe(4);
       root = null;
       await load();
       expect(pins()).toBe(0);
@@ -255,12 +255,12 @@ describe("watched session PR retention", () => {
         rateLimited: false,
         status: "unavailable",
       });
-      // Preserve context and the GitHub failure's expiry, but drop obsolete branch facts.
-      expect(pins()).toBe(2);
+      // Preserve context, transcript references, and the failure expiry; drop obsolete branch facts.
+      expect(pins()).toBe(3);
       fetchFailure = false;
       vi.setSystemTime(Date.now() + 30_001);
       await load();
-      expect(pins()).toBe(3);
+      expect(pins()).toBe(4);
       branch = null;
       await load();
       expect(pins()).toBe(1);
@@ -270,5 +270,6 @@ describe("watched session PR retention", () => {
     } finally {
       cacheLifetime.abort();
     }
+    expect(pins()).toBe(0);
   });
 });

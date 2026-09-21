@@ -9,7 +9,8 @@ export function retainGatewaySessionEntryReadOnly(sessionKey: string, agentId: s
   const options = { agentId, projection: "list" as const };
   const selected = loadGatewaySessionEntryReadOnly(sessionKey, options);
   let released = false;
-  const sameRoute = (current = loadGatewaySessionEntryReadOnly(sessionKey, options)) => {
+  const sameRoute = () => {
+    const current = loadGatewaySessionEntryReadOnly(sessionKey, options);
     return (
       current.agentId === selected.agentId &&
       current.canonicalKey === selected.canonicalKey &&
@@ -24,13 +25,6 @@ export function retainGatewaySessionEntryReadOnly(sessionKey: string, agentId: s
     return {
       ...selected,
       isCurrent: () => !released,
-      readCurrentAtResponse: () => {
-        if (released) {
-          return undefined;
-        }
-        const current = loadGatewaySessionEntryReadOnly(sessionKey, options);
-        return sameRoute(current) && current.entry === undefined ? current : undefined;
-      },
       isCurrentAtResponse: () =>
         !released &&
         sameRoute() &&
@@ -71,14 +65,6 @@ export function retainGatewaySessionEntryReadOnly(sessionKey: string, agentId: s
       entry: read.entry,
       // Catalog projection calls this per model; exact target reads belong at publication.
       isCurrent: () => !released && claim.isCurrent(),
-      // Consumers of a narrower projection compare its facts without freezing unrelated metadata.
-      readCurrentAtResponse: () => {
-        if (released || !claim.isCurrent() || !isOpenClawAgentDatabasePathCurrent(database)) {
-          return undefined;
-        }
-        const current = loadGatewaySessionEntryReadOnly(sessionKey, options);
-        return sameRoute(current) ? current : undefined;
-      },
       // Re-read canonical target facts and verify physical ownership before publishing.
       isCurrentAtResponse: () =>
         !released &&

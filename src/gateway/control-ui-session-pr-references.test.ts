@@ -24,8 +24,12 @@ import {
 } from "../state/openclaw-state-db.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { loadSessionPullRequestReferences } from "./control-ui-session-pr-references.js";
-import { loadControlUiSessionPullRequests } from "./control-ui-session-prs.js";
-import { githubJson, pullListItem, requestUrl } from "./control-ui-session-prs.test-support.js";
+import {
+  githubJson,
+  loadTestSessionPullRequests as loadControlUiSessionPullRequests,
+  pullListItem,
+  requestUrl,
+} from "./control-ui-session-prs.test-support.js";
 import * as transcriptReaders from "./session-transcript-readers.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);

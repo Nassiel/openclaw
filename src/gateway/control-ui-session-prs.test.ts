@@ -229,10 +229,12 @@ describe("loadControlUiSessionPullRequests", () => {
         "Bearer github-token-a",
       );
       expect(fetchImpl.mock.calls[1]?.[1]?.headers).not.toHaveProperty("Authorization");
-      expect(getEventListeners(cacheLifetime.signal, "abort")).toHaveLength(1);
+      // Real sessions retain transcript references alongside the current credential's PR cache.
+      expect(getEventListeners(cacheLifetime.signal, "abort")).toHaveLength(2);
     } finally {
       cacheLifetime.abort();
     }
+    expect(getEventListeners(cacheLifetime.signal, "abort")).toHaveLength(0);
   });
 
   it("skips diff and check fetches for merged PRs", async () => {

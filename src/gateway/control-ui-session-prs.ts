@@ -1,7 +1,6 @@
 import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { readNonBlankString } from "@openclaw/normalization-core/string-coerce";
-import { getRuntimeConfig } from "../config/io.js";
 import { releaseGitReadCache, runGitReadOperation } from "../infra/git-read-cache.js";
 import type {
   GitCheckoutContext,
@@ -13,7 +12,7 @@ import type {
   ControlUiSessionPullRequest,
   ControlUiSessionPullRequests,
 } from "./control-ui-contract.js";
-import { resolveControlUiSessionPrTarget } from "./control-ui-session-pr-read.js";
+import type { ControlUiSessionPrReadContext } from "./control-ui-session-pr-read.js";
 import {
   loadSessionPullRequestReferences,
   releaseSessionPullRequestReferenceCache,
@@ -21,8 +20,6 @@ import {
 import { fetchSessionPullRequestCheckRollup } from "./control-ui-session-prs-checks.js";
 import { gitHubPublicApi } from "./github-public-api.js";
 import { resolveGitHubForkParent } from "./github-repository-target.js";
-import { resolveRequestedSessionAgentId } from "./session-request-agent.js";
-import { retainGatewaySessionEntryReadOnly } from "./session-utils-read-lifetime.js";
 
 const SUCCESS_CACHE_MS = 90_000;
 // Back off refetches while GitHub reports quota exhaustion; the UI keeps
@@ -81,6 +78,7 @@ type CacheEntry = {
 const branchCache = createRetainedCache<CacheEntry>();
 
 type LoadSessionPullRequestDeps = {
+  read: ControlUiSessionPrReadContext;
   cacheSignal?: AbortSignal;
   fetchImpl?: typeof fetch;
   resolveGitRoot?: (params: ControlUiSessionPullRequestsParams) => Promise<string | null>;
@@ -494,32 +492,12 @@ async function refreshBranchPullRequests(
 
 export async function loadControlUiSessionPullRequests(
   params: ControlUiSessionPullRequestsParams,
-  deps: LoadSessionPullRequestDeps = {},
+  deps: LoadSessionPullRequestDeps,
 ): Promise<ControlUiSessionPullRequests> {
-  const requested = resolveRequestedSessionAgentId(
-    getRuntimeConfig(),
-    params.sessionKey,
-    params.agentId,
-  );
-  if (!requested.ok) {
-    throw new Error(requested.error.message);
-  }
-  const selected = retainGatewaySessionEntryReadOnly(params.sessionKey, requested.agentId);
+  const { target, assertCurrent } = deps.read;
   try {
-    const target = resolveControlUiSessionPrTarget(selected);
-    if (!target) {
-      releaseSessionPullRequestLocalGitCache(deps.cacheSignal);
-      branchCache.release(deps.cacheSignal);
-      releaseSessionPullRequestReferenceCache(deps.cacheSignal);
-      return { pullRequests: [], rateLimited: false };
-    }
+    assertCurrent();
     const request = { ...params, ...target.params };
-    const assertCurrent = () => {
-      const current = selected.readCurrentAtResponse();
-      if (!current || resolveControlUiSessionPrTarget(current)?.identity !== target.identity) {
-        throw new Error("Session changed while preparing pull requests. Retry the request.");
-      }
-    };
     const context = deps.resolveGitContext
       ? await deps.resolveGitContext(request)
       : await resolveSessionPullRequestGitContext(request, deps, target.source);
@@ -593,8 +571,6 @@ export async function loadControlUiSessionPullRequests(
     branchCache.release(deps.cacheSignal);
     releaseSessionPullRequestReferenceCache(deps.cacheSignal);
     throw error;
-  } finally {
-    selected.release();
   }
 }
 

@@ -1,6 +1,7 @@
 // Shared fixtures for the control-ui session PR tests; test-only module.
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, vi } from "vitest";
+import { getRuntimeConfig } from "../config/io.js";
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import {
   replaceSessionEntrySync,
@@ -12,6 +13,7 @@ import {
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
 import { resolveControlUiSessionPrTarget } from "./control-ui-session-pr-read.js";
+import { withControlUiSessionPrSource } from "./control-ui-session-pr-source.js";
 import { loadControlUiSessionPullRequests } from "./control-ui-session-prs.js";
 import { resolveRequestedSessionAgentId } from "./session-request-agent.js";
 import { resolveSessionStoreKey } from "./session-store-key.js";
@@ -69,6 +71,43 @@ export const testGitContext: GitContext = {
   branch: "claude/browser-tabs-tighter-header",
 };
 
+/** Direct loader tests supply real target facts; registered callers use the row projection. */
+export function loadTestSessionPullRequests(
+  params: Parameters<typeof loadControlUiSessionPullRequests>[0],
+  deps: Omit<Parameters<typeof loadControlUiSessionPullRequests>[1], "read"> = {},
+): ReturnType<typeof loadControlUiSessionPullRequests> {
+  const requested = resolveRequestedSessionAgentId(
+    getRuntimeConfig(),
+    params.sessionKey,
+    params.agentId,
+  );
+  if (!requested.ok) {
+    throw new Error(requested.error.message);
+  }
+  const readTarget = () =>
+    resolveControlUiSessionPrTarget(
+      loadGatewaySessionEntryReadOnly(params.sessionKey, { agentId: requested.agentId }),
+    );
+  const target = readTarget();
+  if (!target) {
+    return Promise.resolve({ pullRequests: [], rateLimited: false });
+  }
+  return withControlUiSessionPrSource(target.readSource, (assertSourceCurrent) =>
+    loadControlUiSessionPullRequests(params, {
+      ...deps,
+      read: {
+        target,
+        assertCurrent: () => {
+          assertSourceCurrent();
+          if (readTarget()?.identity !== target.identity) {
+            throw new Error("Session changed while preparing pull requests. Retry the request.");
+          }
+        },
+      },
+    }),
+  );
+}
+
 /** Git/network fixtures still select real sessions; each test owns its cache namespace. */
 export function createSessionPullRequestsFixture() {
   let state: OpenClawTestState | undefined;
@@ -114,14 +153,17 @@ export function createSessionPullRequestsFixture() {
     }
     return { sessionKey, agentId: requested.agentId };
   };
-  const load: typeof loadControlUiSessionPullRequests = (params, deps) => {
+  const load: typeof loadTestSessionPullRequests = (params, deps) => {
     seed(params);
-    return loadControlUiSessionPullRequests(params, deps);
+    return loadTestSessionPullRequests(params, deps);
   };
   return {
     load,
-    prepareRead: (_connId: string, watchKey: string) => {
-      const params = seed({ sessionKey: watchKey });
+    prepareRead: (
+      _connId: string,
+      session: Parameters<typeof loadControlUiSessionPullRequests>[0],
+    ) => {
+      const params = seed(session);
       return () =>
         resolveControlUiSessionPrTarget(
           loadGatewaySessionEntryReadOnly(params.sessionKey, { agentId: params.agentId }),

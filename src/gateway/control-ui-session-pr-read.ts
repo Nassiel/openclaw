@@ -2,7 +2,6 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { GitCheckoutContext } from "../infra/git-read-operations.js";
-import { parseAgentSessionKey } from "../routing/session-key.js";
 import { roleScopesAllow } from "../shared/operator-scope-compat.js";
 import { getSessionRepositoryWorkspaceStore } from "../state/session-repository-workspaces.js";
 import { readUserProfileAliasRevision } from "../state/user-profile-events.js";
@@ -17,8 +16,10 @@ import { READ_SCOPE } from "./operator-scopes.js";
 import { isGatewayClientProfilePending } from "./server-methods/gateway-client-identity.js";
 import type { GatewayClient } from "./server-methods/types.js";
 import { resolveRequestedSessionAgentId } from "./session-request-agent.js";
+import type { SessionRowProjection } from "./session-row-projection.js";
 import { createSessionListEntryFilter } from "./session-sharing.js";
-import { loadGatewaySessionEntryReadOnly } from "./session-utils-store.js";
+import type { loadGatewaySessionEntryReadOnly } from "./session-utils-store.js";
+import type { GatewaySessionRow } from "./session-utils.types.js";
 
 type SelectedSession = Pick<
   ReturnType<typeof loadGatewaySessionEntryReadOnly>,
@@ -28,24 +29,33 @@ type SelectedSession = Pick<
 export type ControlUiSessionPrTarget = {
   params: { sessionKey: string; agentId: string };
   identity: string;
+  readSource: { agentId: string; path: string };
   source: string | GitCheckoutContext | null;
+};
+
+export type ControlUiSessionPrReadContext = {
+  target: ControlUiSessionPrTarget;
+  assertCurrent: () => void;
 };
 
 /** Git facts and cached snapshots belong to the recorded session and workspace source. */
 export function resolveControlUiSessionPrTarget(
   selected: SelectedSession,
+  preparedRepository?: GatewaySessionRow["repository"] | null,
 ): ControlUiSessionPrTarget | undefined {
   const { cfg, agentId, canonicalKey, storePath, readSource, entry } = selected;
-  if (!entry?.sessionId || !storePath) {
+  if (!entry?.sessionId || !storePath || !readSource) {
     return undefined;
   }
   let source: ControlUiSessionPrTarget["source"];
   if (entry.repositoryWorkspaceId) {
-    const repository = getSessionRepositoryWorkspaceStore().get(entry.repositoryWorkspaceId);
-    const remote =
-      repository?.agentId === agentId && repository.sessionKey === canonicalKey
-        ? parseGitHubRemoteUrl(repository.url)
-        : null;
+    let repository = preparedRepository;
+    if (repository === undefined) {
+      const workspace = getSessionRepositoryWorkspaceStore().get(entry.repositoryWorkspaceId);
+      repository =
+        workspace?.agentId === agentId && workspace.sessionKey === canonicalKey ? workspace : null;
+    }
+    const remote = repository ? parseGitHubRemoteUrl(repository.url) : null;
     source = remote && repository ? { ...remote, branch: repository.branch } : null;
   } else {
     source =
@@ -56,6 +66,7 @@ export function resolveControlUiSessionPrTarget(
   }
   return {
     params: { sessionKey: canonicalKey, agentId },
+    readSource,
     identity: JSON.stringify([
       agentId,
       canonicalKey,
@@ -77,14 +88,20 @@ export type ControlUiSessionPrRead = () => ControlUiSessionPrTarget | undefined;
 /** A watcher may follow a replaced target, but never a replacement person or access grant. */
 export function prepareControlUiSessionPrRead(params: {
   client: GatewayClient;
-  watchKey: string;
+  sessionKey: string;
+  agentId?: string;
   getRuntimeConfig: () => OpenClawConfig;
+  getSessionRowProjection: () => SessionRowProjection | undefined;
   isCurrentClient: () => boolean;
 }): ControlUiSessionPrRead | undefined {
-  const { client, watchKey, getRuntimeConfig, isCurrentClient } = params;
-  const parsed = parseAgentSessionKey(watchKey);
-  const globalAgentId = parsed?.rest === "global" ? parsed.agentId : undefined;
-  const sessionKey = globalAgentId ? "global" : watchKey;
+  const {
+    client,
+    sessionKey,
+    agentId,
+    getRuntimeConfig,
+    getSessionRowProjection,
+    isCurrentClient,
+  } = params;
   const actor = resolveGatewayOperatorRoleActor(client);
   const actorKind = actor?.kind;
   const actorProfile = actor?.kind === "operator" ? actor.profileId : undefined;
@@ -132,23 +149,40 @@ export function prepareControlUiSessionPrRead(params: {
       ) {
         return undefined;
       }
-      const requested = resolveRequestedSessionAgentId(cfg, sessionKey, globalAgentId);
+      const requested = resolveRequestedSessionAgentId(cfg, sessionKey, agentId);
       if (!requested.ok) {
         return undefined;
       }
-      const selected = loadGatewaySessionEntryReadOnly(sessionKey, {
-        agentId: requested.agentId,
-        clone: false,
-        projection: "list",
-      });
+      const projection = getSessionRowProjection();
+      if (!projection) {
+        return undefined;
+      }
+      const query = { key: sessionKey, agentId: requested.agentId };
+      const selected = projection.capture(query);
       if (
-        !selected.entry ||
-        createSessionListEntryFilter({ cfg, client })?.(selected.canonicalKey, selected.entry) ===
-          false
+        !selected?.entry ||
+        !projection.isCurrent(selected) ||
+        createSessionListEntryFilter({ cfg, client })?.(selected.key, selected.entry) === false
       ) {
         return undefined;
       }
-      return resolveControlUiSessionPrTarget(selected);
+      // Authorize transient private rows before preparing presentation; resident rows reuse it.
+      const current = projection.describe(query, selected);
+      const storePath = current?.storeTarget.storePath;
+      if (!current || !storePath) {
+        return undefined;
+      }
+      return resolveControlUiSessionPrTarget(
+        {
+          cfg,
+          agentId: current.agentId,
+          canonicalKey: current.key,
+          storePath,
+          readSource: { agentId: current.storeTarget.agentId, path: storePath },
+          entry: current.entry,
+        },
+        current.materialized.row.repository ?? null,
+      );
     } catch {
       return undefined;
     }
