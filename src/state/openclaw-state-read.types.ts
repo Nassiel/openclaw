@@ -4,6 +4,7 @@ import type {
   SandboxBrowserRegistryEntry,
   SandboxRegistryEntry,
 } from "../agents/sandbox/registry.types.js";
+import type { SubagentRunRecord } from "../agents/subagents/registry/subagent-registry.types.js";
 import type { WorkspaceStateSnapshot } from "../agents/workspace-state-store.kernel.js";
 import type {
   ExecutionIdentityInspectionQuery,
@@ -27,6 +28,10 @@ import type {
 } from "../plugin-state/plugin-blob-worker-contract.js";
 import type { AsyncWorkScope } from "../shared/async-work-scope.js";
 import type { SkillLibraryReadOnlyOperations } from "../skills/library/selection-read.kernel.js";
+import type {
+  TaskRegistryMutationScope,
+  TaskRegistryStoreSnapshot,
+} from "../tasks/task-registry.store.types.js";
 import type { OnboardingRecommendationsRecord } from "./onboarding-recommendations.contract.js";
 import type { OpenClawAgentDatabaseRegistryReadResult } from "./openclaw-agent-db-contract.js";
 import type { ConfigMachineState } from "./openclaw-state-db.generated.js";
@@ -50,6 +55,7 @@ export type OpenClawStateReadAuthority = {
 export type OpenClawStateReadCommand =
   | { type: "conversationBindings.inspect"; conversation: ConversationRef }
   | PluginBlobReadCommand
+  | { type: "subagents.forChildSession"; childSessionKey: string }
   | { type: "exec-approvals.read" }
   | {
       [Kind in keyof SkillLibraryReadOnlyOperations]: {
@@ -58,6 +64,10 @@ export type OpenClawStateReadCommand =
       };
     }[keyof SkillLibraryReadOnlyOperations]
   | { type: "agentDatabaseRegistry.read" }
+  | {
+      type: "tasks.mutationSnapshot";
+      input: TaskRegistryMutationScope | readonly TaskRegistryMutationScope[] | undefined;
+    }
   | { type: "onboardingRecommendations.read"; configKey: string }
   | { type: "userProfiles.reconcile"; profileId: string }
   | { type: "userProfiles.email.resolve"; email: string }
@@ -89,6 +99,13 @@ export type OpenClawStateReadReply = (
       record: SessionBindingRecord | null;
     }
   | PluginBlobReadReply
+  | { ok: true; type: "subagents.forChildSession"; sourceAdmitted: true; runs: SubagentRunRecord[] }
+  | {
+      ok: true;
+      type: "tasks.mutationSnapshot";
+      sourceAdmitted: true;
+      snapshot: TaskRegistryStoreSnapshot;
+    }
   | {
       [Kind in keyof SkillLibraryReadOnlyOperations]: {
         ok: true;
@@ -191,6 +208,7 @@ export type OpenClawStateReadOutcome =
 
 export type OpenClawStateReadPhase = "before-read" | "read" | "unobserved";
 export type OpenClawStateReadOptions = {
+  context?: OpenClawStateWorkerContext;
   mapError?: (error: unknown, phase: OpenClawStateReadPhase) => unknown;
 };
 
