@@ -344,20 +344,12 @@ suite.define(() => {
                   expect.objectContaining(updatedJob),
                 );
               } else if (action === "run") {
-                expect(result).toMatchObject({ ok: true });
+                expect(result).toMatchObject({ ok: true, enqueued: true });
                 await expect
-                  .poll(
-                    async () => {
-                      const runs = await gateway.call("cron.runs", { id: jobId });
-                      return (
-                        isRecord(runs) &&
-                        Array.isArray(runs.entries) &&
-                        runs.entries.some((entry) => isRecord(entry) && entry.status === "ok")
-                      );
-                    },
-                    { timeout: 60_000 },
-                  )
-                  .toBe(true);
+                  .poll(() => gateway.call("cron.runs", { id: jobId }), { timeout: 60_000 })
+                  .toMatchObject({
+                    entries: expect.arrayContaining([expect.objectContaining({ status: "ok" })]),
+                  });
               } else {
                 expect(result).toMatchObject({ removed: true });
               }
