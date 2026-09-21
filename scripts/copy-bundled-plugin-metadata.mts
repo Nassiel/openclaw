@@ -2,10 +2,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { MAX_THEME_DEFINITION_BYTES } from "../packages/gateway-protocol/src/theme.ts";
+import { readPluginCacheFile } from "../src/plugins/plugin-cache-files.ts";
+import { createPluginCache, withPluginCache } from "../src/plugins/plugin-cache.ts";
 import {
   isPluginActivityToolName,
   MAX_PLUGIN_ACTIVITY_TOOL_ICONS,
   PLUGIN_ACTIVITY_ICON_PATH,
+  PLUGIN_ACTIVITY_ICON_MAX_BYTES,
   PLUGIN_TOOL_ACTIVITY_ICON_DIR,
   PORTABLE_PLUGIN_ICON_PATH,
 } from "../src/plugins/portable-icon-paths.ts";
@@ -20,6 +24,7 @@ import {
   readGeneratedBundledChannelConfigs,
   resolvePluginRuntimeChannelMetadata,
 } from "./lib/plugin-npm-package-manifest.mts";
+import { collectPluginThemeAssetPaths } from "./lib/plugin-theme-assets.mts";
 import { isRecord } from "./lib/record-shared.mjs";
 import {
   removeFileIfExists,
@@ -332,6 +337,30 @@ export function copyBundledPluginMetadata(params: CopyMetadataParams = {}): void
         : mergedManifest;
       writeTextFileIfChanged(distManifestPath, `${JSON.stringify(bundledManifest, null, 2)}\n`);
       copyPluginIcons(pluginDir, distPluginDir);
+      withPluginCache(createPluginCache(), () => {
+        for (const relativePath of collectPluginThemeAssetPaths(bundledManifest)) {
+          const file = readPluginCacheFile({
+            rootDir: pluginDir,
+            relativePath,
+            rejectHardlinks: false,
+            maxBytes: relativePath.toLowerCase().endsWith(".svg")
+              ? PLUGIN_ACTIVITY_ICON_MAX_BYTES
+              : MAX_THEME_DEFINITION_BYTES * 4,
+          });
+          const target = path.join(distPluginDir, relativePath);
+          // Declared paths are relative; reject generated directory links as well.
+          let directory = path.dirname(target);
+          while (directory !== path.dirname(distExtensionsRoot)) {
+            assertRealOutputRoot(directory);
+            directory = path.dirname(directory);
+          }
+          removePathIfExists(target);
+          if (file.ok) {
+            fs.mkdirSync(path.dirname(target), { recursive: true });
+            fs.writeFileSync(target, file.contents);
+          }
+        }
+      });
     } else {
       removeFileIfExists(distManifestPath);
       removeFileIfExists(path.join(distPluginDir, PORTABLE_PLUGIN_ICON_PATH));
