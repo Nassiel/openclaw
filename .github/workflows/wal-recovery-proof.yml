@@ -1,0 +1,121 @@
+# Temporary diagnostic replay for PR154905. Remove before landing.
+name: WAL recovery cohort proof
+on:
+  push:
+    branches: [test/wal-recovery-context]
+    paths: [.github/workflows/wal-recovery-proof.yml]
+permissions:
+  contents: read
+concurrency:
+  group: wal-recovery-proof-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  original-cohort:
+    if: github.repository == 'openclaw/openclaw'
+    runs-on: blacksmith-32vcpu-ubuntu-2404
+    timeout-minutes: 60
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      NODE_VERSION: 24.19.0
+      OPENCLAW_NODE_TEST_GROUPS_GZIP_BASE64: "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"
+    steps:
+      - name: Checkout original failed composition
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: b828baa3da39e8667fa2fac0207d0e9868995287
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Authenticate source and apply only reviewed diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = b828baa3da39e8667fa2fac0207d0e9868995287
+          test "$(git rev-parse HEAD^{tree})" = 891905f2771d56a9c3597f51b8a97fa8e9425168
+          git -c gc.auto=0 -c maintenance.auto=false fetch --no-tags --depth=1 --no-write-fetch-head origin fff837a9842d09d32d3938cb622c743b8edba1b9
+          python3 - <<'PY_SOURCE'
+          import hashlib, json, subprocess
+          from pathlib import Path
+          def git(*args):
+              return subprocess.check_output(['git', *args]).decode().strip()
+          diagnostic = 'fff837a9842d09d32d3938cb622c743b8edba1b9'
+          path = 'src/config/sessions/session-history-wal-budget.test.ts'
+          assert git('rev-parse', diagnostic + '^{tree}') == '0149cdf61506fe4e81ac0cba1e6d9b3670270e2f'
+          assert git('rev-parse', 'HEAD:' + path) == 'e37897e1da6485b2660f04b7787c7cda6c6e0f97'
+          assert git('rev-parse', diagnostic + ':' + path) == 'c2290bd669a841d7950056d302cd251ea90d12e6'
+          report_blobs = {"src/cli/update-cli/update-command-result.ts": "05741e9f31d86c007b713f6f75d71d123172c56d", "src/cli/update-cli/update-command-service-admission.test.ts": "0bd4d718ac9fbdf4ea693ea9cc7d7a7ac3dfb24f", "src/infra/update-failure-report-artifact.test.ts": "308f7a8f66351e91045895943f1360bf0fdce0d4", "src/infra/update-failure-report-artifact.ts": "767d3d432845f5842fdac13cf29b4910f98332bb"}
+          for name, blob in report_blobs.items():
+              assert git('rev-parse', 'HEAD:' + name) == blob
+          data = subprocess.check_output(['git', 'show', diagnostic + ':' + path])
+          Path(path).write_bytes(data)
+          assert git('hash-object', path) == 'c2290bd669a841d7950056d302cd251ea90d12e6'
+          assert git('diff', '--name-only', 'HEAD') == path
+          subprocess.run(['git', 'add', '--', path], check=True)
+          assert git('write-tree') == '3fcf4626d03ce65e9c3f4379e81a6321fa96e8ac'
+          print(json.dumps({'sourceHead': git('rev-parse', 'HEAD'), 'sourceTree': git('rev-parse', 'HEAD^{tree}'), 'diagnosticHead': diagnostic, 'diagnosticBlob': git('hash-object', path), 'testTree': git('write-tree'), 'diagnosticSha256': hashlib.sha256(data).hexdigest(), 'reportBlobs': report_blobs}))
+          PY_SOURCE
+      - name: Setup original Node environment
+        uses: ./.github/actions/setup-node-env
+        with:
+          cache-mode: restore
+          node-version: 24.x
+          install-bun: "false"
+          dependency-cache: "true"
+          vitest-fs-cache: "true"
+          vitest-worker-cache: "true"
+          node-compile-cache: "true"
+          install-deps: "true"
+          frozen-lockfile: "true"
+          restore-test-caches: "false"
+      - name: Authenticate runtime and original packed plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(node -p process.versions.node)" = 24.19.0
+          test "$(pnpm --version)" = 12.4.0
+          git diff --exit-code
+          test "$(git write-tree)" = 3fcf4626d03ce65e9c3f4379e81a6321fa96e8ac
+          python3 - <<'PY_PLAN'
+          import base64, gzip, hashlib, json, os
+          packed = os.environ['OPENCLAW_NODE_TEST_GROUPS_GZIP_BASE64'].encode()
+          assert len(packed) == 3744
+          assert hashlib.sha256(packed).hexdigest() == '334a52d7b0aa8e93703c5263cd1be82bbf894a5bd71597f8627a9142079ca166'
+          decoded = gzip.decompress(base64.b64decode(packed))
+          assert hashlib.sha256(decoded).hexdigest() == '90df8cf8e39519ec58cccaa6ed2b8c410b5f9f88484b68dd486ce22fb511f862'
+          groups = json.loads(decoded)
+          assert [len(group['includePatterns']) for group in groups] == [42, 56, 86, 1, 27]
+          print(json.dumps({'packedSha256': hashlib.sha256(packed).hexdigest(), 'decodedSha256': hashlib.sha256(decoded).hexdigest(), 'groups': groups}))
+          PY_PLAN
+      - name: Run original five packed groups
+        shell: bash
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+          OPENCLAW_CI_TEST_RUNTIME_POLICY: bun-compatible
+          FROZEN_TARGET: "false"
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          OPENCLAW_NODE_TEST_GROUPS_JSON: ""
+          OPENCLAW_NODE_TEST_CONFIGS_JSON: "null"
+          OPENCLAW_NODE_TEST_ENV_JSON: "null"
+          OPENCLAW_NODE_TEST_INCLUDE_PATTERNS_JSON: "null"
+          OPENCLAW_NODE_TEST_TARGETS_JSON: "null"
+          OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: "[]"
+          OPENCLAW_VITEST_SHARD_NAME: compact-large-15
+          OPENCLAW_VITEST_MAX_WORKERS: "2"
+          OPENCLAW_VITEST_NO_OUTPUT_TIMEOUT_MS: "300000"
+          OPENCLAW_VITEST_NO_OUTPUT_RETRY: "1"
+          OPENCLAW_NODE_TEST_PLAN_CONCURRENCY: "2"
+        run: |
+          set -euo pipefail
+          time -p node --import tsx scripts/ci-run-node-test-shard.mts
+      - name: Record terminal source and memory
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code
+          test "$(git rev-parse HEAD)" = b828baa3da39e8667fa2fac0207d0e9868995287
+          test "$(git write-tree)" = 3fcf4626d03ce65e9c3f4379e81a6321fa96e8ac
+          git rev-parse HEAD HEAD^{tree}
+          git write-tree
+          if peak_memory="$(cat /sys/fs/cgroup/memory.peak 2>/dev/null)"; then
+            echo "runner cgroup peak memory bytes=$peak_memory"
+          fi
