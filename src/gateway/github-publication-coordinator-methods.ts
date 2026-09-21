@@ -7,6 +7,7 @@ import type {
 } from "../../packages/gateway-protocol/src/schema/session-github-publication.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { executeSqliteQuerySync } from "../infra/kysely-sync.js";
+import { readGitHubPublicationSessionLifecycle } from "../state/github-publication-session-lifecycles.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -165,6 +166,10 @@ export function createGitHubPublicationCoordinatorMethods(params: {
       const loaded = initialAuthority.loaded;
       const lifecycleRevision = loaded.entry?.lifecycleRevision ?? null;
       const placement = params.placements.get(sessionId);
+      const validateLocalExecution = () => {
+        const current = params.placements.get(sessionId);
+        return (!current || current.state === "local") && !current?.turnClaim;
+      };
       const capturePlacement = placement
         ? {
             state: placement.state,
@@ -251,6 +256,13 @@ export function createGitHubPublicationCoordinatorMethods(params: {
           const result = publicationResult(existing);
           assertExpectedSharedGitHubPublisher(expected, result.publisher!);
           return result;
+        }
+        const lifecycle = readGitHubPublicationSessionLifecycle({
+          publicationKind: "shared",
+          requestId: existing.request_id,
+        });
+        if (!lifecycle || lifecycle.lifecycle_revision !== lifecycleRevision) {
+          return await processRow(existing, validateLocalExecution, assertRequester);
         }
       }
       assertRequester();
@@ -348,14 +360,7 @@ export function createGitHubPublicationCoordinatorMethods(params: {
         },
       });
       const row = insertSessionRequest(snapshot);
-      return await processRow(
-        row,
-        () => {
-          const latest = params.placements.get(sessionId);
-          return (!latest || latest.state === "local") && !latest?.turnClaim;
-        },
-        assertRequester,
-      );
+      return await processRow(row, validateLocalExecution, assertRequester);
     },
 
     async resumeSessionRequests(): Promise<void> {

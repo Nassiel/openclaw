@@ -572,7 +572,7 @@ describe("Gateway GitHub publication boundaries", () => {
     });
     coordinator.read("create-schema");
     const requestId = "publication-missing-credential";
-    seedLocalPublication(database, { requestId, status: "requested" });
+    seedLocalPublication(database, { requestId, status: "requested", headCommit: null });
     const config = { tools: { github: { profileId: "ghp_11111111111111111111111111111111" } } };
     mocks.getConfigSnapshot.mockReturnValue({ config, sourceConfig: config });
     const { prepareGitHubPublicationIdentity } = await vi.importActual<
@@ -667,7 +667,7 @@ describe("Gateway GitHub publication boundaries", () => {
     });
     coordinator.read("create-schema");
     const requestId = "publication-unsafe-recovery";
-    seedLocalPublication(database, { requestId, status: "requested" });
+    seedLocalPublication(database, { requestId, status: "requested", headCommit: null });
     mocks.findWorktreeById.mockReturnValue({
       id: "worktree-1",
       repoRoot: "/repo",

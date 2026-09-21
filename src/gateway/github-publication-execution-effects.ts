@@ -40,9 +40,10 @@ export function createGitHubPublicationExecutionEffects<Row>(params: {
       }
       return write(
         { status: "failed", error_code: result.code, next_action: result.nextAction },
-        // Closing the source or session stops actions, but its exact execution still records
-        // the terminal non-outcome after an already-dispatched effect is observed.
-        result.code !== "session_changed" && result.code !== "identity_changed",
+        // Shared requests can retire their original requester under execution custody.
+        // Personal identity changes still belong to the explicit confirmation owner.
+        result.code !== "session_changed" &&
+          (result.code !== "identity_changed" || params.interruptedStatus === "needs_confirmation"),
       );
     },
     recordEffect(
