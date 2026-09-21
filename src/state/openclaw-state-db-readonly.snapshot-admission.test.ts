@@ -80,6 +80,11 @@ import {
   withExistingOpenClawStateDatabaseReadOnly,
   withOpenClawStateDatabaseReadSnapshot,
 } from "./openclaw-state-db-readonly.js";
+import {
+  getExistingOpenClawStateSchemaPath,
+  withExistingOpenClawStateSchema,
+} from "./openclaw-state-db-schema-policy.js";
+import { captureOpenClawStateWorkerContext } from "./openclaw-state-worker-context.js";
 
 beforeEach(() => {
   mocks.forbiddenNative.mockClear();
@@ -266,6 +271,40 @@ it.each(["snapshot", "disposable"] as const)(
       expect(await escape(() => probeRetiredAdmission(source))).toEqual(rejectedAdmissions);
       expect(mocks.forbiddenNative).not.toHaveBeenCalled();
       expect(mocks.cleanup).toHaveBeenCalledTimes(kind === "snapshot" ? 1 : 0);
+    });
+  },
+);
+
+it.each([false, true])(
+  "keeps captured schema authority while selecting current=%s rows",
+  async (current) => {
+    await withTempDir("openclaw-current-captured-read-", async (root) => {
+      const source = path.join(root, "source");
+      fs.writeFileSync(source, "mock source; never opened as SQLite");
+      await withExistingOpenClawStateSchema({ path: source }, () =>
+        withOpenClawStateDatabaseReadSnapshot(
+          async () => {
+            const context = captureOpenClawStateWorkerContext({ path: source });
+            mocks.read.mockImplementation(async (location) => {
+              expect(location.context).toBe(context);
+              expect(getExistingOpenClawStateSchemaPath()).toBe(source);
+              expect(location.location).toBe(current ? source : "/fixture/private.sqlite");
+              return { value: { ok: true, type: "fleet.list", sourceAdmitted: true, cells: [] } };
+            });
+            await expect(
+              executeExistingOpenClawStateRead(
+                { path: source },
+                { type: "fleet.list" },
+                { current, context },
+              ),
+            ).resolves.toMatchObject({ ok: true, cells: [] });
+            expect(mocks.read).toHaveBeenCalledOnce();
+          },
+          { path: source },
+        ),
+      );
+      expect(mocks.forbiddenNative).not.toHaveBeenCalled();
+      expect(mocks.cleanup).toHaveBeenCalledOnce();
     });
   },
 );
