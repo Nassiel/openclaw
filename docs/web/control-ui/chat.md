@@ -389,6 +389,10 @@ not give ordinary HTML files access to the Control UI origin. Relative assets
 are not served from the file's directory, and external resources remain subject
 to the sandbox's default content security policy.
 
+Authored in-page HTML links such as `href="#section"` scroll within the preview, including
+in `strict` mode. This leaves the original file and **Source** unchanged; authored
+base URLs, links targeting another window, and download links keep their behavior.
+
 Workspace file reads and edits retain their existing 256 KiB limit.
 For workspace HTML, **Edit**, in-file search, and explicit `file:line` navigation
 open **Source**. Switching back to **Preview** renders the latest unsaved editor
@@ -406,9 +410,10 @@ code's leading whitespace and final newline when present. Indented Markdown code
 blocks also work at the start of a message and remain literal while streaming,
 including blank lines within the block.
 
-Completed top-level code blocks keep your expansion and wrapping choices while
-later paragraphs stream into the same assistant reply. Replacing the message or
-correcting earlier content starts a fresh view.
+Code blocks keep your expansion and wrapping choices when their closing fence
+arrives and later paragraphs stream into the same assistant reply. Replacing the
+message, correcting earlier content, or changing rendering options starts a fresh
+view. References that change earlier Markdown can also reset the view.
 
 **Copy URL** in browser tab cards also works on plain HTTP connections where the
 browser does not provide its Clipboard API.

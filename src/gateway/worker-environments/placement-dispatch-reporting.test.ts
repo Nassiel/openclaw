@@ -1,3 +1,4 @@
+import { setImmediate } from "node:timers/promises";
 import { expect, it, vi } from "vitest";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { coordinateWorkerPlacementDispatch } from "./placement-dispatch-coordinator.js";
@@ -6,6 +7,56 @@ import {
   createCoordinatorTestService,
   PROVISIONING_PLACEMENT,
 } from "./placement-dispatch-coordinator.test-support.js";
+
+it.each([false, true])(
+  "keeps joined recovery behind the reporting baseline and settles it on failure=%s",
+  async (reportFails) => {
+    const reading = createDeferredCore();
+    const finishRead = createDeferredCore();
+    const reportError = new Error("synthetic reporting failure");
+    let state = "provisioning";
+    let reported = false;
+    const reconcile = vi.fn(async () => {});
+    const coordinated = coordinateWorkerPlacementDispatch(
+      createCoordinatorTestService({
+        reconcile,
+        resumeProvisioning: admittedRecovery(async (_placement, core) => await core()),
+      }),
+      (_request, run) => run(),
+      undefined,
+      async (operation) => {
+        reading.resolve();
+        await finishRead.promise;
+        if (reportFails) {
+          throw reportError;
+        }
+        const before = state;
+        await operation();
+        reported = before !== state;
+      },
+    );
+    const sweep = coordinated.reconcile();
+    const sweepOutcome = reportFails
+      ? expect(sweep).rejects.toBe(reportError)
+      : expect(sweep).resolves.toBeUndefined();
+    await reading.promise;
+    const recovery = coordinated.resumeProvisioning(PROVISIONING_PLACEMENT, async () => {
+      state = "active";
+    });
+    try {
+      await setImmediate();
+      expect(state).toBe("provisioning");
+      finishRead.resolve();
+      await Promise.all([sweepOutcome, recovery]);
+      expect(state).toBe("active");
+      expect(reported).toBe(!reportFails);
+      expect(reconcile).toHaveBeenCalledTimes(reportFails ? 0 : 1);
+    } finally {
+      finishRead.resolve();
+      await Promise.all([sweepOutcome, recovery]);
+    }
+  },
+);
 
 it("reports joined recovery before releasing the reconciliation fence", async () => {
   const operationStarted = createDeferredCore();

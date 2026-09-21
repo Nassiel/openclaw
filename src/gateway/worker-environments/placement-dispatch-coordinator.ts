@@ -77,6 +77,7 @@ export function coordinateWorkerPlacementDispatch(
   );
   type ReconciliationSweep = Extract<PlacementFence, { kind: "maintenance" }> & {
     full: boolean;
+    recoveryReady: Promise<void>;
     acceptingJoins: boolean;
     joinedRecoveries: Set<Promise<void>>;
   };
@@ -130,12 +131,14 @@ export function coordinateWorkerPlacementDispatch(
       return existing.promise;
     }
     const predecessor = placementFence;
+    const recoveryReady = createDeferredCore();
     const sweep: ReconciliationSweep = {
       kind: "maintenance",
       predecessor,
       admission: { admitted: false, reclaims: new Set() },
       dispatchCohort: predecessor?.dispatchCohort ?? [...activeDispatches],
       full,
+      recoveryReady: recoveryReady.promise,
       promise: Promise.resolve(),
       acceptingJoins: true,
       joinedRecoveries: new Set(),
@@ -143,9 +146,11 @@ export function coordinateWorkerPlacementDispatch(
     const settleRecoveries = () => {
       // Late recoveries queue behind this fence instead of joining its report.
       sweep.acceptingJoins = false;
+      recoveryReady.resolve();
       return Promise.allSettled(sweep.joinedRecoveries);
     };
     const execute = async () => {
+      recoveryReady.resolve();
       try {
         await operation();
       } finally {
@@ -563,6 +568,8 @@ export function coordinateWorkerPlacementDispatch(
           // Recovery waits for every admitted dispatch and older exclusive operation,
           // including later dispatches admitted while the original cohort was active.
           await waitForDispatchIdle();
+          // Reporting must capture its baseline before a joined recovery can write.
+          await sweep.recoveryReady;
           await enterMaintenance(sweep.admission);
           await recover();
         })();
