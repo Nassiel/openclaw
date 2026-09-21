@@ -1,7 +1,6 @@
 // Covers task registry lifecycle, delivery, notification, and query behavior.
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AcpSessionStoreEntry } from "../acp/runtime/session-meta.js";
 import { startAcpSpawnParentStreamRelay } from "../agents/subagents/spawn/acp-spawn-parent-stream.js";
 import { resetCronActiveJobs } from "../cron/active-jobs.js";
 import { emitAgentEvent, resetAgentEventsForTest } from "../infra/agent-events.js";
@@ -82,6 +81,7 @@ import {
   resolveTaskForLookupToken,
   updateTaskNotifyPolicyById,
 } from "./task-registry.js";
+import { registerTaskRegistryScheduledMaintenanceTests } from "./task-registry.maintenance-scheduling.test-utils.js";
 import {
   configureTaskRegistryMaintenance,
   getInspectableTaskAuditFindings,
@@ -3559,57 +3559,7 @@ describe("task-registry", () => {
     });
   });
 
-  it("prunes expired ended TaskFlows during scheduled maintenance", async () => {
-    await withTaskRegistryTempDir(
-      async () => {
-        vi.useFakeTimers();
-        const endedAt = Date.now() - 8 * 24 * 60 * 60_000;
-        const flow = createManagedTaskFlow({
-          ownerKey: "agent:main:main",
-          controllerId: "tests/scheduled-task-flow-maintenance",
-          goal: "Completed without a usable result",
-          status: "blocked",
-          createdAt: endedAt,
-          updatedAt: endedAt,
-          endedAt,
-        });
-        resetTaskRegistryForTests({ persist: false });
-        resetTaskFlowRegistryForTests({ persist: false });
-
-        try {
-          startTaskRegistryMaintenance();
-          await vi.advanceTimersByTimeAsync(5_000);
-          await waitForFast(() => expect(getTaskFlowById(flow.flowId)).toBeUndefined());
-        } finally {
-          stopTaskRegistryMaintenance();
-        }
-      },
-      { durableStore: true },
-    );
-  });
-
-  it("keeps scheduled maintenance root-admitted until session cleanup inspection settles", async () => {
-    await withTaskRegistryTempDir(async () => {
-      vi.useFakeTimers();
-      let releaseInspection = (_entries: AcpSessionStoreEntry[]) => {};
-      const inspection = new Promise<AcpSessionStoreEntry[]>((resolve) => {
-        releaseInspection = resolve;
-      });
-      configureTaskRegistryMaintenanceRuntimeForTest({
-        currentTasks: new Map(),
-        snapshotTasks: [],
-        listAcpSessionEntries: async () => await inspection,
-      });
-
-      startTaskRegistryMaintenance();
-      await vi.advanceTimersByTimeAsync(5_000);
-      await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(1));
-
-      releaseInspection([]);
-      await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
-      stopTaskRegistryMaintenance();
-    });
-  });
+  registerTaskRegistryScheduledMaintenanceTests();
 
   it.each(["closing", "retained"] as const)(
     "keeps sweep membership fixed when %s retention changes during awaited cleanup",

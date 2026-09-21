@@ -16,6 +16,7 @@ async function replay(
   displayName = "Replay fixture",
   home = "/Users/worker",
   launch?: "ready" | "waiter-exit",
+  interrupted?: "before-receipt" | "after-receipt" | "dangling-runtime" | "receipt-only",
 ) {
   const stateDir = path.join(home, ".openclaw", "cloud-workers", leaseId);
   const runtimeDir = path.join(home, ".openclaw-worker", "node-runtimes", "a".repeat(64));
@@ -73,6 +74,7 @@ async function replay(
     mkdirSync: vi.fn(),
     chmodSync: vi.fn(),
     symlinkSync: vi.fn(),
+    unlinkSync: vi.fn(),
     writeFileSync: vi.fn<(...args: unknown[]) => void>(),
     openSync: vi.fn(() => 11),
     closeSync: vi.fn(),
@@ -80,11 +82,28 @@ async function replay(
       if (file === runtimeDir) {
         return { isDirectory: () => true };
       }
+      if (
+        (file === path.join(stateDir, "runtime") &&
+          interrupted &&
+          interrupted !== "receipt-only") ||
+        (file === path.join(stateDir, "node-launch.json") &&
+          (interrupted === "after-receipt" || interrupted === "receipt-only"))
+      ) {
+        return { isSymbolicLink: () => file.endsWith("/runtime") };
+      }
       throw Object.assign(new Error("Missing runtime pointer"), { code: "ENOENT" });
     },
     existsSync: (file: string) =>
       file === runtimeDir ||
-      (file === path.join(stateDir, "node.pid") && (!launch || (launched && launch === "ready"))),
+      (file === path.join(stateDir, "runtime") &&
+        Boolean(
+          interrupted && interrupted !== "receipt-only" && interrupted !== "dangling-runtime",
+        )) ||
+      (file === path.join(stateDir, "node-launch.json") &&
+        (interrupted === "after-receipt" || interrupted === "receipt-only")) ||
+      (file === path.join(stateDir, "node.pid") &&
+        !interrupted &&
+        (!launch || (launched && launch === "ready"))),
     readFileSync: (file: string) => {
       if (file === path.join(runtimeDir, "node_modules", "openclaw", "package.json")) {
         return JSON.stringify({ name: "openclaw", version: "2026.8.1" });
@@ -286,10 +305,21 @@ async function replay(
   } else {
     expect(spawn).not.toHaveBeenCalled();
   }
+  if (interrupted) {
+    expect(fs.unlinkSync).not.toHaveBeenCalled();
+    expect(fs.symlinkSync).not.toHaveBeenCalled();
+    expect(fs.writeFileSync).not.toHaveBeenCalled();
+    expect(processFixture.kill).not.toHaveBeenCalled();
+  }
   return { code: processFixture.exitCode, output: output.join("\n") };
 }
 
 describe.each(["linux", "darwin"] as const)("%s node enrollment replay", (platform) => {
+  it("refuses an interrupted launch with a published runtime but no PID", async () => {
+    expect(
+      await replay(platform, undefined, false, undefined, undefined, undefined, "before-receipt"),
+    ).toMatchObject({ code: 1, output: expect.stringContaining("launch is incomplete") });
+  });
   it.each([undefined, "original-argv"])("reuses verified live invocation (%s)", async (variant) => {
     expect(await replay(platform, variant)).toEqual({
       code: 0,
@@ -332,6 +362,14 @@ it.each(["lsof-fallback"])("uses the available macOS %s probe", async (variant) 
 });
 
 describe("macOS desktop host enrollment replay", () => {
+  it.each(["before-receipt", "after-receipt", "dangling-runtime", "receipt-only"] as const)(
+    "preserves an interrupted host launch instead of launching another: %s",
+    async (interrupted) => {
+      expect(
+        await replay("darwin", undefined, true, undefined, undefined, undefined, interrupted),
+      ).toMatchObject({ code: 1, output: expect.stringContaining("launch is incomplete") });
+    },
+  );
   it.each([
     { launch: "ready" as const, failure: undefined, code: 0, message: "bootstrap-complete" },
     {

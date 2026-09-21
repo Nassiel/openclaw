@@ -218,6 +218,11 @@ function fixture(
     restMainFault: "",
     restMainFaultAfterReads: 0,
     restMainReads: 0,
+    restMainAdvance: null as null | {
+      boundary: "before-evidence" | "during-evidence";
+      observed: boolean;
+      main: string;
+    },
     restObservation: null as null | {
       pr?: Record<string, unknown>;
       advanceMain?: boolean;
@@ -302,7 +307,7 @@ function fixture(
     gh,
     `
 import fs from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 const [route,...args]=process.argv.slice(2);
 const file=process.env.FIXTURE_STATE;
 const s=JSON.parse(fs.readFileSync(file,"utf8"));
@@ -390,6 +395,18 @@ else if(args[0]==="api"&&args.includes("repos/fixture/repo/pulls/123")) {
 }
 else if(args[0]==="api"&&args.includes("repos/fixture/repo/git/ref/heads/main")) {
   s.restMainReads++;
+  if(s.restMainAdvance&&s.pr.state==="OPEN") {
+    const retained=spawnSync("git",["show","refs/openclaw/pr-merge-outcomes/123:outcome.json"],{cwd:process.env.FIXTURE_REPO,encoding:"utf8"});
+    if(retained.status===0) {
+      const intent=JSON.parse(retained.stdout);
+      if(intent.phase==="intent"&&intent.accepted===false) {
+        if(s.restMainAdvance.boundary==="before-evidence"||s.restMainAdvance.observed) {
+          git(["push","-q","origin",s.restMainAdvance.main+":refs/heads/main"]);
+          s.restMainAdvance=null;
+        } else s.restMainAdvance.observed=true;
+      }
+    }
+  }
   const reference={ref:"refs/heads/main",object:{type:"commit",sha:main()}};
   if(s.restMainReads>s.restMainFaultAfterReads) {
     if(s.restMainFault==="wrong-ref") reference.ref="refs/tags/main";
@@ -901,10 +918,10 @@ describePosix("native merge with exhausted GraphQL quota", () => {
 
       const run = f.run();
 
-      expect(run.status, run.output).toBe(drift === "none" ? 0 : 1);
+      expect(run.status, run.output).toBe(["none", "main"].includes(drift) ? 0 : 1);
       expect(f.state().observationReads).toBe(1);
-      expect(f.state().mutations).toBe(drift === "none" ? 1 : 0);
-      if (drift === "none") {
+      expect(f.state().mutations).toBe(["none", "main"].includes(drift) ? 1 : 0);
+      if (["none", "main"].includes(drift)) {
         expect(f.record()).toMatchObject({ phase: "complete", transport: "rest", head: f.head });
       } else {
         expect(() => f.record()).toThrow();
@@ -912,6 +929,33 @@ describePosix("native merge with exhausted GraphQL quota", () => {
     },
   );
 
+  it.each(["before-evidence", "during-evidence"] as const)(
+    "lands ordinary REST squash when main advances %s at dispatch",
+    (boundary) => {
+      const f = fixture();
+      const main = f.commit(f.tree("before\n", "advanced\n"), [f.base]);
+      f.save({
+        ...f.state(),
+        quotaAt: "checks",
+        restMainAdvance: { boundary, observed: false, main },
+      });
+
+      const run = f.run();
+
+      expect(run.status, run.output).toBe(0);
+      expect(f.record()).toMatchObject({
+        phase: "complete",
+        transport: "rest",
+        head: f.head,
+        main: f.base,
+      });
+      expect(f.state().restMainAdvance).toBeNull();
+      expect(f.state().mutations).toBe(1);
+      expect(f.state().posts).toBe(1);
+      expect(f.git(["show", `${f.record().landed}:owner.txt`])).toBe("after");
+      expect(f.git(["show", `${f.record().landed}:sibling.txt`])).toBe("advanced");
+    },
+  );
   it("keeps the prepared squash message when GraphQL depletes during final stability verification", () => {
     const credit = "Co-authored-by: Contributor <contributor@example.com>";
     const f = fixture(`Repair\n\n${credit}`);
@@ -1176,7 +1220,15 @@ describePosix("native merge with exhausted GraphQL quota", () => {
     },
   );
 
-  it.each(["supported", "classic", "queue", "unsupported", "no-admin", "main-advance"])(
+  it.each([
+    "supported",
+    "classic",
+    "queue",
+    "unsupported",
+    "no-admin",
+    "main-advance",
+    "open-main-advance",
+  ])(
     "reconciles a lost REST merge reply after policy changes to %s without submitting another mutation",
     (restPolicy) => {
       const f = fixture();
@@ -1186,19 +1238,36 @@ describePosix("native merge with exhausted GraphQL quota", () => {
       expect(f.record()).toMatchObject({ phase: "intent", transport: "rest", accepted: false });
       expect(f.state().mutations).toBe(1);
       const intent = f.git(["rev-parse", outcomeRef]);
+      const captures = f.captures();
+      const landed = f.git(["--git-dir=" + f.remote, "rev-parse", "main"]);
       f.recover();
       const state = f.state();
       if (restPolicy === "no-admin") {
         state.repoAuthority.permissions = { admin: false };
+      }
+      if (restPolicy === "open-main-advance") {
+        state.restMainAdvance = {
+          boundary: "during-evidence",
+          observed: false,
+          main: f.commit(
+            f.git(["rev-parse", `${landed}^{tree}`]),
+            [landed],
+            "Open receipt advance\n",
+          ),
+        };
       }
       f.save({ ...state, restPolicy });
 
       const unresolved = f.run();
       expect(unresolved.status, unresolved.output).toBe(1);
       expect(f.git(["rev-parse", outcomeRef])).toBe(intent);
+      expect(f.captures()).toEqual(captures);
       expect(f.state().mutations).toBe(1);
+      if (restPolicy === "open-main-advance") {
+        expect(f.state().restMainAdvance).toBeNull();
+        expect(unresolved.output).toContain("main changed while reading evidence");
+      }
       f.recover();
-      const landed = f.git(["--git-dir=" + f.remote, "rev-parse", "main"]);
       f.save({
         ...f.state(),
         gates: "fail",
@@ -2127,7 +2196,13 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
       next.mode = "success";
       next.comment = replacement ? "success" : "rejected";
       if (forwardMain) {
-        next.observations = [{}, {}, {}, {}, { advanceMain: true, advanceAfterRead: true }];
+        const parent = f.git(["--git-dir=" + f.remote, "rev-parse", "main"]);
+        const main = f.commit(
+          f.git(["rev-parse", `${parent}^{tree}`]),
+          [parent],
+          "Admission advance\n",
+        );
+        next.observations = [{}, { main }, {}, {}, { advanceMain: true, advanceAfterRead: true }];
       }
       if (reviewHead === "previous") {
         next.issueComments[0]!.body = next.issueComments[0]!.body.replace(approvedHead, f.head);
@@ -2516,6 +2591,35 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
       expect(f.git(["show", `${f.record().landed}:owner.txt`])).toBe("after");
     },
   );
+  it.each(["settlement", "final"])(
+    "lands ordinary squash when main advances during %s admission",
+    (stage) => {
+      const f = fixture();
+      const main = f.commit(f.tree("before\n", "advanced\n"), [f.base]);
+      const settled = { pr: { mergeable: "MERGEABLE", mergeStateStatus: "CLEAN" } };
+      f.save({
+        ...f.state(),
+        observations: [
+          { pr: unknownProjection },
+          { ...settled, ...(stage === "settlement" ? { main } : {}) },
+          ...(stage === "final" ? [{ main }] : []),
+        ],
+      });
+
+      const run = f.run(stage === "final");
+
+      expect(run.status, run.output).toBe(0);
+      expect(f.record()).toMatchObject({
+        phase: "complete",
+        head: f.head,
+        main: stage === "settlement" ? main : f.base,
+      });
+      expect(f.state().mutations).toBe(1);
+      expect(f.state().posts).toBe(1);
+      expect(f.git(["show", `${f.record().landed}:owner.txt`])).toBe("after");
+      expect(f.git(["show", `${f.record().landed}:sibling.txt`])).toBe("advanced");
+    },
+  );
   it("preserves gh queue eligibility when the verified admin route is selected", () => {
     const f = fixture();
     f.save({
@@ -2539,7 +2643,6 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
     "invalid metadata",
     "API error",
     "PR identity",
-    "main",
     "head",
     "base",
     "closed",
@@ -2554,7 +2657,6 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
     "final UNKNOWN mergeable",
     "final UNKNOWN status",
     "final changed status",
-    "final main",
   ])("stops initial settlement without dispatch on %s", (fault) => {
     const f = fixture();
     const next = f.state();
@@ -2569,10 +2671,6 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
         break;
       case "PR identity":
         step.pr = { id: "other-pr" };
-        break;
-      case "main":
-      case "final main":
-        step.main = f.commit(f.tree("before\n", "advanced\n"), [f.base]);
         break;
       case "head":
         step.pr = { headRefOid: f.base };
@@ -2673,11 +2771,9 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
       expect(run.output).toContain("PR or main changed during observation");
       expect(run.output).toContain("lock-recover, then rerun merge-run");
       expect(run.output).toContain(
-        fault === "final main"
-          ? `main: observed="${step.main}"; expected="${f.base}"`
-          : fault === "final UNKNOWN mergeable"
-            ? 'mergeable: observed="UNKNOWN"; expected="MERGEABLE"'
-            : `mergeStateStatus: observed="${fault === "final UNKNOWN status" ? "UNKNOWN" : "BEHIND"}"; expected="CLEAN"`,
+        fault === "final UNKNOWN mergeable"
+          ? 'mergeable: observed="UNKNOWN"; expected="MERGEABLE"'
+          : `mergeStateStatus: observed="${fault === "final UNKNOWN status" ? "UNKNOWN" : "BEHIND"}"; expected="CLEAN"`,
       );
       for (const [label, expected] of [
         ["observation", { main: f.base, pr: observedPr }],

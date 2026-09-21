@@ -633,7 +633,7 @@ merge_run() {
   local MERGE_ADMISSION_ACTIVE=true
   local admission_attempt previous_observation=""
   # Only fresh admission waits for calculation; retained intent reconciles immediately.
-  # Pin all other facts and each projection as soon as it becomes known.
+  # Pin PR/policy facts and each projection as soon as it becomes known.
   for admission_attempt in 1 2 3; do
     merge_outcome_observe "$pr" || return 1
     if [ "$MERGE_TRANSPORT" = rest ] &&
@@ -653,11 +653,12 @@ merge_run() {
       merge_outcome_stop "require OPEN, exact prepared head, main base, non-draft, no conflicts, and no existing auto/queue request; inspect current PR state"
       return 1
     fi
-    if [ -n "$previous_observation" ] && ! printf '%s\n' "$MERGE_OBSERVATION" | jq -e --argjson previous "$previous_observation" '
+    if [ -n "$previous_observation" ] && ! printf '%s\n' "$MERGE_OBSERVATION" | jq -e --argjson previous "$previous_observation" --argjson admin "$MERGE_USE_CRABBOX_ADMIN_BYPASS" '
+      def facts: del(.pr.mergeable,.pr.mergeStateStatus) |
+        if $admin then . else del(.main) end;
       (if .transport == "rest" and ($previous.transport // "graphql") == "graphql" then
-         del(.transport,.restPolicy,.pr.mergeable,.pr.mergeStateStatus) ==
-           ($previous | del(.transport,.restPolicy,.pr.mergeable,.pr.mergeStateStatus))
-       else del(.pr.mergeable,.pr.mergeStateStatus) == ($previous | del(.pr.mergeable,.pr.mergeStateStatus)) end) and
+         (facts | del(.transport,.restPolicy)) == ($previous | facts | del(.transport,.restPolicy))
+       else facts == ($previous | facts) end) and
       ($previous.pr.mergeable == "UNKNOWN" or .pr.mergeable == $previous.pr.mergeable) and
       ($previous.pr.mergeStateStatus == "UNKNOWN" or .pr.mergeStateStatus == $previous.pr.mergeStateStatus)
     ' >/dev/null; then

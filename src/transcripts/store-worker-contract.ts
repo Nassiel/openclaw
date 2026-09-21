@@ -1,6 +1,7 @@
 import type { SqliteWorkerCommand } from "../infra/sqlite-worker-contract.js";
 import type { TranscriptSessionDescriptor, TranscriptSourceLocator } from "./provider-types.js";
 import type {
+  queryTranscriptReadEntries,
   readLatestTranscriptEntry,
   readStoredTranscriptNotes,
   readTranscriptEntry,
@@ -51,6 +52,10 @@ export type TranscriptWriteOperations = {
 export type TranscriptWriteCommand = SqliteWorkerCommand<TranscriptWriteOperations>;
 
 export type TranscriptReadRequests = {
+  "transcripts.readEntries": {
+    input: Parameters<typeof queryTranscriptReadEntries>[1];
+    output: ReturnType<typeof queryTranscriptReadEntries>;
+  };
   "transcripts.summarySnapshot": {
     input: { session: SessionIdentity; maxUtterances: number };
     output: ReturnType<typeof readTranscriptSummarySnapshot>;

@@ -361,6 +361,7 @@
     "!dist/extensions/tokenjuice/**",
     "!dist/extensions/tlon/**",
     "!dist/extensions/twitch/**",
+    "!dist/extensions/typesafe/**",
     "!dist/extensions/venice/**",
     "!dist/extensions/vercel-ai-gateway/**",
     "!dist/extensions/visitor-access/**",
@@ -432,7 +433,8 @@
     "!dist/plugin-sdk/provider-model-metadata.d.ts",
     "!dist/plugin-sdk/memory-core-host-engine-knn.d.ts",
     "!dist/plugin-sdk/memory-core-host-engine-indexing.d.ts",
-    "!dist/plugin-sdk/sqlite-worker-runtime.d.ts"
+    "!dist/plugin-sdk/sqlite-worker-runtime.d.ts",
+    "!dist/plugin-sdk/worker-task-server.d.ts"
   ],
   "type": "module",
   "main": "dist/index.js",
@@ -920,6 +922,9 @@
     },
     "./plugin-sdk/process-runtime": {
       "default": "./dist/plugin-sdk/process-runtime.js"
+    },
+    "./plugin-sdk/worker-task-server": {
+      "default": "./dist/plugin-sdk/worker-task-server.js"
     },
     "./plugin-sdk/windows-spawn": {
       "default": "./dist/plugin-sdk/windows-spawn.js"

@@ -24,6 +24,7 @@ const replayError =
   "Cloud worker node is running a different bootstrap artifact or invocation; release and reprovision the worker";
 
 type ReplayOptions = {
+  interrupted?: "before-receipt" | "after-receipt" | "dangling-runtime" | "receipt-only";
   desktop?: boolean;
   currentSession?: { sessionId: number; userSid: string };
   processEntry?: Record<string, unknown>;
@@ -65,11 +66,33 @@ async function replay(options: ReplayOptions = {}) {
     chmodSync: vi.fn(),
     mkdtempSync: () => path.win32.join(home, "desktop-probe"),
     writeFileSync: vi.fn(),
+    renameSync: vi.fn(),
+    unlinkSync: vi.fn(),
+    symlinkSync: vi.fn(),
     rmSync: vi.fn(),
     existsSync: (file: string) =>
-      file === path.win32.join(stateDir, "node.pid") ||
+      (file === path.win32.join(stateDir, "node.pid") && !options.interrupted) ||
+      file === runtimeDir ||
       (file === launcher && !options.missingLauncher),
+    lstatSync: (file: string) => {
+      if (file === runtimeDir) {
+        return { isDirectory: () => true };
+      }
+      if (
+        (file === path.win32.join(stateDir, "runtime") &&
+          options.interrupted &&
+          options.interrupted !== "receipt-only") ||
+        (file === path.win32.join(stateDir, "node-launch.json") &&
+          (options.interrupted === "after-receipt" || options.interrupted === "receipt-only"))
+      ) {
+        return { isSymbolicLink: () => file === path.win32.join(stateDir, "runtime") };
+      }
+      throw Object.assign(new Error("Missing runtime pointer"), { code: "ENOENT" });
+    },
     readFileSync: (file: string) => {
+      if (file === path.win32.join(runtimeDir, "node_modules", "openclaw", "package.json")) {
+        return JSON.stringify({ name: "openclaw", version: "2026.8.1" });
+      }
       if (file === path.win32.join(stateDir, "node.pid")) {
         return "123\n";
       }
@@ -106,6 +129,9 @@ async function replay(options: ReplayOptions = {}) {
     throw new Error("Replay must not launch another node");
   });
   const spawnSync = vi.fn((binary: string, args: string[], opts: { env: NodeJS.ProcessEnv }) => {
+    if (binary === node && args[0] === cli) {
+      return { status: 0, stdout: args[1] === "--version" ? "OpenClaw 2026.8.1" : "" };
+    }
     if (options.desktop && args.includes("-File")) {
       expect(processFixture.env).not.toHaveProperty("CRABBOX_WORKER_BOOTSTRAP_TOKEN");
       expect(processFixture.env).not.toHaveProperty("CRABBOX_WORKER_SETUP_CODE");
@@ -142,6 +168,7 @@ async function replay(options: ReplayOptions = {}) {
   expect(encoded).toBeDefined();
   const script = Buffer.from(encoded!, "base64").toString("utf8");
   await runInNewContext(script, {
+    Buffer,
     require: (name: string) => {
       if (name === "node:fs") {
         return fs;
@@ -166,6 +193,13 @@ async function replay(options: ReplayOptions = {}) {
   expect(spawn).not.toHaveBeenCalled();
   expect(fs.chmodSync).not.toHaveBeenCalled();
   expect(processFixture.umask).not.toHaveBeenCalled();
+  if (options.interrupted) {
+    expect(spawnSync.mock.calls.filter(([, args]) => args.includes("-File"))).toEqual([]);
+    expect(fs.unlinkSync).not.toHaveBeenCalled();
+    expect(fs.writeFileSync).not.toHaveBeenCalled();
+    expect(fs.symlinkSync).not.toHaveBeenCalled();
+    expect(processFixture.kill).not.toHaveBeenCalled();
+  }
   return { code: processFixture.exitCode, output: output.join("\n"), spawnSync, fs };
 }
 
@@ -237,6 +271,15 @@ describe("native Windows node enrollment replay", () => {
 });
 
 describe("native Windows desktop enrollment replay", () => {
+  it.each(["before-receipt", "after-receipt", "dangling-runtime", "receipt-only"] as const)(
+    "preserves an interrupted launch instead of issuing another service request: %s",
+    async (interrupted) => {
+      expect(await replay({ desktop: true, interrupted })).toMatchObject({
+        code: 1,
+        output: expect.stringContaining("launch is incomplete"),
+      });
+    },
+  );
   it("reuses only the node in the current interactive account and session", async () => {
     expect(await replay({ desktop: true, missingLauncher: true })).toMatchObject({ code: 0 });
   });

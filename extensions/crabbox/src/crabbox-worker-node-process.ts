@@ -83,7 +83,18 @@ ${desktopTarget === "windows/normal" ? createCrabboxWindowsDesktopNodeLauncher()
     return invocation !== null && (invocation[3] ?? invocation[4]) === cli && fs.realpathSync(invocation[1] ?? invocation[2]) === fs.realpathSync(process.execPath) && fs.realpathSync(entry.executablePath) === fs.realpathSync(process.execPath);
   };
   const reuseNodeProcess = () => {
-  if (mode && fs.existsSync(pidFile)) {
+  const hasPid = mode && fs.existsSync(pidFile);
+  if (mode && !hasPid) {
+    // The runtime pointer precedes detached launch; a lost PID cannot prove no process survived.
+    for (const previous of [runtimeLink, launchFile]) {
+      try {
+        const entry = fs.lstatSync(previous);
+        if (previous === runtimeLink && !entry.isSymbolicLink()) throw new Error("Cloud worker runtime pointer is occupied");
+        throw new Error("Cloud worker node launch is incomplete; release and reprovision the worker");
+      } catch (error) { if (error.code !== "ENOENT") throw error; }
+    }
+  }
+  if (hasPid) {
     const pidText = fs.readFileSync(pidFile, "utf8").trim();
     if (!/^[1-9][0-9]*$/.test(pidText)) throw new Error("Cloud worker node PID is invalid; release and reprovision the worker");
     const pid = Number(pidText);

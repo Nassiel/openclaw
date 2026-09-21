@@ -36,51 +36,80 @@ const CODEX_DIRECT_YIELD_NAMESPACE = {
 } as const;
 
 describe("mock tool surface dispatch", () => {
-  it("tracks a deferred command and its poll through structured results", async () => {
-    const server = await startMockServer();
-    const input: unknown[] = [
-      makeUserInput(
-        "Tool progress QA check: call the exec tool exactly once with this exact command before answering: `true`. After that command completes, reply exactly `PROGRESS_OK`.",
-      ),
-    ];
-    const request = () =>
-      expectNonStreamingResponsesJson(server, { tools: STRUCTURED_CATALOG_TOOLS, input });
-    const command = outputToolCall(await request(), "tool_call");
-    expect(outputToolArgsFromItem(command)).toEqual({ id: "exec", args: { command: "true" } });
-    input.push(
-      command,
-      makeToolOutputWithCallId(
-        outputToolCallId(command, "exec"),
-        JSON.stringify({
-          tool: { id: "exec", name: "exec", source: "core" },
-          result: {
-            content: [
-              {
-                type: "text",
-                text: "Command still running (session bounded-command, pid 3128). Use process (list/poll/log/write/send-keys/submit/paste/kill/clear/remove) for follow-up.",
+  it.each([false, true])(
+    "tracks a deferred command and its poll through structured results (failed=%s)",
+    async (failed) => {
+      const server = await startMockServer();
+      const input: unknown[] = [
+        makeUserInput(
+          "Tool progress QA check: call the exec tool exactly once with this exact command before answering: `true`. After that command completes, reply exactly `PROGRESS_OK`.",
+        ),
+      ];
+      const request = () =>
+        expectNonStreamingResponsesJson(server, { tools: STRUCTURED_CATALOG_TOOLS, input });
+      const command = outputToolCall(await request(), "tool_call");
+      expect(outputToolArgsFromItem(command)).toEqual({ id: "exec", args: { command: "true" } });
+      input.push(command, {
+        ...makeToolOutputWithCallId(
+          outputToolCallId(command, "exec"),
+          JSON.stringify({
+            tool: { id: "exec", name: "exec", source: "core" },
+            result: {
+              content: failed
+                ? []
+                : [
+                    {
+                      type: "text",
+                      text: "Command still running (session bounded-command, pid 3128). Use process (list/poll/log/write/send-keys/submit/paste/kill/clear/remove) for follow-up.",
+                    },
+                  ],
+              details: failed
+                ? { status: "failed", exitCode: 1 }
+                : {
+                    status: "running",
+                    sessionId: "bounded-command",
+                    pid: 3128,
+                    startedAt: 1,
+                    cwd: "/workspace",
+                    tail: "",
+                    followUp:
+                      "Use process (list/poll/log/write/send-keys/submit/paste/kill/clear/remove) for follow-up.",
+                  },
+            },
+          }),
+        ),
+        is_error: failed,
+      });
+      if (failed) {
+        expect(outputText(await request())).toBe("BUG-TOOL-FAILED");
+        return;
+      }
+      const poll = outputToolCall(await request(), "tool_call");
+      expect(outputToolArgsFromItem(poll)).toEqual({
+        id: "process",
+        args: { action: "poll", sessionId: "bounded-command", timeout: 30_000 },
+      });
+      input.push(
+        poll,
+        makeToolOutputWithCallId(
+          outputToolCallId(poll, "poll"),
+          JSON.stringify({
+            tool: { id: "process", name: "process", source: "core" },
+            result: {
+              content: [{ type: "text", text: "(no new output)\n\nProcess exited with code 0." }],
+              details: {
+                status: "completed",
+                sessionId: "bounded-command",
+                exitCode: 0,
+                aggregated: "",
               },
-            ],
-          },
-        }),
-      ),
-    );
-    const poll = outputToolCall(await request(), "tool_call");
-    expect(outputToolArgsFromItem(poll)).toEqual({
-      id: "process",
-      args: { action: "poll", sessionId: "bounded-command", timeout: 30_000 },
-    });
-    input.push(
-      poll,
-      makeToolOutputWithCallId(
-        outputToolCallId(poll, "poll"),
-        JSON.stringify({
-          tool: { id: "process", name: "process", source: "core" },
-          result: { content: [{ type: "text", text: "Process exited with code 0." }] },
-        }),
-      ),
-    );
-    expect(outputText(await request())).toBe("PROGRESS_OK");
-  });
+            },
+          }),
+        ),
+      );
+      expect(outputText(await request())).toBe("PROGRESS_OK");
+    },
+  );
 
   it.each([
     {
@@ -256,72 +285,56 @@ describe("mock tool surface dispatch", () => {
       instructions:
         "Current source visible reply MUST use `message(action=send)`; final text is private.",
       final: undefined,
-      structured: false,
     },
     {
       name: "Codex private-source guidance",
       instructions:
         "Visible source replies are not automatically delivered for this run. Use `message(action=send)` for user-visible source-channel output. When the message is the completed reply to the current source conversation, set `final=true`.",
       final: true,
-      structured: false,
     },
-    {
-      name: "structured private-source guidance",
-      instructions:
-        "Current source visible reply MUST use `message(action=send)`; final text is private.",
-      final: undefined,
-      structured: true,
-    },
-  ])(
-    "delivers an empty terminal representation with $name",
-    async ({ instructions, final, structured }) => {
-      const server = await startMockServer();
-      const completionInput = [
-        makeUserInput("Subagent terminal reply QA check: empty."),
-        {
-          type: "function_call",
-          call_id: "call_empty_historical_write",
-          name: "write",
-          arguments: '{"path":"qa-terminal-empty-side-effect.txt"}',
-        },
-        makeToolOutputWithCallId("call_empty_historical_write", "Wrote 40 bytes"),
-        makeUserInput(
-          TEST_RUNTIME_CONTEXT_CARRIER.replace(
-            "runtime metadata",
-            "[Internal task completion event]\nTask: qa-terminal-empty\nResult: (no output)",
-          ),
+  ])("delivers an empty terminal representation with $name", async ({ instructions, final }) => {
+    const server = await startMockServer();
+    const completionInput = [
+      makeUserInput("Subagent terminal reply QA check: empty."),
+      {
+        type: "function_call",
+        call_id: "call_empty_historical_write",
+        name: "write",
+        arguments: '{"path":"qa-terminal-empty-side-effect.txt"}',
+      },
+      makeToolOutputWithCallId("call_empty_historical_write", "Wrote 40 bytes"),
+      makeUserInput(
+        TEST_RUNTIME_CONTEXT_CARRIER.replace(
+          "runtime metadata",
+          "[Internal task completion event]\nTask: qa-terminal-empty\nResult: (no output)",
         ),
-      ];
-      const delivery = await expectNonStreamingResponsesJson(server, {
-        tools: structured ? STRUCTURED_CATALOG_TOOLS : [MESSAGE_TOOL],
-        instructions,
-        input: completionInput,
-      });
-      const messageCall = outputToolCall(delivery, structured ? "tool_call" : "message");
-      const messageArgs = outputToolArgsFromItem(messageCall);
-      if (structured) {
-        expect(messageArgs.id).toBe("message");
-      }
-      expect(structured ? messageArgs.args : messageArgs).toEqual({
-        action: "send",
-        message: "QA-SUBAGENT-TERMINAL-EMPTY-REPRESENTED",
-        ...(final ? { final } : {}),
-      });
+      ),
+    ];
+    const delivery = await expectNonStreamingResponsesJson(server, {
+      tools: [MESSAGE_TOOL],
+      instructions,
+      input: completionInput,
+    });
+    const messageCall = outputToolCall(delivery, "message");
+    expect(outputToolArgsFromItem(messageCall)).toEqual({
+      action: "send",
+      message: "QA-SUBAGENT-TERMINAL-EMPTY-REPRESENTED",
+      ...(final ? { final } : {}),
+    });
 
-      const settled = await expectNonStreamingResponsesJson(server, {
-        tools: structured ? STRUCTURED_CATALOG_TOOLS : [MESSAGE_TOOL],
-        instructions,
-        input: [
-          ...completionInput,
-          messageCall,
-          makeToolOutputWithCallId(
-            outputToolCallId(messageCall, "call_mock_message_empty_terminal"),
-            '{"ok":true,"messageId":"qa-empty-terminal"}',
-          ),
-        ],
-      });
-      expect(outputItems(settled).some((item) => item.type === "function_call")).toBe(false);
-      expect(outputText(settled)).toBe("");
-    },
-  );
+    const settled = await expectNonStreamingResponsesJson(server, {
+      tools: [MESSAGE_TOOL],
+      instructions,
+      input: [
+        ...completionInput,
+        messageCall,
+        makeToolOutputWithCallId(
+          outputToolCallId(messageCall, "call_mock_message_empty_terminal"),
+          '{"ok":true,"messageId":"qa-empty-terminal"}',
+        ),
+      ],
+    });
+    expect(outputItems(settled).some((item) => item.type === "function_call")).toBe(false);
+    expect(outputText(settled)).toBe("");
+  });
 });

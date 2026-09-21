@@ -401,6 +401,7 @@ export function executeSharedStateCommand(
     return executeTranscriptWrite(command, { database, path: context.databasePath });
   }
   switch (command.type) {
+    case "transcripts.readEntries":
     case "transcripts.sessionEntries":
     case "transcripts.matches":
     case "transcripts.session":

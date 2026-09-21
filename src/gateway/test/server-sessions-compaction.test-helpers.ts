@@ -8,7 +8,7 @@ import { createZeroUsageFixture } from "../../agents/test-helpers/usage-fixtures
 import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
 import { embeddedRunMock } from "../test-helpers.runtime-state.js";
 
-export const getSessionManagerModule = createLazyRuntimeModule(
+const getSessionManagerModule = createLazyRuntimeModule(
   () => import("../../agents/sessions/index.js"),
 );
 
@@ -59,10 +59,7 @@ function writeSessionFixture(
   fsSync.writeFileSync(sessionFile, `${contents}\n`, "utf8");
 }
 
-export async function createCheckpointFixture(
-  dir: string,
-  options: { legacyPreCompactionSnapshot?: boolean } = { legacyPreCompactionSnapshot: true },
-) {
+export async function createCompactedSessionFixture(dir: string) {
   const { SessionManager } = await getSessionManagerModule();
   const session = SessionManager.inMemory(dir);
   const userMessage: UserMessage = {
@@ -90,17 +87,7 @@ export async function createCheckpointFixture(
   }
   const sessionFile = path.join(dir, `${session.getSessionId()}.jsonl`);
   writeSessionFixture(sessionFile, session);
-  const legacyPreCompactionSnapshot = options.legacyPreCompactionSnapshot ?? true;
-  const preCompactionSessionFile = legacyPreCompactionSnapshot
-    ? path.join(dir, `${path.parse(sessionFile).name}.checkpoint-test.jsonl`)
-    : undefined;
-  if (preCompactionSessionFile) {
-    fsSync.copyFileSync(sessionFile, preCompactionSessionFile);
-  }
-  const preCompactionSession = preCompactionSessionFile
-    ? SessionManager.fromEntries(session.getPersistedEntries(), dir)
-    : undefined;
-  session.appendCompaction("checkpoint summary", preCompactionLeafId, 123, { ok: true });
+  session.appendCompaction("compaction summary", preCompactionLeafId, 123, { ok: true });
   const postCompactionLeafId = session.getLeafId();
   if (!postCompactionLeafId) {
     throw new Error("expected post-compaction leaf");
@@ -110,8 +97,6 @@ export async function createCheckpointFixture(
     session,
     sessionId: session.getSessionId(),
     sessionFile,
-    preCompactionSession,
-    preCompactionSessionFile,
     preCompactionLeafId,
     postCompactionLeafId,
   };

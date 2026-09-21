@@ -2047,6 +2047,8 @@ describe("Claude session catalog", () => {
 
   it("keeps the CLI records when only the Desktop store changes", async () => {
     const home = await createHome();
+    // Adding 250 to this native clock sample rounds the elapsed interval below 250 ms.
+    vi.spyOn(performance, "now").mockReturnValue(100.00001);
     const watches = createClaudeCatalogWatchDriver(home);
     let now = Date.now();
     vi.spyOn(Date, "now").mockImplementation(() => now);
@@ -2087,9 +2089,7 @@ describe("Claude session catalog", () => {
     expect((await listLocalClaudeSessionPage({}, home)).sessions[0]?.name).toBe("Desktop after");
     for (const spy of transcriptIo) {
       expect(
-        spy.mock.calls.filter(
-          ([target]) => typeof target === "string" && target.endsWith(".jsonl"),
-        ),
+        spy.mock.calls.filter(([file]) => typeof file === "string" && file.endsWith(".jsonl")),
       ).toEqual([]);
     }
     const projects = path.join(home, ".claude", "projects");

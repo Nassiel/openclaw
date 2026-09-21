@@ -240,7 +240,9 @@ describe("projects vitest config", () => {
     const methodsConfig = requireTestConfig(createGatewayMethodsVitestConfig({}));
     const methodsIsolatedConfig = requireTestConfig(createGatewayMethodsIsolatedVitestConfig({}));
     const serverIsolatedConfig = requireTestConfig(createGatewayServerIsolatedVitestConfig({}));
-    const serverConfig = requireTestConfig(createGatewayServerVitestConfig({}));
+    const serverConfig = requireTestConfig(
+      createGatewayServerVitestConfig({ OPENCLAW_VITEST_MAX_WORKERS: "2" }),
+    );
     const gatewayFallback = requireTestConfig(createGatewayVitestConfig());
 
     expect(rootVitestProjects).toContain(methodsIsolatedProject);
@@ -253,7 +255,11 @@ describe("projects vitest config", () => {
     expect(methodsIsolatedConfig.include).toEqual(scopedGatewayMethodsIsolatedTestFiles);
     expect(serverConfig.pool).toBe("forks");
     expect(serverConfig.isolate).toBe(false);
-    expect(serverConfig.fileParallelism).toBe(false);
+    expect(serverConfig.fileParallelism).toBe(true);
+    expect(
+      requireTestConfig(createGatewayServerVitestConfig({ OPENCLAW_VITEST_MAX_WORKERS: "1" }))
+        .fileParallelism,
+    ).toBe(false);
     expect(serverIsolatedConfig.isolate).toBe(true);
     expect(serverIsolatedConfig.pool).toBe("forks");
     expect(serverIsolatedConfig.runner).toBeUndefined();

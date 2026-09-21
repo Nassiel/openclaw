@@ -161,7 +161,15 @@ export function* filterSessionEntries(
     if (
       selection.isCronRun ||
       (opts.excludeCron === true && isCronSessionDisplayKey(key)) ||
-      (opts.excludeSystem === true && isSystemCreatedSessionRow({ ...entry, key })) ||
+      (opts.excludeSystem === true &&
+        isSystemCreatedSessionRow({
+          key,
+          createdActor: entry.createdActor,
+          createdVia: entry.createdVia,
+          label: entry.label,
+          displayName: entry.displayName,
+          subject: entry.subject,
+        })) ||
       (opts.excludeSubagents === true && selection.isSubagent) ||
       (!includeGlobal && storeKey === "global") ||
       (!includeUnknown && storeKey === "unknown")

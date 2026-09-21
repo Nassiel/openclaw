@@ -2361,7 +2361,6 @@ describe("qa mock openai server", () => {
           input_schema: {
             type: "object",
             properties: {
-              language: { type: "string" },
               code: { type: "string" },
             },
             required: ["code"],
@@ -3266,30 +3265,52 @@ Update and merge these partial structured summaries.`,
     expect(outputText(payload)).not.toContain("Protocol note:");
   });
 
-  it("makes the empty terminal worker terminal after one side effect", async () => {
-    const server = await startMockServer();
-    await expectNonStreamingResponsesJson(server, {
-      tools: [{ type: "function", name: "write" }],
-      input: [makeUserInput("Subagent terminal reply QA worker: empty.")],
-    });
-    const writeRequest = requireRecord(
-      await (await fetch(`${server.baseUrl}/debug/last-request`)).json(),
-      "empty terminal write request",
-    );
-    expect(writeRequest.plannedToolName).toBe("write");
-    expect(requireRecord(writeRequest.plannedToolArgs, "empty terminal write args")).toMatchObject({
-      path: "qa-terminal-empty-side-effect.txt",
-    });
+  it.each(["write", "tool_call"])(
+    "makes the empty terminal worker terminal after one %s side effect",
+    async (wireName) => {
+      const server = await startMockServer();
+      const tools = [{ type: "function", name: wireName }];
+      const kickoff = await expectNonStreamingResponsesJson(server, {
+        tools,
+        input: [makeUserInput("Subagent terminal reply QA worker: empty.")],
+      });
+      const call = outputToolCall(kickoff, wireName);
+      if (wireName === "tool_call") {
+        expect(outputToolArgsFromItem(call)).toMatchObject({
+          id: "write",
+          args: { path: "qa-terminal-empty-side-effect.txt" },
+        });
+      }
+      const writeRequest = requireRecord(
+        await (await fetch(`${server.baseUrl}/debug/last-request`)).json(),
+        "empty terminal write request",
+      );
+      expect(writeRequest.plannedToolName).toBe("write");
+      expect(
+        requireRecord(writeRequest.plannedToolArgs, "empty terminal write args"),
+      ).toMatchObject({
+        path: "qa-terminal-empty-side-effect.txt",
+      });
 
-    const payload = await expectNonStreamingResponsesJson(server, {
-      tools: [{ type: "function", name: "write" }],
-      input: [
-        makeUserInput("Subagent terminal reply QA worker: empty."),
-        makeToolOutputWithCallId(String(writeRequest.plannedToolCallId), "Wrote 40 bytes"),
-      ],
-    });
-    expect(outputText(payload)).toContain("QA-SUBAGENT-TERMINAL-INTERNAL-MUST-NOT-LEAK");
-  });
+      const payload = await expectNonStreamingResponsesJson(server, {
+        tools,
+        input: [
+          makeUserInput("Subagent terminal reply QA worker: empty."),
+          call,
+          makeToolOutputWithCallId(
+            String(writeRequest.plannedToolCallId),
+            wireName === "tool_call"
+              ? JSON.stringify({
+                  tool: { id: "write", name: "write", source: "core" },
+                  result: { content: [{ type: "text", text: "Wrote 40 bytes" }] },
+                })
+              : "Wrote 40 bytes",
+          ),
+        ],
+      });
+      expect(outputText(payload)).toContain("QA-SUBAGENT-TERMINAL-INTERNAL-MUST-NOT-LEAK");
+    },
+  );
 
   it("returns explicit empty output for the intentional non-delivery worker", async () => {
     const server = await startMockServer();
@@ -3917,7 +3938,6 @@ Update and merge these partial structured summaries.`,
         parameters: {
           type: "object",
           properties: {
-            language: { type: "string" },
             code: { type: "string" },
           },
           required: ["code"],
@@ -6607,7 +6627,6 @@ Update and merge these partial structured summaries.`,
         input_schema: {
           type: "object",
           properties: {
-            language: { type: "string" },
             code: { type: "string" },
           },
           required: ["code"],
@@ -6680,6 +6699,7 @@ Update and merge these partial structured summaries.`,
 
     const readAgent = readToolUse(await request());
     expect(readAgent.name).toBe("exec");
+    expect(readAgent.input).toEqual({ code: expect.any(String) });
     const readAgentCode = String(requireRecord(readAgent.input, "exec input").code);
     expect(readAgentCode).toContain("await catalog.search(targetName)");
     expect(readAgentCode).toContain("await target(targetArgs)");
@@ -6941,7 +6961,6 @@ Update and merge these partial structured summaries.`,
       parameters: {
         type: "object",
         properties: {
-          language: { type: "string" },
           code: { type: "string" },
           restartSafe: { type: "boolean" },
         },
@@ -6965,7 +6984,7 @@ Update and merge these partial structured summaries.`,
     execArgs: Record<string, unknown>,
     checkpoint: number,
   ) {
-    expect(execArgs).toMatchObject({ language: "javascript", restartSafe: true });
+    expect(execArgs).toEqual({ code: expect.any(String), restartSafe: true });
     expect(execArgs.code).toContain("qa_restart_wait");
     expect(execArgs.code).toContain('catalog.search("qa_restart_wait")');
     expect(execArgs.code).toContain(`CHECKPOINT-${checkpoint}`);
@@ -7082,10 +7101,26 @@ Update and merge these partial structured summaries.`,
     );
   });
 
-  it("routes Anthropic image generation through Code Mode when only exec and wait are visible", async () => {
+  it.each([
+    { surface: "Code Mode", tools: ANTHROPIC_GUEST_CODE_MODE_TOOLS, wireName: "exec" },
+    {
+      surface: "structured catalog",
+      tools: [
+        {
+          name: "tool_call",
+          input_schema: {
+            type: "object",
+            properties: { id: { type: "string" }, args: { type: "object" } },
+            required: ["id"],
+          },
+        },
+      ],
+      wireName: "tool_call",
+    },
+  ])("routes Anthropic image generation through $surface", async ({ tools, wireName }) => {
     const server = await startMockServer();
     const body = (await expectAnthropicMessagesJson(server, {
-      tools: ANTHROPIC_GUEST_CODE_MODE_TOOLS,
+      tools,
       messages: [
         makeAnthropicUserText(
           "Capability flip image check: generate a QA lighthouse image in this turn right now.",
@@ -7096,14 +7131,21 @@ Update and merge these partial structured summaries.`,
       content: Array<Record<string, unknown>>;
     };
     expect(body.stop_reason).toBe("tool_use");
-    expect(body.content.find((block) => block.type === "tool_use")?.name).toBe("exec");
+    const call = body.content.find((block) => block.type === "tool_use");
+    expect(call?.name).toBe(wireName);
+    if (wireName === "tool_call") {
+      expect(call?.input).toMatchObject({
+        id: "image_generate",
+        args: { filename: "qa-lighthouse.png", size: "1024x1024" },
+      });
+    }
 
     const debug = requireRecord(
       await fetch(`${server.baseUrl}/debug/last-request`).then((result) => result.json()),
       "debug request",
     );
     expect(debug.plannedToolName).toBe("image_generate");
-    expect(debug.plannedWireToolName).toBe("exec");
+    expect(debug.plannedWireToolName).toBe(wireName);
   });
 
   it("does not route hidden capabilities through ordinary shell exec", async () => {
