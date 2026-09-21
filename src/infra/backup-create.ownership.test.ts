@@ -30,7 +30,6 @@ describe("backup SQLite ownership", () => {
     { includeWorkspace: true, alias: "dot" },
     { includeWorkspace: false, alias: "dot" },
     { includeWorkspace: true, alias: "symlink" },
-    { includeWorkspace: true, alias: "hardlink" },
   ])(
     "backs up registered state inside its workspace ($alias, includeWorkspace=$includeWorkspace)",
     async ({ includeWorkspace, alias }) => {
@@ -47,8 +46,6 @@ describe("backup SQLite ownership", () => {
               : path.join(state.agentDir(), "z-alias.sqlite");
           if (alias === "symlink") {
             await fs.symlink(agentPath, aliasPath);
-          } else if (alias === "hardlink") {
-            await fs.link(agentPath, aliasPath);
           }
           registerOpenClawAgentDatabase({
             agentId: "main",
