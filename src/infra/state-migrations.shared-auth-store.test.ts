@@ -21,6 +21,7 @@ import {
   closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
 } from "../state/openclaw-agent-db.js";
+import { ensureAgentDeletionJournalSchema } from "../state/openclaw-state-db-schema-additive.js";
 import * as stateDb from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import {
@@ -128,6 +129,7 @@ describe("shared auth store relocation", () => {
               .prepare("INSERT INTO auth_profile_store VALUES ('primary', ?, 1)")
               .run(JSON.stringify(makeStore("openai:copied", "fixture-key")));
           } else {
+            ensureAgentDeletionJournalSchema(seed);
             seed
               .prepare("INSERT INTO config_machine_state VALUES ('auth.sharedStore', ?, 1)")
               .run(JSON.stringify({ location }));
@@ -196,6 +198,7 @@ describe("shared auth store relocation", () => {
     "preserves the live auth source's POSIX locks during copied inspection",
     async () => {
       const fixture = await createEmptyFixture(false);
+      stateDb.openOpenClawStateDatabase({ env: fixture.env });
       fs.mkdirSync(path.dirname(fixture.sourcePath), { recursive: true });
       const writer = new DatabaseSync(fixture.sourcePath);
       try {
