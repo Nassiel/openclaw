@@ -73,16 +73,11 @@ async function collect(references: References) {
   }
 }
 
-class RevocationReason {
+class RevocationReason extends Promise<void> {
   #message = "Access ended";
 
   read() {
     return this.#message;
-  }
-
-  // oxlint-disable-next-line unicorn/no-thenable -- Native abort reasons may be thenables; this boundary must not await them.
-  then() {
-    assert.fail("An abort reason must not become asynchronous plugin work");
   }
 }
 
@@ -97,14 +92,15 @@ async function retireRegisteredPolicy(): Promise<References> {
 
   // Preserve the failing order: requester release, service stop, instance retirement, GC.
   hostSignal.removeEventListener("abort", onAbort);
-  const reason = new RevocationReason();
+  // A pending Promise is valid abort data; projecting it must not retain plugin work.
+  const reason = new RevocationReason(() => undefined);
   policy.grant.abort(reason);
   policy.lifetime.abort();
   assert.equal(authority.signal.aborted, true);
   const exposedReason: unknown = authority.signal.reason;
   assert.ok(exposedReason instanceof RevocationReason);
   assert.notEqual(exposedReason, reason);
-  const readReason = exposedReason.read;
+  const readReason = exposedReason.read.bind(exposedReason);
   assert.equal(readReason(), "Access ended");
   assert.deepEqual((await policy.instance.dispose()).errors, []);
   assert.throws(
