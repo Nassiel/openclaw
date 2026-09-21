@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import fs from "node:fs/promises";
+import fs, { type FileHandle } from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { WorkerTaskError } from "../../infra/worker-task-pool.js";
 import {
@@ -23,6 +24,8 @@ afterEach(() => vi.restoreAllMocks());
 
 function fixture(controller = new AbortController()) {
   const temporaryRoot = temporary.make("workspace-upload-reader-");
+  let authorized = true;
+  const authorityError = new Error("upload authority closed");
   const file = Buffer.from("file\0bytes");
   const baseRaw = serializeWorkerWorkspaceManifest({ version: 1, baseCommit: null, entries: [] });
   const currentRaw = serializeWorkerWorkspaceManifest({
@@ -58,11 +61,48 @@ function fixture(controller = new AbortController()) {
       baseManifestRef: `sha256:${createHash("sha256").update(baseRaw).digest("hex")}`,
       temporaryRoot,
       signal: controller.signal,
-      assertCurrent: () => {},
-      isAuthorized: () => true,
+      assertCurrent: () => {
+        controller.signal.throwIfAborted();
+        if (!authorized) {
+          throw authorityError;
+        }
+      },
+      isAuthorized: () => authorized,
     });
   };
-  return { temporaryRoot, file, baseRaw, currentRaw, payload, upload };
+  return {
+    temporaryRoot,
+    file,
+    baseRaw,
+    currentRaw,
+    payload,
+    upload,
+    revoke() {
+      authorized = false;
+      return authorityError;
+    },
+  };
+}
+
+function observeUploadFile(onOpen: (handle: FileHandle) => void) {
+  const open = fs.open.bind(fs);
+  let closedBytes: Buffer | undefined;
+  vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+    const handle = await open(...args);
+    if (args[1] === "wx" && path.basename(String(args[0])) === "result.bin") {
+      const close = handle.close.bind(handle);
+      vi.spyOn(handle, "close").mockImplementationOnce(async () => {
+        try {
+          closedBytes = await fs.readFile(args[0]);
+        } finally {
+          await close();
+        }
+      });
+      onOpen(handle);
+    }
+    return handle;
+  });
+  return { bytesBeforeClose: () => closedBytes };
 }
 
 describe("workspace upload byte stream", () => {
@@ -171,19 +211,107 @@ describe("workspace upload byte stream", () => {
     expect(nodeWorkspaceTransferInvalidReason(failure)).toBeUndefined();
     expect(await fs.readdir(f.temporaryRoot)).toEqual([]);
   });
-  it.each(["coalesced", "fragmented"])(
+  it.each(["coalesced", "fragmented", "short writes"])(
     "stages consecutive manifest headers and file bodies in %s chunks",
     async (chunking) => {
       const f = fixture();
+      if (chunking === "short writes") {
+        observeUploadFile((handle) => {
+          const write = handle.write.bind(handle);
+          vi.spyOn(handle, "write").mockImplementation(
+            (async (bytes: Uint8Array, offset: number, length: number, position: number) =>
+              await write(bytes, offset, Math.min(length, 3), position)) as FileHandle["write"],
+          );
+        });
+      }
       const chunks =
-        chunking === "coalesced"
-          ? [f.payload]
-          : Array.from(f.payload, (byte) => Buffer.from([byte]));
+        chunking === "fragmented"
+          ? Array.from(f.payload, (byte) => Buffer.from([byte]))
+          : [f.payload];
       const result = await f.upload(chunks);
 
       expect(result.baseRaw).toBe(f.baseRaw);
       expect(result.currentRaw).toBe(f.currentRaw);
       expect(await fs.readFile(path.join(result.stagingRoot, "result.bin"))).toEqual(f.file);
+    },
+  );
+
+  it("checks upload authority before writing after open", async () => {
+    const f = fixture();
+    let authorityError: Error | undefined;
+    const observed = observeUploadFile(() => {
+      authorityError = f.revoke();
+    });
+
+    const error = await f.upload([f.payload]).catch((failure: unknown) => failure);
+
+    expect(error).toBe(authorityError);
+    expect(observed.bytesBeforeClose()).toEqual(Buffer.alloc(0));
+    expect(await fs.readdir(f.temporaryRoot)).toEqual([]);
+  });
+
+  it("joins a pending short write before cancellation closes and removes staging", async () => {
+    const controller = new AbortController();
+    const f = fixture(controller);
+    const written = createDeferred();
+    const release = createDeferred();
+    const reason = new Error("upload canceled during write");
+    const observed = observeUploadFile((handle) => {
+      const write = handle.write.bind(handle);
+      vi.spyOn(handle, "write").mockImplementationOnce((async (
+        bytes: Uint8Array,
+        offset: number,
+        length: number,
+        position: number,
+      ) => {
+        const result = await write(bytes, offset, Math.min(length, 3), position);
+        written.resolve();
+        await release.promise;
+        return result;
+      }) as FileHandle["write"]);
+    });
+    const upload = f.upload([f.payload]).catch((error: unknown) => error);
+    try {
+      await written.promise;
+      controller.abort(reason);
+      expect(observed.bytesBeforeClose()).toBeUndefined();
+      expect(await fs.readdir(f.temporaryRoot)).toHaveLength(1);
+    } finally {
+      release.resolve();
+    }
+
+    expect(await upload).toBe(reason);
+    expect(observed.bytesBeforeClose()).toEqual(f.file.subarray(0, 3));
+    expect(await fs.readdir(f.temporaryRoot)).toEqual([]);
+  });
+
+  it.each(["zero progress", "I/O error"])(
+    "preserves a %s write failure when cancellation also occurs",
+    async (failure) => {
+      const controller = new AbortController();
+      const f = fixture(controller);
+      const reason = new Error("upload canceled during failed write");
+      const diskError = Object.assign(new Error("upload disk failure"), { code: "EIO" });
+      const observed = observeUploadFile((handle) => {
+        vi.spyOn(handle, "write").mockImplementationOnce((async (bytes: Uint8Array) => {
+          controller.abort(reason);
+          if (failure === "I/O error") {
+            throw diskError;
+          }
+          return { bytesWritten: 0, buffer: bytes };
+        }) as FileHandle["write"]);
+      });
+
+      const error = await f.upload([f.payload]).catch((caught: unknown) => caught);
+
+      if (failure === "I/O error") {
+        expect(error).toBe(diskError);
+      } else {
+        expect(error).toMatchObject({ code: "helper-failed" });
+        expect(error).not.toBe(reason);
+      }
+      expect(observed.bytesBeforeClose()).toEqual(Buffer.alloc(0));
+      expect(await fs.readdir(f.temporaryRoot)).toEqual([]);
     },
   );
 

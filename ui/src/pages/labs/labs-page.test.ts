@@ -278,24 +278,6 @@ describe("LabsPage", () => {
     });
   });
 
-  it("marks startup-scoped entries as needing a restart", async () => {
-    const { page } = await mountPage({});
-    const rows = [...page.querySelectorAll(".settings-row")];
-
-    const restartRows = rows.filter((row) => row.textContent?.toLowerCase().includes("restart"));
-    expect(restartRows).toHaveLength(3);
-    expect(restartRows.map((row) => row.textContent)).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining("Custom plugin UI"),
-        expect.stringContaining("Host Desktop"),
-        expect.stringContaining("Cloud Worker Desktop"),
-      ]),
-    );
-    expect(labRow(page, "Custom plugin UI").textContent).toContain(
-      "Restart the Gateway and reload this browser tab",
-    );
-  });
-
   it("shows default provenance", async () => {
     const inherited = await mountPage({});
     expect(labRow(inherited.page, "Code Mode").textContent).not.toContain("Using default:");

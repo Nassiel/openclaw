@@ -12,7 +12,6 @@ import type { ChannelMessagingAdapter } from "../channels/plugins/types.public.j
 import type { OpenClawConfig } from "../config/config.js";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import {
-  appendTranscriptMessage,
   listSessionParticipantsReadOnly,
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
@@ -560,66 +559,66 @@ describe("sessions tools", () => {
 
   it("sessions_list forwards mailbox filters and includes messages", async () => {
     const storePath = path.join(tempDirs.make("openclaw-sessions-mailbox-"), "sessions.json");
-    callGatewayMock.mockImplementation(async (opts: unknown) => {
-      const request = opts as { method?: string };
+    const sessions = [
+      {
+        key: "agent:main:main",
+        kind: "direct",
+        classification: "main",
+        sessionId: "s-main",
+        updatedAt: 10,
+        lastChannel: "whatsapp",
+        derivedTitle: "Main mailbox",
+        lastMessagePreview: "Latest assistant update",
+      },
+      {
+        key: "agent:main:discord:group:dev",
+        kind: "group",
+        classification: "group",
+        peerKind: "group",
+        sessionId: "s-group",
+        updatedAt: 11,
+        channel: "discord",
+        displayName: "discord:g-dev",
+        status: "running",
+        startedAt: 100,
+        runtimeMs: 42,
+        estimatedCostUsd: 0.0042,
+        childSessions: ["agent:main:subagent:worker"],
+        derivedTitle: "Dev room",
+        lastMessagePreview: "Need review on the patch",
+      },
+      {
+        key: "agent:main:dashboard:child",
+        kind: "direct",
+        classification: "dashboard",
+        sessionId: "s-dashboard-child",
+        updatedAt: 12,
+        parentSessionKey: "agent:main:main",
+      },
+      {
+        key: "agent:main:subagent:worker",
+        kind: "direct",
+        classification: "subagent",
+        sessionId: "s-subagent-worker",
+        updatedAt: 13,
+        spawnedBy: "agent:main:main",
+      },
+      {
+        key: "agent:main:cron:job-1",
+        kind: "direct",
+        classification: "cron",
+        sessionId: "s-cron",
+        updatedAt: 9,
+      },
+      { key: "global", kind: "global", classification: "global", agentId: "main" },
+      { key: "unknown", kind: "unknown", classification: "unknown", agentId: "main" },
+    ];
+    callGatewayMock.mockImplementation(async (request: GatewayCall) => {
       if (request.method === "sessions.list") {
-        return {
-          path: storePath,
-          sessions: [
-            {
-              key: "agent:main:main",
-              kind: "direct",
-              classification: "main",
-              sessionId: "s-main",
-              updatedAt: 10,
-              lastChannel: "whatsapp",
-              derivedTitle: "Main mailbox",
-              lastMessagePreview: "Latest assistant update",
-            },
-            {
-              key: "agent:main:discord:group:dev",
-              kind: "group",
-              classification: "group",
-              peerKind: "group",
-              sessionId: "s-group",
-              updatedAt: 11,
-              channel: "discord",
-              displayName: "discord:g-dev",
-              status: "running",
-              startedAt: 100,
-              runtimeMs: 42,
-              estimatedCostUsd: 0.0042,
-              childSessions: ["agent:main:subagent:worker"],
-              derivedTitle: "Dev room",
-              lastMessagePreview: "Need review on the patch",
-            },
-            {
-              key: "agent:main:dashboard:child",
-              kind: "direct",
-              classification: "dashboard",
-              sessionId: "s-dashboard-child",
-              updatedAt: 12,
-              parentSessionKey: "agent:main:main",
-            },
-            {
-              key: "agent:main:subagent:worker",
-              kind: "direct",
-              classification: "subagent",
-              sessionId: "s-subagent-worker",
-              updatedAt: 13,
-              spawnedBy: "agent:main:main",
-            },
-            {
-              key: "agent:main:cron:job-1",
-              kind: "direct",
-              classification: "cron",
-              sessionId: "s-cron",
-              updatedAt: 9,
-            },
-            { key: "global", kind: "global", classification: "global", agentId: "main" },
-            { key: "unknown", kind: "unknown", classification: "unknown", agentId: "main" },
-          ],
-        };
+        return { path: storePath, sessions };
+      }
+      if (request.method === "sessions.describe") {
+        return { session: sessions.find((session) => session.key === request.params?.key) ?? null };
       }
       if (request.method === "chat.history") {
         return {
@@ -707,97 +706,86 @@ describe("sessions tools", () => {
     expect(cronDetails.sessions?.[0]?.kind).toBe("cron");
   });
 
-  it("derives mailbox previews only after agent visibility filtering", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-sessions-list-preview-"));
-    const storePath = path.join(tmpDir, "sessions.json");
-    try {
-      await upsertSessionEntryCore(
-        { agentId: "main", sessionKey: "agent:main:main", storePath },
-        { sessionId: "visible", updatedAt: 20 },
-      );
-      await appendTranscriptMessage(
-        { agentId: "main", sessionId: "visible", sessionKey: "agent:main:main", storePath },
-        { cwd: tmpDir, message: { role: "user", content: "Visible project kickoff" } },
-      );
-      await appendTranscriptMessage(
-        { agentId: "main", sessionId: "visible", sessionKey: "agent:main:main", storePath },
-        { cwd: tmpDir, message: { role: "assistant", content: "Visible latest reply" } },
-      );
-      await upsertSessionEntryCore(
-        { agentId: "other", sessionKey: "agent:other:main", storePath },
-        { sessionId: "hidden", updatedAt: 21 },
-      );
-      await appendTranscriptMessage(
-        { agentId: "other", sessionId: "hidden", sessionKey: "agent:other:main", storePath },
-        { cwd: tmpDir, message: { role: "user", content: "Hidden cross-agent topic" } },
-      );
-      await appendTranscriptMessage(
-        { agentId: "other", sessionId: "hidden", sessionKey: "agent:other:main", storePath },
-        { cwd: tmpDir, message: { role: "assistant", content: "Hidden latest reply" } },
-      );
-
-      callGatewayMock.mockImplementation(async (opts: unknown) => {
-        const request = opts as { method?: string; params?: Record<string, unknown> };
-        if (request.method === "sessions.list") {
-          expect(request.params?.includeDerivedTitles).toBe(false);
-          expect(request.params?.includeLastMessage).toBe(false);
-          return {
-            path: storePath,
-            sessions: [
-              {
-                key: "agent:main:main",
-                kind: "direct",
-                classification: "main",
-                sessionId: "visible",
-                updatedAt: 20,
-              },
-              {
-                key: "agent:other:main",
-                kind: "direct",
-                classification: "main",
-                sessionId: "hidden",
-                updatedAt: 21,
-              },
-            ],
-          };
-        }
-        return {};
-      });
-
-      const tool = getSessionTool("sessions_list", {
-        agentSessionKey: "agent:main:main",
-        config: {
-          ...TEST_CONFIG,
-          tools: {
-            sessions: { visibility: "agent" },
-            agentToAgent: { enabled: false },
-          },
-        } as OpenClawConfig,
-      });
-
-      const result = await tool.execute("call-preview", {
-        includeDerivedTitles: true,
-        includeLastMessage: true,
-      });
-      const details = result.details as { sessions?: Array<Record<string, unknown>> };
-      expect(details.sessions).toStrictEqual([
-        {
+  it("requests mailbox previews only after agent visibility filtering", async () => {
+    callGatewayMock.mockImplementation(async (request: GatewayCall) => {
+      if (request.method === "sessions.list") {
+        expect(request.params?.includeDerivedTitles).toBe(false);
+        expect(request.params?.includeLastMessage).toBe(false);
+        return {
+          sessions: [
+            {
+              key: "agent:main:main",
+              kind: "direct",
+              classification: "main",
+              sessionId: "visible",
+              updatedAt: 20,
+            },
+            {
+              key: "agent:other:main",
+              kind: "direct",
+              classification: "main",
+              sessionId: "hidden",
+              updatedAt: 21,
+            },
+          ],
+        };
+      }
+      if (request.method === "sessions.describe") {
+        expect(request.params).toEqual({
           key: "agent:main:main",
-          sessionId: "visible",
           agentId: "main",
-          kind: "main",
-          channel: "unknown",
-          archived: false,
-          pinned: false,
-          derivedTitle: "Visible project kickoff",
-          lastMessagePreview: "Visible latest reply",
-          updatedAt: 20,
+          includeDerivedTitles: true,
+          includeLastMessage: true,
+        });
+        return {
+          session: {
+            key: "agent:main:main",
+            sessionId: "visible",
+            derivedTitle: "Visible project kickoff",
+            lastMessagePreview: "Visible latest reply",
+          },
+        };
+      }
+      return {};
+    });
+
+    const tool = getSessionTool("sessions_list", {
+      agentSessionKey: "agent:main:main",
+      config: {
+        ...TEST_CONFIG,
+        tools: {
+          sessions: { visibility: "agent" },
+          agentToAgent: { enabled: false },
         },
-      ]);
-      expect(JSON.stringify(details.sessions)).not.toContain("Hidden");
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
+      } as OpenClawConfig,
+    });
+
+    const result = await tool.execute("call-preview", {
+      includeDerivedTitles: true,
+      includeLastMessage: true,
+    });
+    const details = result.details as { sessions?: Array<Record<string, unknown>> };
+    expect(details.sessions).toStrictEqual([
+      {
+        key: "agent:main:main",
+        sessionId: "visible",
+        agentId: "main",
+        kind: "main",
+        channel: "unknown",
+        archived: false,
+        pinned: false,
+        derivedTitle: "Visible project kickoff",
+        lastMessagePreview: "Visible latest reply",
+        updatedAt: 20,
+      },
+    ]);
+    expect(
+      callGatewayMock.mock.calls
+        .map(([request]) => request as GatewayCall)
+        .filter((request) => request.method === "sessions.describe")
+        .map((request) => request.params?.key),
+    ).toEqual(["agent:main:main"]);
+    expect(JSON.stringify(details.sessions)).not.toContain("Hidden");
   });
 
   it("sessions_list exposes lifecycle identity without transcript paths", async () => {

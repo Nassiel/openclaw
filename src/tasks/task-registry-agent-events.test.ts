@@ -952,11 +952,11 @@ describe("task agent event persistence", () => {
         });
         emitTool(task.runId!, "stale");
         await entered.promise;
-        // Retirement may reject the event; join it before checking for leaked root work.
-        const settlement = Promise.allSettled([
-          captureTaskRegistryReadFence(captureOpenClawStateWorkerContext().admission),
-        ]);
+        let fence: Promise<PromiseSettledResult<void>[]> | undefined;
         try {
+          fence = Promise.allSettled([
+            captureTaskRegistryReadFence(captureOpenClawStateWorkerContext().admission),
+          ]);
           if (replacement === "task replacement") {
             const next = { ...task, runId: "replacement-run" };
             store.upsertTaskWithDeliveryState({ task: next });
@@ -966,7 +966,7 @@ describe("task agent event persistence", () => {
           }
         } finally {
           release.resolve();
-          await settlement;
+          await fence;
         }
         await joinEvents();
         expect(

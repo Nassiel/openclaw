@@ -30,8 +30,6 @@ import { isSubagentSessionKey } from "../../routing/session-key.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { createTestUserTurnTranscriptTarget } from "../../sessions/user-turn-transcript.test-support.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import { runOpenClawAgentWriteTransaction } from "../../state/openclaw-agent-db.js";
-import { listOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.test-support.js";
 import { registerGeneratedMediaTaskActivity } from "../../tasks/generated-media-task-activity.js";
 import { resetGeneratedMediaTaskActivityForTests } from "../../tasks/task-runtime.test-helpers.js";
 import { createSuiteTempRootTracker } from "../../test-helpers/temp-dir.js";
@@ -69,7 +67,10 @@ import {
   SUBAGENT_ANNOUNCE_EMBEDDED_DELIVERY_CASES,
   type SubagentAnnounceDeliveryCase,
 } from "./attempt-execution.announce.test-support.js";
-import { createCliImageCapabilityPlugins } from "./attempt-execution.cli.test-support.js";
+import {
+  createCliImageCapabilityPlugins,
+  resetCliAttemptFixtureDatabases,
+} from "./attempt-execution.cli.test-support.js";
 import { runAgentAttempt as runAgentAttemptImpl } from "./attempt-execution.js";
 import { resolveClaudeCliProjectDirForWorkspace } from "./claude-cli-project-dir.js";
 import { resolveEmbeddedModelSelection } from "./model-selection.js";
@@ -512,25 +513,7 @@ describe("CLI attempt execution", () => {
     cliBackendsTesting.resetDepsForTest();
     clearRuntimeAuthProfileStoreSnapshots();
     clearSessionStoreCacheForTest();
-    for (const database of listOpenClawAgentDatabasesForTest()) {
-      if (!database.path.startsWith(`${suiteRoot}${path.sep}`)) {
-        continue;
-      }
-      runOpenClawAgentWriteTransaction(
-        (fixture) => {
-          fixture.db.exec(`
-            DELETE FROM session_transcript_fts;
-            DELETE FROM session_nodes;
-            DELETE FROM conversations;
-            DELETE FROM auth_profile_store;
-            DELETE FROM auth_profile_state;
-            DELETE FROM cache_entries;
-          `);
-        },
-        database,
-        { operationLabel: "test.attempt-execution.reset" },
-      );
-    }
+    resetCliAttemptFixtureDatabases(suiteRoot);
     await fs.rm(tmpDir, { recursive: true, force: true });
     await fs.rm(storePath, { force: true });
     homeEnvSnapshot?.restore();

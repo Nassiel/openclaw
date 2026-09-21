@@ -1350,13 +1350,12 @@ async function main() {
   }
 }
 
-async function verifyPackedContents(
-  results: NpmPackResult[],
+export async function checkPackedTargetBootstrap(
+  targetRoot: string,
   packedRoot: string,
-  tarballPath: string,
 ): Promise<void> {
-  const workerProducerPath = resolve("src/worker/worker-deploy-entry.ts");
-  const workerBundlePath = resolve("src/shared/worker-bundle-hash.ts");
+  const workerProducerPath = resolve(targetRoot, "src/worker/worker-deploy-entry.ts");
+  const workerBundlePath = resolve(targetRoot, "src/shared/worker-bundle-hash.ts");
   // Frozen targets can have shared hash helpers without a deploy entrypoint.
   const hasWorkerProducer = existsSync(workerProducerPath);
   let workerArtifactDeclarations: Array<[string, unknown]> = [];
@@ -1413,7 +1412,7 @@ async function verifyPackedContents(
   }
   // New tooling may qualify a frozen target without the build-owned locator generator.
   // Never infer legacy mode from missing output: current targets must rebuild missing metadata.
-  const locatorModulePath = resolve("scripts/lib/gateway-run-chunk-metadata.mts");
+  const locatorModulePath = resolve(targetRoot, "scripts/lib/gateway-run-chunk-metadata.mts");
   const locatorModule = existsSync(locatorModulePath)
     ? await importToolingTypeScript(pathToFileURL(locatorModulePath).href, import.meta.url)
     : undefined;
@@ -1431,6 +1430,14 @@ async function verifyPackedContents(
       error: (message: string) => console.error(`release-check: ${message}`),
     },
   });
+}
+
+async function verifyPackedContents(
+  results: NpmPackResult[],
+  packedRoot: string,
+  tarballPath: string,
+): Promise<void> {
+  await checkPackedTargetBootstrap(process.cwd(), packedRoot);
   checkPluginSdkExports(packedRoot);
   const criticalPluginSdkEntrypointErrors =
     collectCriticalPluginSdkEntrypointSizeErrors(packedRoot);

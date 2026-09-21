@@ -2,6 +2,46 @@ import path from "node:path";
 
 export function sqliteLifecycleFixtureFiles(repoRoot: string): Record<string, string> {
   const source = (name: string) => JSON.stringify(path.join(repoRoot, "src", name));
+  const readPoolFixture = `
+const readPool = vi.hoisted(() => ({ close: vi.fn(async () => {}) }));
+vi.mock(${source("infra/runtime-process-url.ts")}, () => ({
+  resolveRuntimeProcessEntrypointUrl: () => new URL("file:///synthetic/state-read.worker.js"),
+}));
+vi.mock(${source("infra/worker-task-pool.ts")}, () => ({
+  WorkerTaskError: class extends Error {},
+  createOwnedWorkerTaskPool: () => ({
+    runTask: () => ({
+      result: Promise.resolve({ ok: true, type: "fleet.list", sourceAdmitted: true, cells: [] }),
+      close: async () => {},
+    }),
+    close: readPool.close,
+    closeResources: async () => {},
+  }),
+}));
+import { createOpenClawStateReadTransport } from ${source("state/openclaw-state-read-worker.ts")};
+import { closeOpenClawStateDatabaseAsync } from ${source("state/openclaw-state-db-cache.ts")};
+async function useReadPool() {
+  const transport = createOpenClawStateReadTransport({ type: "fleet.list" });
+  const authority = { signal: new AbortController().signal, assertCurrent() {} };
+  try {
+    expect(await transport.read({
+      context: {
+        environment: {},
+        coordinatorRuntime: { directory: "/synthetic/coordinators", keepAlive: false },
+        admission: {
+          databasePath: "/synthetic/state.sqlite",
+          identity: { key: "file:synthetic-state", canonicalPath: "/synthetic/state.sqlite" },
+          assertCurrent() {},
+        },
+      },
+      location: "/synthetic/state.sqlite",
+      checkFreshAdmission: false,
+    }, authority)).toMatchObject({ value: { ok: true, type: "fleet.list" } });
+  } finally {
+    await transport.close();
+  }
+}
+`;
   return {
     ...stateReadPoolFixtureFiles(repoRoot),
     "11-a-sqlite-owner.test.ts": `
@@ -14,8 +54,10 @@ import { isSqliteWorkerStoreAvailable } from ${source("infra/sqlite-worker-store
 import { registerOpenClawStateDatabaseAsyncResource } from ${source("state/openclaw-state-db-cache.ts")};
 import { openOpenClawStateWorkerCleanupStore } from ${source("state/openclaw-state-worker-store.ts")};
 import { openOpenClawAgentDatabase } from ${source("state/openclaw-agent-db.ts")};
+${readPoolFixture}
 const drainKey = Symbol.for("fixture.sqliteDrain");
 it("retains a real shared-state owner after host admission is refused", async () => {
+  await useReadPool();
   expect(isSqliteWorkerStoreAvailable({})).toBe(false);
   await expect(openOpenClawStateWorkerCleanupStore("/synthetic/state.sqlite", {
     environment: { OPENCLAW_STATE_DIR: "/synthetic" },
@@ -56,6 +98,7 @@ import {
 } from ${source("state/openclaw-state-db-schema-policy.ts")};
 import type { OpenClawStateWorkerContext } from ${source("state/openclaw-state-worker-context.types.ts")};
 import type { OpenClawStateWorkerCleanupOperations } from ${source("state/openclaw-state-worker-contract.ts")};
+${readPoolFixture}
 
 // Keep the real shared-state owner in this cross-file proof; another test's mocks
 // are not part of the runner's lifecycle contract.
@@ -161,6 +204,9 @@ it("retains installed-schema repair ownership through retired agent lease cleanu
   );
   expect(edge.close).toHaveBeenCalledOnce();
   expect(getExistingOpenClawStateSchemaPath()).toBeUndefined();
+  await useReadPool();
+  await closeOpenClawStateDatabaseAsync();
+  expect(readPool.close).toHaveBeenCalledOnce();
 });
 `,
   };
