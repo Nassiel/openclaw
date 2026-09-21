@@ -24,6 +24,15 @@ and publishes the result. Avoid exposing a generic SQL callback to application
 code or adding an asynchronous wrapper around an existing asynchronous facade.
 The plugin KV API already has asynchronous methods over its SQLite owner.
 
+Operator approval lookups, pending replay, verdicts, expiry, and allow-once
+consumption execute in the shared-state worker. Lookups and pending scans retain
+their expiry and corrupt-row repair transactions; history pages use the read-only
+worker. The approval manager retains live authority and decision handoffs, checks
+authority at transaction and commit admission, and joins accepted mutations before
+retiring their local bindings. Startup orphan closure and pruning remain boot
+admission operations. Stored bytes, schemas, retention, and update behavior are
+unchanged.
+
 Task maintenance awaits global plugin-state expiry in the shared-state worker.
 The sweep samples expiry time inside its admitted write transaction and deletes
 at most 1,024 rows. Writer waits leave the Gateway event loop available, while
@@ -945,6 +954,17 @@ Each scope reads fresh credentials and retains its original state root across
 preparation. Database close or a shared ownership change prevents delayed scope
 entry. Nested and concurrent scopes keep separate read-through views; OAuth
 refresh material remains with its existing owner.
+
+Embedded-run lazy entry loading prepares pinned library descriptions through the
+shared read-only worker owner. Each uncached load captures its library pin values
+and state context before workspace preparation and publishes combined entries only after
+both preparations and current-owner checks finish. Database close invalidates
+pending preparation even when the library entries are cached. Workspace source
+changes during preparation retry the in-flight load; completed cached entries
+remain stable, and concurrent loads retain the first complete publication.
+Workspace filtering still precedes appended library pins; workspace-only loads omit them. Workspace
+plugin discovery retains its existing synchronous metadata path. Schemas,
+retention, and update behavior are unchanged.
 
 Model-context reads and session transcript preparation use the session-transcript
 worker with separate bounded queues. Background preparation cannot occupy the
