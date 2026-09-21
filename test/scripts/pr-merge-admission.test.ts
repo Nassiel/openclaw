@@ -223,7 +223,6 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
     "API error",
     "PR identity",
     "head",
-    "head branch",
     "base",
     "closed",
     "merged",
@@ -237,11 +236,10 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
     "final UNKNOWN mergeable",
     "final UNKNOWN status",
     "final changed status",
-    "final head branch",
   ])("stops initial settlement without dispatch on %s", (fault) => {
     const f = fixture();
     const next = f.state();
-    const { author: _author, ...observedPr } = next.pr;
+    const { author: _author, headRefName: _headRefName, ...observedPr } = next.pr;
     const step: (typeof next.observations)[number] = {};
     switch (fault) {
       case "invalid metadata":
@@ -255,10 +253,6 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
         break;
       case "head":
         step.pr = { headRefOid: f.base };
-        break;
-      case "head branch":
-      case "final head branch":
-        step.pr = { headRefName: "renamed-topic" };
         break;
       case "base":
         step.pr = { baseRefName: "release" };
@@ -356,11 +350,9 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
       expect(run.output).toContain("PR or main changed during observation");
       expect(run.output).toContain("lock-recover, then rerun merge-run");
       expect(run.output).toContain(
-        fault === "final head branch"
-          ? 'headRefName: observed="renamed-topic"; expected="topic"'
-          : fault === "final UNKNOWN mergeable"
-            ? 'mergeable: observed="UNKNOWN"; expected="MERGEABLE"'
-            : `mergeStateStatus: observed="${fault === "final UNKNOWN status" ? "UNKNOWN" : "BEHIND"}"; expected="CLEAN"`,
+        fault === "final UNKNOWN mergeable"
+          ? 'mergeable: observed="UNKNOWN"; expected="MERGEABLE"'
+          : `mergeStateStatus: observed="${fault === "final UNKNOWN status" ? "UNKNOWN" : "BEHIND"}"; expected="CLEAN"`,
       );
       for (const [label, expected] of [
         ["observation", { main: f.base, pr: observedPr, transport: "graphql" }],

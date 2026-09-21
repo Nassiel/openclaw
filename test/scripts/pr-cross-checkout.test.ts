@@ -10,6 +10,7 @@ import {
 import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
+import { landingSnapshotQuery } from "./pr-merge-snapshot.test-support.js";
 import { validReview, writeReviewArtifacts } from "./pr-review-artifact-fixture.js";
 import { copyPrWrapperSources } from "./pr-wrapper.test-support.js";
 
@@ -17,8 +18,6 @@ const temps = useAutoCleanupTempDirTracker(afterEach);
 const outcomeRef = "refs/openclaw/pr-merge-outcomes/123";
 const lockRef = "refs/openclaw/pr-operation-locks/123";
 const describePosix = process.platform === "win32" ? describe.skip : describe;
-const snapshotQuery =
-  'query=query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){id databaseId url nameWithOwner ref(qualifiedName:"refs/heads/main"){target{oid}} pullRequest(number:$number){id number url state headRefOid headRefName baseRefName isDraft mergeCommit{oid} autoMergeRequest{mergeMethod} isInMergeQueue isMergeQueueEnabled mergeable mergeStateStatus}}}';
 
 function fixture() {
   const root = realpathSync(temps.make("pr-cross-checkout-"));
@@ -112,7 +111,6 @@ function fixture() {
           url: `${repo.url}/pull/123`,
           state: "MERGED",
           headRefOid: head,
-          headRefName: "topic",
           baseRefName: "main",
           isDraft: false,
           mergeCommit: { oid: landed },
@@ -132,7 +130,7 @@ function fixture() {
       base: { ref: baseRef, repo: repoAuthority },
       head: { sha: "" },
     });
-  const snapshotCall = `${owner}\tapi graphql --hostname github.com -H Cache-Control: max-age=0 -f owner=fixture -f name=repo -F number=123 -f ${snapshotQuery}`;
+  const snapshotCall = `${owner}\tapi graphql --hostname github.com -H Cache-Control: max-age=0 -f owner=fixture -f name=repo -F number=123 -f ${landingSnapshotQuery}`;
   const calls = join(root, "calls.log");
   const gh = join(bin, "gh");
   writeFileSync(

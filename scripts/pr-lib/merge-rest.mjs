@@ -192,7 +192,6 @@ function pullRequest(record) {
     url: record.html_url,
     state: record.merged ? "MERGED" : record.state.toUpperCase(),
     headRefOid: record.head.sha,
-    headRefName: record.head.ref,
     baseRefName: record.base.ref,
     isDraft: record.draft,
     mergeCommit: record.merged ? { oid: record.merge_commit_sha } : null,

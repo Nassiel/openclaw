@@ -61,17 +61,31 @@ describePosix("native PR main refresh boundaries", () => {
     expect(f.events().filter((event) => event.kind === "unexpected-push")).toEqual([]);
   });
 
-  it.each(["oid", "branch", "repository"] as const)(
-    "rejects PR %s drift during acquisition before preparation stamps",
-    (boundary) => {
+  it.each(
+    (["prepare-init", "merge-verify"] as const).flatMap((command) =>
+      (["oid", "branch", "repository"] as const).map((boundary) => ({ command, boundary })),
+    ),
+  )(
+    "rejects PR $boundary drift during $command acquisition without changing preparation stamps",
+    ({ command, boundary }) => {
       const f = fixture();
+      if (command === "merge-verify") {
+        f.seedPreparedMerge();
+      }
+      const prepContext = join(f.local, "prep-context.env");
+      const beforePrepContext = existsSync(prepContext)
+        ? readFileSync(prepContext, "utf8")
+        : undefined;
       f.configure({ prIdentityDriftAfterFetch: boundary });
-      const result = f.run("prepare-init");
+      const result = f.run(command);
       expect(result.status, result.stdout + result.stderr).not.toBe(0);
       expect(result.stdout + result.stderr).toContain("PR head changed");
-      expect(existsSync(join(f.local, "prep-context.env"))).toBe(false);
+      expect(existsSync(prepContext) ? readFileSync(prepContext, "utf8") : undefined).toBe(
+        beforePrepContext,
+      );
       expect(f.git(f.worktree, "rev-parse", "HEAD")).toBe(f.head);
       expect(f.git(f.worktree, "status", "--porcelain")).toBe("");
+      expect(f.events().filter((event) => event.kind === "unexpected-push")).toEqual([]);
     },
   );
 
@@ -1097,7 +1111,7 @@ printf 'caller-locale=%s\\n' "$LC_ALL"
     ],
   ])("rejects drift %s failure before merge intent or dispatch", (_name, fault) => {
     const f = fixture();
-    expect(f.run("prepare-run").status).toBe(0);
+    f.seedPreparedMerge();
     f.configure({ moveAtChecks: true });
     const result = f.shell(`
 eval "$(declare -f mainline_drift_requires_sync | sed '1s/mainline_drift_requires_sync/evaluate_actual_drift/')"
@@ -1148,7 +1162,7 @@ fi`,
 
   it("rejects drift evaluation errors in strict mode", () => {
     const f = fixture();
-    expect(f.run("prepare-run").status).toBe(0);
+    f.seedPreparedMerge();
     f.configure({ moveAtChecks: true });
     f.env.OPENCLAW_PR_STRICT_DRIFT = "1";
     const result = f.shell(

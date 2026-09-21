@@ -687,7 +687,7 @@ merge_run() {
     if ! printf '%s\n' "$MERGE_OBSERVATION" | jq -e --arg head "$PREP_HEAD_SHA" \
       --argjson source "$MERGE_ENTRY_OBSERVATION" --argjson recovery "${recovery_record:-null}" '
       .pr.state == "OPEN" and .pr.headRefOid == $head and .pr.baseRefName == "main" and
-      .pr.headRefName == $source.headRefName and
+      .pr.headRefOid == $source.headRefOid and ($source.headRefName | type == "string" and length > 0) and
       .pr.isDraft == false and .pr.mergeable != "CONFLICTING" and
       .pr.autoMergeRequest == null and .pr.isInMergeQueue == false and
       ($recovery == null or .pr.id == $recovery.prId)

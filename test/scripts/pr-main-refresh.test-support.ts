@@ -741,6 +741,25 @@ if (process.argv[1]?.endsWith('/watch-pr-ci.mts')) {
     env,
     git,
     metadata,
+    seedPreparedMerge() {
+      // Merge-only cases need prepared inputs, not another prepare/gates/push run.
+      // Preparation lifecycle cases still create these artifacts through the wrapper.
+      git(worktree, "checkout", "-B", "pr-42-prep", head);
+      git(worktree, "update-ref", "refs/heads/pr-42", head);
+      writeFileSync(
+        join(local, "prep-context.env"),
+        `PR_NUMBER=42\nPR_HEAD=topic\nPR_HEAD_SHA_BEFORE=${head}\nPREP_BRANCH=pr-42-prep\nPR_AUTHOR_ACCESS_AT_PREP=maintainer\n`,
+      );
+      writeFileSync(
+        join(local, "prep.env"),
+        `PR_NUMBER=42\nPR_AUTHOR=fixture\nPR_URL=https://github.com/fixture/repo/pull/42\nPR_HEAD=topic\nPR_HEAD_SHA_BEFORE=${head}\nPREP_HEAD_SHA=${head}\nLOCAL_PREP_HEAD_SHA=${head}\nPREP_MAINLINE_BASE_SHA=${main}\nPREP_REPLACED_HOSTED_ANCESTRY=false\nPREP_AUTHOR_ACCESS=maintainer\n`,
+      );
+      writeFileSync(
+        join(local, "gates.env"),
+        `PR_NUMBER=42\nDOCS_ONLY=false\nCHANGELOG_REQUIRED=false\nGATES_MODE=hosted_exact_or_recent_parent\nHOSTED_GATES_TARGET_HEAD_SHA=${head}\nLAST_VERIFIED_HEAD_SHA=${head}\n`,
+      );
+      writeFileSync(join(local, "prep.md"), "Prepared synthetic merge fixture.\n");
+    },
     configure(update: Partial<typeof control>) {
       Object.assign(control, update);
       if (control.hostedCi === "scheduled") {

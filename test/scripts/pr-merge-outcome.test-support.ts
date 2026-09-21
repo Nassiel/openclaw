@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, describe, expect } from "vitest";
 import { requireNodeTool } from "../helpers/node-toolchain.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
+import { landingSnapshotQuery } from "./pr-merge-snapshot.test-support.js";
 import { validReview, writeReviewArtifacts } from "./pr-review-artifact-fixture.js";
 
 export function createMergeOutcomeFixtureHarness() {
@@ -622,6 +623,7 @@ else if(args[0]==="pr"&&args[1]==="view") {
   if(args.some(x=>x.includes("viewerMergeBodyText"))) {out({data:{repository:{pullRequest:{...s.pr,viewerMergeBodyText:s.previewBody}}}});}
   else {
     if(!args.includes("Cache-Control: max-age=0")) fail("missing independent fresh merge observation");
+    if(args.find(arg=>arg.startsWith("query="))!==${JSON.stringify(landingSnapshotQuery)}) fail("landing snapshot query is not supported by the shipped Octopool shim");
     s.observationReads++;
     const step=s.observations.shift();
     if(step?.pr) Object.assign(s.pr,step.pr);
@@ -629,7 +631,7 @@ else if(args[0]==="pr"&&args[1]==="view") {
     if(step?.advanceMain) advanceMain();
     if(step?.unavailable) fail("metadata unavailable");
     if(step?.invalid) {save();out({data:{repository:{}}});process.exit(0);}
-    const pr={...s.pr};if(s.drift&&s.reads%2===0) pr.baseRefName="changed";
+    const {headRefName,...pr}=s.pr;if(s.drift&&s.reads%2===0) pr.baseRefName="changed";
     const repository={...s.repoGraphql,ref:{target:{oid:step?.reportedMain??main()}},pullRequest:pr};
     out({data:{repository}});
     if(step?.advanceAfterRead) advanceMain();

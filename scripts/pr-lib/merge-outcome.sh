@@ -372,12 +372,12 @@ merge_outcome_read_remote() {
     select(.url == $repo.url and .nameWithOwner == $repo.nameWithOwner and
       ($repo.id == .id or $repo.id == .databaseId) and (.ref.target.oid | oid)) |
     {main:.ref.target.oid, pr:(.pullRequest |
-      {id,number,url,state,headRefOid,headRefName,baseRefName,isDraft,mergeCommit,autoMergeRequest,
+      {id,number,url,state,headRefOid,baseRefName,isDraft,mergeCommit,autoMergeRequest,
        isInMergeQueue,isMergeQueueEnabled,mergeable,mergeStateStatus})} +
       {transport:$transport} + (if $transport == "rest" then {restPolicy:$response.restPolicy} else {} end) |
     select(.pr.number == $pr and (.pr.id | type == "string" and length > 0) and
       .pr.url == ($repo.url + "/pull/" + ($pr|tostring)) and
-      (.pr.headRefOid | oid) and (.pr.headRefName | type == "string" and length > 0) and
+      (.pr.headRefOid | oid) and
       (.pr.baseRefName | type == "string" and length > 0) and
       (.pr.isDraft | type == "boolean") and (.pr.isInMergeQueue | type == "boolean") and
       (.pr.isMergeQueueEnabled | type == "boolean") and
