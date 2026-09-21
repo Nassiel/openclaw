@@ -80,6 +80,7 @@ type PendingEvent = {
   claimed: Error;
   receipt?: TaskAgentEventReceipt | null;
   publication?: TaskAgentEventPublication;
+  delivery?: TaskAgentEventPublication;
   commitFacts?: unknown;
   committedTarget?: TaskAgentEventInput["expectedTask"];
   lineageResident?: TaskRecord;
@@ -310,7 +311,7 @@ function prepareNativeEventConsumption(): { consume: () => void; release: () => 
             // A later enclosing write can replace this row, including an ABA replacement.
             const latest = tasks.get(entry.input.taskId);
             if (latest && publication.isCurrent() && isEquivalentTaskRecord(latest, receipt.task)) {
-              publishDelivery(receipt);
+              entry.delivery = receipt;
             }
           };
           const database = openClawStateDatabaseCache.getOpenClawStateDatabaseIfOpenAtPath(
@@ -442,7 +443,7 @@ async function persist(pending: PendingEvent): Promise<void> {
               pending.phase.kind !== "consumed" &&
               isEquivalentTaskRecord(task, pending.publication.task)
             ) {
-              publishDelivery(pending.publication);
+              pending.delivery = pending.publication;
             }
           },
         },
@@ -550,6 +551,11 @@ function startDrain(): void {
         } finally {
           forget(entry);
           active = undefined;
+          // A committed notification starts after its own accepted event settles;
+          // cleanup failure still rejects external readers without suppressing delivery.
+          if (entry.delivery) {
+            publishDelivery(entry.delivery);
+          }
         }
       }
     } finally {
