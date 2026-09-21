@@ -41,6 +41,8 @@ describe("conversation position rail", () => {
     "focus-resize",
     "pointer",
     "reader",
+    "reader-tab",
+    "reader-tab-distant",
   ] as const;
 
   it.each(railUpdateScenarios)(
@@ -229,6 +231,8 @@ describe("conversation position rail", () => {
           );
           const focusedOffset = marks.scrollTop;
           activeMessage.mockReturnValue("message-77");
+          publishVisibility(root.querySelector(".chat-bubble")!);
+          expect(marker(40).tabIndex).toBe(0);
           await flush();
           expect(document.activeElement).toBe(marker(40));
           expect(marks.scrollTop).toBe(focusedOffset);
@@ -254,6 +258,19 @@ describe("conversation position rail", () => {
           await flush();
           expect(document.activeElement).toBe(marker(60));
           expect(marks.scrollTop).toBe(0);
+        } else if (scenario === "reader-tab" || scenario === "reader-tab-distant") {
+          const current = scenario === "reader-tab" ? "message-76" : "message-0";
+          activeMessage.mockReturnValue(current);
+          publishVisibility(root.querySelector(".chat-bubble")!);
+          // Tab can arrive after observer delivery, before the next animation frame.
+          expect(
+            marks.querySelector('[aria-current="true"]')?.getAttribute("data-position-marker-id"),
+          ).toBe(current);
+          expect(
+            Array.from(marks.querySelectorAll('[tabindex="0"]'), (element) =>
+              element.getAttribute("data-position-marker-id"),
+            ),
+          ).toEqual([current]);
         } else {
           height = 554;
           marksHeight = 240;

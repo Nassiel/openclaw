@@ -322,6 +322,7 @@ class ChatPositionRailDirective extends AsyncDirective {
   }
 
   private syncVisibleMarks() {
+    this.syncMountedMarkers();
     const root = this.transcriptElement;
     if (root) {
       const viewport = {
@@ -406,7 +407,13 @@ class ChatPositionRailDirective extends AsyncDirective {
     if (activeId !== this.activeId) {
       this.markerElements.get(this.activeId ?? "")?.setAttribute("aria-current", "false");
       this.activeId = activeId;
+      // Tab can arrive before the scheduled layout, including for an unmounted active marker.
+      if (activeId && !this.markerElements.has(activeId)) {
+        this.refreshWindow();
+        this.syncMountedMarkers();
+      }
       this.markerElements.get(activeId ?? "")?.setAttribute("aria-current", "true");
+      this.syncTabStop();
       if (!this.followingResize) {
         this.followActive = true;
       }
