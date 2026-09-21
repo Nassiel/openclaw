@@ -61,6 +61,7 @@ import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { setActiveEmbeddedRun } from "./embedded-agent-runner/runs.js";
 import { testing as embeddedRunsTesting } from "./embedded-agent-runner/runs.test-support.js";
 import { registerSessionsSendResumeTests } from "./openclaw-tools.sessions-resume.test-support.js";
+import { registerSessionsSendTimeoutTests } from "./openclaw-tools.sessions-timeout.test-support.js";
 import { textAssistant } from "./test-helpers/sparse-transcript.test-support.js";
 import { compactToolOutputHint, toolSchemaDeclaration } from "./tool-schema-hints.js";
 import { testing as agentStepTesting } from "./tools/agent-step.test-support.js";
@@ -2382,48 +2383,7 @@ describe("sessions tools", () => {
     ).toBe(false);
   });
 
-  it("sessions_send preserves terminal timeouts without starting A2A", async () => {
-    const calls: Array<{ method?: string; params?: unknown }> = [];
-    const requesterKey = "agent:main:main";
-    const targetKey = "agent:director1:main";
-    callGatewayMock.mockImplementation(async (opts: unknown) => {
-      const request = opts as { method?: string; params?: unknown };
-      calls.push(request);
-      if (request.method === "agent") {
-        return { runId: "run-terminal", status: "accepted", acceptedAt: 2000 };
-      }
-      if (request.method === "agent.wait") {
-        return {
-          runId: "run-terminal",
-          status: "timeout",
-          endedAt: 3000,
-          stopReason: "timeout",
-          error: "agent run timed out",
-        };
-      }
-      return {};
-    });
-
-    const tool = getSessionTool("sessions_send", {
-      agentSessionKey: requesterKey,
-      agentChannel: "discord",
-    });
-
-    const result = await tool.execute("call-terminal", {
-      sessionKey: targetKey,
-      message: "ping",
-      timeoutSeconds: 1,
-    });
-    const details = sessionsSendDetails(result.details);
-    expect(details.status).toBe("timeout");
-    expect(details.error).toBe("agent run timed out");
-    expect(details.sentBeforeError).toBe(true);
-    expect(details.sessionKey).toBe(targetKey);
-    await new Promise<void>((resolve) => {
-      setImmediate(resolve);
-    });
-    expect(countMatching(calls, (call) => call.method === "agent")).toBe(1);
-  });
+  registerSessionsSendTimeoutTests({ getSessionTool, callGatewayMock });
 
   it("sessions_send preserves delivery evidence for post-start agent errors", async () => {
     const targetKey = "agent:director1:main";
