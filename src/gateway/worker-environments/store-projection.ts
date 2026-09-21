@@ -6,8 +6,12 @@ import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import type { WorkerCredentialRecord } from "./credential.js";
 import type { WorkerEnvironmentRecord } from "./environment-record.js";
 import type { WorkerEnvironmentAttachmentRecord } from "./session-attachment.js";
+import { encodeWorkerEnvironmentTransferAuthority } from "./store-transfer-authority.js";
 import { assertShape } from "./store-validation.js";
-import type { WorkerEnvironmentFacts } from "./store-worker-contract.js";
+import type {
+  WorkerEnvironmentCommitAdmission,
+  WorkerEnvironmentFacts,
+} from "./store-worker-contract.js";
 
 export type WorkerEnvironmentNativePatch = Partial<
   Pick<
@@ -61,7 +65,7 @@ function createWorkerEnvironmentProjection() {
   const attachments = new Map<string, WorkerEnvironmentAttachmentRecord>();
   const revisions = new Map<string, number>();
   const nativeOverlays = new Map<string, NativeOverlay>();
-  const pending = new Map<string, object>();
+  const pending = new Map<string, { token: object; transferAuthorityUnchanged: boolean }>();
   const reconciliations = new Map<
     object,
     { ids: string[]; error: unknown; revocationId?: string }
@@ -81,8 +85,8 @@ function createWorkerEnvironmentProjection() {
   };
   const assertReadable = (id: string) => {
     assertActive();
-    const token = pending.get(id);
-    if (token && token !== ownAdmission.getStore()) {
+    const mutation = pending.get(id);
+    if (mutation && mutation.token !== ownAdmission.getStore()) {
       throw new Error(
         `Worker environment ${id} has an unsettled mutation; retry after it completes`,
       );
@@ -149,13 +153,22 @@ function createWorkerEnvironmentProjection() {
     withAdmission<T>(token: object, callback: () => T): T {
       return ownAdmission.run(token, callback);
     },
-    fence(ids: readonly string[], token: object) {
+    fence(facts: WorkerEnvironmentCommitAdmission, token: object) {
       assertActive();
-      for (const id of ids) {
-        if (pending.has(id) && pending.get(id) !== token) {
+      for (const { environmentId, transferAuthority } of facts) {
+        const previous = pending.get(environmentId);
+        if (previous && previous.token !== token) {
           throw new Error("Worker inventory mutation ordering was lost");
         }
-        pending.set(id, token);
+        pending.set(environmentId, {
+          token,
+          transferAuthorityUnchanged:
+            transferAuthority ===
+            encodeWorkerEnvironmentTransferAuthority(
+              environments.get(environmentId),
+              credentials.get(environmentId),
+            ),
+        });
       }
     },
     retainReconciliation(
@@ -179,7 +192,7 @@ function createWorkerEnvironmentProjection() {
     hasPendingReconciliation: () => reconciliations.size !== 0,
     release(token: object) {
       for (const [id, value] of pending) {
-        if (value === token) {
+        if (value.token === token) {
           pending.delete(id);
         }
       }
@@ -335,7 +348,10 @@ function createWorkerEnvironmentProjection() {
       return structuredClone(record);
     },
     transferOwner(id: string) {
-      assertReadable(id);
+      assertActive();
+      if (pending.get(id)?.transferAuthorityUnchanged !== true) {
+        assertReadable(id);
+      }
       const row = environments.get(id);
       if (!row) {
         return undefined;

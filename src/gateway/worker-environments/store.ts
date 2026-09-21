@@ -23,6 +23,7 @@ import { normalizeCredentialHash, required } from "./store-validation.js";
 import type {
   WorkerEnvironmentWorkerOperations,
   WorkerEnvironmentFacts,
+  WorkerEnvironmentCommitAdmission,
   WorkerEnvironmentMutationMethods,
   WorkerEnvironmentPruneCursor,
   WorkerEnvironmentPrunePage,
@@ -52,6 +53,18 @@ function isInventoryFacts(value: unknown): value is WorkerEnvironmentFacts {
     Array.isArray(value.environments) &&
     Array.isArray(value.credentials) &&
     Array.isArray(value.attachments)
+  );
+}
+
+function isCommitAdmission(value: unknown): value is WorkerEnvironmentCommitAdmission {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (fact) =>
+        isRecord(fact) &&
+        typeof fact.environmentId === "string" &&
+        typeof fact.transferAuthority === "string",
+    )
   );
 }
 
@@ -189,14 +202,11 @@ export async function createWorkerEnvironmentStore(
                 }
                 check();
                 if (request.stage === "commit") {
-                  if (
-                    !Array.isArray(request.facts) ||
-                    !request.facts.every((id) => typeof id === "string")
-                  ) {
-                    throw new Error("Worker inventory commit lacks affected identities");
+                  if (!isCommitAdmission(request.facts)) {
+                    throw new Error("Worker inventory commit lacks affected authority facts");
                   }
-                  committedIds = request.facts;
-                  owner.fence(committedIds, token);
+                  committedIds = request.facts.map((fact) => fact.environmentId);
+                  owner.fence(request.facts, token);
                 }
                 if (!grant()) {
                   throw new Error("Worker environment mutation admission expired");

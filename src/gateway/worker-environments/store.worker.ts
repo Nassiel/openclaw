@@ -9,6 +9,7 @@ import {
 } from "../../state/openclaw-state-db.js";
 import { reconcileAttachedSessionOwners } from "./store-mutations.js";
 import { readWorkerEnvironmentFacts } from "./store-row-codec.js";
+import { createWorkerEnvironmentCommitAdmission } from "./store-transfer-authority.js";
 import type { WorkerEnvironmentWorkerOperations } from "./store-worker-contract.js";
 import { readTotalChanges } from "./store-write.js";
 import { createWorkerEnvironmentStoreKernel } from "./store.kernel.js";
@@ -136,7 +137,10 @@ export function executeWorkerEnvironmentCommand(command: Command, database: Open
         facts: readWorkerEnvironmentFacts(db, [...touched]),
       };
       deferSqliteWorkerCommitReceipt(db, receipt);
-      requestSqliteWorkerOperationAdmission({ stage: "commit", facts: receipt.facts.ids });
+      requestSqliteWorkerOperationAdmission({
+        stage: "commit",
+        facts: createWorkerEnvironmentCommitAdmission(receipt.facts),
+      });
       return receipt;
     },
     { database },

@@ -127,7 +127,10 @@ it.each([false, true])(
     }
     const workerRevision = owner.nextSequence();
     const token = {};
-    owner.fence([environment.environmentId], token);
+    owner.fence(
+      [{ environmentId: environment.environmentId, transferAuthority: "unknown" }],
+      token,
+    );
     owner.publishPatch(
       environment.environmentId,
       {
@@ -139,6 +142,7 @@ it.each([false, true])(
     );
     owner.publishPatch(environment.environmentId, { lastActivatedAtMs: 200 }, owner.nextSequence());
     expect(() => owner.get(environment.environmentId)).toThrow("unsettled mutation");
+    expect(() => owner.transferOwner(environment.environmentId)).toThrow("unsettled mutation");
     if (!existing) {
       expect(owner.list()).toEqual([]);
     }
