@@ -426,9 +426,10 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
 - `OPENCLAW_CI_RUNNER_BACKEND=github` routes every configurable `ci.yml` job
   to its existing GitHub-hosted fallback label. Unset or `blacksmith` preserves
   the normal Blacksmith-first route.
-- Vitest/test compile caches are restore-only in CI and use immutable Actions
-  caches; the daily/dispatch warmer is their sole writer. Build compile cache
-  writes rotate at most once per UTC day. PRs create no runtime-cache archives.
+- Vitest transform and Node compile caches are restore-only in CI and use
+  immutable Actions caches; the main-push/daily/dispatch warmer is their sole
+  writer. Build, QA and test orchestration consume its shared Node compile seed.
+  PRs create no runtime-cache archives.
 
 When changing one knob, update `docs/ci.md` and the guard test in the same PR.
 

@@ -8965,9 +8965,6 @@ server.listen(0, "127.0.0.1", () => {
     const configureStep = action.runs.steps.find(
       (step: WorkflowStep) => step.name === "Configure Vitest transform cache",
     );
-    const compileEpochStep = action.runs.steps.find(
-      (step: WorkflowStep) => step.name === "Select Node compile cache epoch",
-    );
     const compileReaderStep = action.runs.steps.find(
       (step: WorkflowStep) => step.name === "Restore Node compile cache",
     );
@@ -8991,7 +8988,6 @@ server.listen(0, "127.0.0.1", () => {
     expect(setupNodeStep.with).toMatchObject({
       "cache-mode": "${{ needs.preflight.outputs.cache_mode }}",
       "node-compile-cache": "true",
-      "node-compile-cache-scope": "test",
       "vitest-fs-cache": "true",
     });
     expect(setupNodeStep.with).not.toHaveProperty("save-node-compile-cache");
@@ -9001,7 +8997,7 @@ server.listen(0, "127.0.0.1", () => {
     expect(action.inputs["restore-test-caches"].default).toBe("false");
     expect(action.inputs).not.toHaveProperty("save-vitest-fs-cache");
     expect(action.inputs["node-compile-cache"].default).toBe("false");
-    expect(action.inputs["node-compile-cache-scope"].default).toBe("test");
+    expect(action.inputs).not.toHaveProperty("node-compile-cache-scope");
     expect(action.inputs).not.toHaveProperty("save-node-compile-cache");
     expect(
       action.runs.steps.some((step: WorkflowStep) =>
@@ -9027,15 +9023,10 @@ server.listen(0, "127.0.0.1", () => {
     expect(configureStep.run).not.toContain("protected Vitest transform seed");
     expect(configureStep.env.CACHE_WRITER).toBe("0");
     expect(configureStep.run).toContain("OPENCLAW_VITEST_FS_MODULE_CACHE_WRITER=");
-    expect(compileEpochStep.run).toContain('if [ "$CACHE_SCOPE" = "build" ]');
-    expect(compileEpochStep.run).toContain("date -u +%Y%m%d");
-    expect(compileEpochStep.run).toContain("GITHUB_RUN_ID");
-    expect(compileReaderStep.with.key).toContain(
-      "node-compile-v3-${{ inputs.node-compile-cache-scope }}-protected-",
-    );
-    expect(compileReaderStep.with.key).toContain("steps.node-compile-cache-epoch.outputs.value");
+    expect(compileReaderStep.with.key).toContain("node-compile-v3-test-protected-");
+    expect(compileReaderStep.with.key).toContain("github.run_id");
+    expect(compileReaderStep.with.key).toContain("github.run_attempt");
     expect(compileReaderStep.with.key).not.toContain("pull_request");
-    expect(compileEpochStep.if).toContain("inputs.restore-test-caches == 'true'");
     expect(compileReaderStep.if).toContain("inputs.cache-mode != 'off'");
     expect(compileReaderStep.if).toContain("inputs.restore-test-caches == 'true'");
     expect(compileConfigureStep.if).toContain("inputs.restore-test-caches == 'true'");
@@ -9045,12 +9036,16 @@ server.listen(0, "127.0.0.1", () => {
     expect(buildSetupNodeStep.with).toMatchObject({
       "cache-mode": "${{ needs.preflight.outputs.cache_mode }}",
       "node-compile-cache": "true",
-      "node-compile-cache-scope": "build",
       "build-all-cache-scope": "full",
     });
-    expect(buildSetupNodeStep.with["node-compile-cache-scope"]).not.toBe(
-      setupNodeStep.with["node-compile-cache-scope"],
-    );
+    const warmer = parse(readFileSync(".github/workflows/vitest-cache-warm.yml", "utf8"));
+    for (const job of [...Object.values(workflow.jobs), ...Object.values(warmer.jobs)]) {
+      for (const step of (job as { steps?: WorkflowStep[] }).steps ?? []) {
+        if (step.uses?.endsWith("/.github/actions/setup-node-env")) {
+          expect(step.with, step.name).not.toHaveProperty("node-compile-cache-scope");
+        }
+      }
+    }
 
     for (const jobName of hostedTestCacheJobs) {
       const setup = workflow.jobs[jobName].steps.find(
@@ -9229,7 +9224,6 @@ server.listen(0, "127.0.0.1", () => {
             "cache-mode": "read-write",
             "dependency-cache": String(full),
             "install-bun": "false",
-            "node-compile-cache-scope": "test",
             "node-compile-cache": String(full),
             "vitest-fs-cache": String(full),
             "vitest-worker-cache": String(full),

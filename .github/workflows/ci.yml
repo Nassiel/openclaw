@@ -2286,7 +2286,6 @@ jobs:
           cache-mode: ${{ needs.preflight.outputs.cache_mode }}
           install-bun: "true"
           node-compile-cache: "true"
-          node-compile-cache-scope: "build"
           build-all-cache-scope: full
           # The trusted warmer publishes exact dependencies for Blacksmith.
           # Gate on the actual runner so hybrid hosted retries stay store-only.
@@ -3345,10 +3344,8 @@ jobs:
           cache-mode: ${{ needs.preflight.outputs.cache_mode }}
           install-bun: "false"
           dependency-cache: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND != 'github' && runner.environment == 'self-hosted' && github.event_name != 'workflow_dispatch' && github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'openclaw/openclaw') && 'true' || 'false' }}
-          # Reader of build-artifacts' protected daily archive: warms tsdown
-          # tooling plus the repeated openclaw.mjs boots in the scenario loop.
+          # The trusted warmer seeds build tooling and Node orchestration together.
           node-compile-cache: "true"
-          node-compile-cache-scope: build
 
       - name: Build QA smoke runtime
         env:
@@ -3659,7 +3656,6 @@ jobs:
           vitest-fs-cache: "true"
           vitest-worker-cache: ${{ needs.preflight.outputs.frozen_target != 'true' && matrix.pretest_build_mode == null && (matrix.node_version == null || matrix.node_version == '24.x') && 'true' || 'false' }}
           node-compile-cache: "true"
-          node-compile-cache-scope: "test"
 
       - name: Setup Go for docs i18n
         if: matrix.requires_go == true

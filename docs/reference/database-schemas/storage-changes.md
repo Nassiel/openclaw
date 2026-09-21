@@ -505,6 +505,19 @@ an approved minimum host version guarantees both methods. Available worker failu
 never fall back. Modern domain validation errors surface
 directly, while older hosts retain their native callback error wrapping.
 
+Plugin BLOB mutations execute in the shared-state worker with the existing physical
+byte and row quotas, namespace eviction, and atomic expiry-metadata claims.
+Registration reserves captured-input capacity in the existing broker before copying
+bytes or awaiting actor preparation. Dispatch takes over that reservation, and drain
+revokes pending preparation and joins its settlement without replaying a write.
+Their reads use the retained read-only source owner, preserving snapshot selection,
+missing-store behavior, and open-versus-read error classification. An interrupted
+read without an authoritative receipt remains unobserved; it is never treated as
+proof that no query ran or as a missing entry. Primary, acceptance, and cleanup
+errors remain in the same error graph. Plugin callers await durable results, and
+Diffs joins background cleanup before its service stops. The schema, stored bytes,
+TTL backup rules, and update/migration path are unchanged.
+
 Gateway client device-token reads, writes, and clearing run in the shared-state
 worker, including origin-bound tokens. Callers capture the state environment,
 input, and admission before waiting. The token owner keeps its existing codecs,
@@ -564,6 +577,12 @@ classification stays with the pure record types, so decoding does not load
 provider or plugin runtime ownership. Kernels and their transaction callbacks
 remain synchronous. The asynchronous task and flow read facade runs these read
 kernels in the shared-state worker.
+
+Chat `/tasks` and the task section of `/status` join the task registry’s accepted-write
+fence before reading its prepared projection. Session details and agent-local
+fallback counts share that read owner, preserving visibility, ordering, and recent
+task windows. The caller revalidates the captured owner before formatting; a
+retired owner or failed preparation cannot render task data.
 
 Synchronous task creation and managed-flow worker creation share one create/reuse
 operation. Each adapter keeps its selection order and transaction boundaries.
@@ -901,6 +920,14 @@ during orderly shutdown. Delayed results cannot overwrite newer synchronous
 writes or refreshes. Reconciliation failures leave the flow projection dirty and
 preserve the durable mutation result without replaying the write.
 
+Task restoration and its mirrored-flow retries register each discovered flow ID
+with the process registry before the worker receives permission to update it.
+Synchronous reads refresh those pending identities even while the committed
+reply is in transit. Host reconciliation still follows task snapshot installation
+and precedes restored observers; failed replies also retain settlement and
+canonical flow reconciliation. This changes no schema, update migration, or
+synchronous plugin API.
+
 Synchronous callers keep their existing transaction behavior. Native cancellation,
 child-task linkage, and compound task/subagent completion retain their existing
 owners until their complete persistence and lifecycle boundaries move together.
@@ -950,9 +977,13 @@ appends also run their existing deduplication, sequence allocation, and insertio
 transaction on that worker. The capture records accepted speech before preparing
 its immutable input, preserves its order, and retains authority through native
 settlement. Terminal notes and failed-start restoration wait for accepted appends;
-terminal callbacks cannot admit new speech. Chronological
+terminal callbacks cannot admit new speech. Summary publication checks the captured
+input revision, prior notes, and speech sequence in the same worker transaction as
+the summary write. The host retains live summary-generation, caller, and abort
+checks at transaction and commit admission; stale results preserve prior notes.
+Chronological
 list reads still use the parent process because their SQL date function observes
-its current timezone. Streamed reads, export snapshots, and session and summary writes retain
+its current timezone. Streamed reads, export snapshots, and session and export-state writes retain
 their existing owners until their snapshot and write-drainage lifecycles move
 together.
 
@@ -1049,6 +1080,16 @@ admission or loading the delivery runtime. A recovery root applies to an existin
 queue entry, while fresh sends use their selected default root. This context stays
 internal and is not added to durable payloads or plugin callback inputs.
 
+Gateway lifecycle notices retain their original shared-state directory and
+supervisor mode through asynchronous modifying hooks, media staging, and queue
+publication. Immediate delivery, settlement, and retry recovery use that same
+captured context. Startup carries it through the sentinel read, revision-checked
+cleanup, enqueue, and delivery; public plugin send arguments cannot select this
+private context. Runtime retry services and delayed startup callbacks capture
+their state at registration and retain it across retries, session lookups, and
+update-ledger writes. Current configuration and delivery authority are still
+checked when each retry runs.
+
 Standalone session-delivery queue operations run in the shared-state worker.
 Producers, recovery, generated-media preparation, and the retry scheduler carry
 one captured database context through enqueue, retry bookkeeping, and settlement.
@@ -1069,6 +1110,15 @@ pre-send best-effort fallback therefore cannot authorize a provider send after
 an unacknowledged settlement. Media stays available for existing orphan cleanup.
 Other outbound queue operations and media custody remain separate migration work.
 Schemas, retained receipts, update behavior, and cleanup policy are unchanged.
+
+Outbound producer claims and lease renewals run in the shared-state worker. The
+existing write transaction rereads the pending row, exact owner, and expiry on
+the executing worker. Callers await claim publication; lease stop joins accepted
+renewals before cancellation cleanup or acknowledgement can retire custody. An
+unavailable claim result leaves its row and media with recovery rather than
+replaying the mutation or starting a provider send. The lease period, heartbeat,
+retry budget, namespaces, stored payloads, and update behavior are unchanged.
+The final provider-dispatch fence and queue settlement retain their existing owners.
 
 Pending outbound failure settlement runs in the shared-state worker with the
 captured entry bytes and state context. Its existing exact-row and optional

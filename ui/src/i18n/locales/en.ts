@@ -14,6 +14,7 @@ export const en: TranslationMap & {
     commands: TranslationMap;
     welcome: TranslationMap & { suggestions: TranslationMap & { whatCanYouDo: string } };
     backgroundTasks: TranslationMap;
+    goals: TranslationMap;
     messages: TranslationMap &
       Record<
         | "copySelection"
@@ -2593,7 +2594,7 @@ export const en: TranslationMap & {
     toolSearch: {
       title: "Tool Search for all models",
       description:
-        "Local models use Tool Search automatically. Enable this override to defer tool schemas for all models; turning it off restores each model's default.",
+        "Defer tool schemas and discover tools on demand. Enabled by default with structured tool calls; turning it off disables the global default.",
     },
 
     customPluginUi: {
@@ -3907,31 +3908,7 @@ export const en: TranslationMap & {
       },
       imageCount: "Image ({count})",
     },
-    goals: {
-      composerMode: "Goal",
-      sessionChanged: "Conversation changed. Cancel and select Goal again.",
-      start: "Start goal",
-      save: "Save goal",
-      startHint: "Enter your objective.",
-      editHint: "Save without starting a run.",
-      objectivePlaceholder: "What should this goal accomplish?",
-      cancel: "Cancel goal entry",
-      offline: "Reconnect to manage goals.",
-      busy: "Wait for this run to finish. Your draft is unchanged.",
-      annotationUnsupported: "Send or remove browser annotations first. Your draft is unchanged.",
-      actionPending: "Wait for the pending goal action.",
-      admissionImmutable: "Retry or remove this request. Editing requires a new goal.",
-      edit: "Edit goal",
-      editChip: "Edit",
-      pause: "Pause goal",
-      pauseChip: "Pause",
-      resume: "Resume goal",
-      resumeChip: "Resume",
-      clear: "Clear goal",
-      clearChip: "Clear",
-      showDetails: "Show goal details",
-      hideDetails: "Hide goal details",
-    },
+    goals: {},
     asyncQuestions: {
       title: "Answer when ready",
       pendingOne: "{count} unanswered question",

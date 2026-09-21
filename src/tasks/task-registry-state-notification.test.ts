@@ -17,7 +17,10 @@ import {
 } from "../test-utils/openclaw-test-state.js";
 import { resetTaskFlowRegistryForTests } from "./task-flow-registry.test-support.js";
 import { maybeDeliverTaskStateChangeUpdate } from "./task-registry-delivery.js";
-import { commitTaskDeliveryFixture } from "./task-registry-delivery.test-support.js";
+import {
+  captureTaskDeliveryWork,
+  commitTaskDeliveryFixture,
+} from "./task-registry-delivery.test-support.js";
 import { getTaskDeliveryState } from "./task-registry-mutation.js";
 import { publishTaskRecordAfterAtomicStore } from "./task-registry-publication.js";
 import * as deliveryRuntime from "./task-registry-runtime-loaders.js";
@@ -52,6 +55,7 @@ type MessageSendParams = Parameters<deliveryRuntime.TaskRegistryDeliveryRuntime[
 const sendMessage = vi.fn<deliveryRuntime.TaskRegistryDeliveryRuntime["sendMessage"]>();
 let state: OpenClawTestState;
 let notifications: Array<{ complete: () => void; result: Promise<TaskRecord | null> }>;
+let nativeDeliveries: ReturnType<typeof captureTaskDeliveryWork> | undefined;
 
 function createTask(): TaskRecord {
   return createTaskFixture("cli", {
@@ -125,6 +129,7 @@ beforeEach(async () => {
   resetTaskFlowRegistryForTests({ persist: false });
   resetGatewayWorkAdmission();
   notifications = [];
+  nativeDeliveries = undefined;
   systemEvents.resetSystemEventsForTest();
   sendMessage.mockReset();
   setTaskRegistryDeliveryRuntimeForTests({ sendMessage });
@@ -135,8 +140,9 @@ afterEach(async () => {
     notification.complete();
   }
   await Promise.allSettled(notifications.map(({ result }) => result));
+  await nativeDeliveries?.settle();
+  expect(getActiveGatewayRootWorkCount()).toBe(0);
   vi.restoreAllMocks();
-  await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
   await closeOpenClawStateDatabaseAsync();
   resetTaskRegistryDeliveryRuntimeForTests();
   resetTaskRegistryForTests({ persist: false });
@@ -307,6 +313,7 @@ describe("task state notification acknowledgements", () => {
     const event = progress(task.createdAt + 10);
     const notification = startNotification(task, event);
     await notification.dispatched;
+    nativeDeliveries = captureTaskDeliveryWork();
     markTaskRunningByRunId({
       taskId: task.taskId,
       runId,
@@ -315,6 +322,7 @@ describe("task state notification acknowledgements", () => {
     expect(stored(task.taskId).task?.createdAt).toBe(task.createdAt - 1_000);
     notification.complete();
     await notification.result;
+    await nativeDeliveries.settle();
     expect(stored(task.taskId).delivery?.lastNotifiedEventAt).toBe(event.at);
   });
 
@@ -535,6 +543,7 @@ describe("task state notification acknowledgements", () => {
       commitTaskDeliveryFixture(delivery);
     });
     sendMessage.mockResolvedValue(sent);
+    nativeDeliveries = captureTaskDeliveryWork();
     try {
       const [receipt] = markTaskRunningByRunId({
         runId,
@@ -545,7 +554,8 @@ describe("task state notification acknowledgements", () => {
       expect(replaced).toBe(true);
       const before = stored(task.taskId);
       expect(before.task?.runId).toBe(replacement.runId);
-      await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
+      await nativeDeliveries.settle();
+      expect(getActiveGatewayRootWorkCount()).toBe(0);
       expect(sendMessage).not.toHaveBeenCalled();
       expect(systemEvents.drainSystemEvents(ownerKey)).toEqual([]);
       expect(stored(task.taskId)).toEqual(before);

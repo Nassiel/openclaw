@@ -77,6 +77,18 @@ describe("registered progress refresh admission", () => {
         expect(dispatch.ctx.InputProvenance).toMatchObject({ sourceTool: "progress_card_refresh" });
         expect(dispatch.toolsAllow).toContain("progress_card");
         expect(dispatch.toolsAllow).not.toContain("exec");
+        const prepared = dispatch.replyOptions?.onSessionPrepared;
+        if (!prepared) {
+          throw new Error("Missing real admission preparation callback");
+        }
+        prepared({
+          sessionKey: f.scope.sessionKey,
+          sessionId: f.scope.sessionId,
+          storePath: f.scope.storePath,
+        });
+        expect(f.context.chatAbortControllers.get(payload.runId)?.sessionId).toBe(
+          f.scope.sessionId,
+        );
         await recorder.persistApproved();
         const rows = loadTranscriptEventsSync(f.scope);
         const messages = rows.flatMap((row) =>
@@ -87,6 +99,13 @@ describe("registered progress refresh admission", () => {
           "Refresh this session",
         );
         await f.finishDispatch();
+        expect(() =>
+          prepared({
+            sessionKey: f.scope.sessionKey,
+            sessionId: "late-refresh",
+            storePath: f.scope.storePath,
+          }),
+        ).toThrow("no longer owns its admission");
         expect((await progressCardStore.get(f.scope.sessionKey, f.scope.agentId))?.markdown).toBe(
           "Previous status",
         );

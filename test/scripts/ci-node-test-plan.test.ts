@@ -1443,6 +1443,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           "agentic-commands-doctor-sessions-cron",
           "agentic-commands-doctor-sessions-cron-memory",
           "agentic-commands-doctor-sessions-cron-sqlite",
+          "agentic-commands-doctor-sessions-cron-sqlite-recovery",
           "agentic-control-plane-auth-node",
           "core-runtime-infra-storage-state",
           "agentic-control-plane-runtime-ui-tools",
@@ -2230,6 +2231,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       "agentic-commands-doctor-sessions-cron",
       "agentic-commands-doctor-sessions-cron-memory",
       "agentic-commands-doctor-sessions-cron-sqlite",
+      "agentic-commands-doctor-sessions-cron-sqlite-recovery",
     ];
     const base = createNodeTestShards({ includeReleaseOnlyPluginShards: false });
     const commandShards = base.filter((shard) =>
@@ -2245,6 +2247,10 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     ]);
     expect(owners.get("agentic-commands-doctor-sessions-cron-sqlite")).toEqual([
       "src/commands/doctor-session-sqlite.test.ts",
+    ]);
+    expect(owners.get("agentic-commands-doctor-sessions-cron-sqlite-recovery")).toEqual([
+      "src/commands/doctor-session-sqlite.receipt-recovery.test.ts",
+      "src/commands/doctor-session-transcripts.missing-index.test.ts",
     ]);
     expect(owners.get("agentic-commands-doctor-sessions-cron")).toEqual([
       "src/commands/doctor-heartbeat-cadence-migration.test.ts",
@@ -2798,6 +2804,33 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       PRIVATE_QA_TOOLING_TEST,
     ]);
   });
+
+  it.each(["blacksmith", "github", "hybrid"])(
+    "runs large workspace inventory without sibling files in %s plans",
+    (runnerBackend) => {
+      const inventory = "src/gateway/worker-environments/workspace-large-inventory.test.ts";
+      const owners = defaultShards.filter((shard) => shard.includePatterns?.includes(inventory));
+      expect(owners).toHaveLength(1);
+      expect(owners[0]!.includePatterns).toEqual([inventory]);
+
+      for (const plan of [
+        getCommittedCompactPlan("pull-request", runnerBackend),
+        getCommittedCompactPlan("push", runnerBackend),
+      ]) {
+        const jobs = plan.filter((job) =>
+          job.groups.some((group) => group.includePatterns?.includes(inventory)),
+        );
+        expect(jobs).toHaveLength(1);
+        expect(jobs[0]!.planConcurrency).toBe(1);
+        const groups = jobs[0]!.groups.filter((group) =>
+          group.includePatterns?.includes(inventory),
+        );
+        expect(groups).toHaveLength(1);
+        expect(groups[0]!.includePatterns).toEqual([inventory]);
+        expect(groups[0]!.configs).toEqual(["test/vitest/vitest.gateway-core.config.ts"]);
+      }
+    },
+  );
 
   it.each(["blacksmith", "github", "hybrid"])(
     "retains measured Gateway worker fallback in precise %s plans",
@@ -3730,6 +3763,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       "agentic-commands-doctor-sessions-cron",
       "agentic-commands-doctor-sessions-cron-memory",
       "agentic-commands-doctor-sessions-cron-sqlite",
+      "agentic-commands-doctor-sessions-cron-sqlite-recovery",
       "agentic-commands-doctor-shared",
       "agentic-commands-doctor-whatsapp",
       "agentic-commands-doctor-workspace",

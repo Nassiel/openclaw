@@ -18,6 +18,7 @@ import {
 import {
   createInMemoryTaskRegistryStore,
   createInMemoryTaskFlowRegistryStore,
+  reconcileTaskFlowRestoreForTests,
 } from "../test-utils/task-registry-store.js";
 import { ensureTaskRuntimeStateReady } from "./runtime-internal.js";
 import { createAcpTaskBackingDetail } from "./task-backing-records.js";
@@ -155,7 +156,7 @@ function identityRestoreFixture(kind: "task" | "flow", options?: { sameIdentity?
         async withSnapshotAsync(context, consume) {
           loads.push(selected(context));
           await beforeSnapshot(context);
-          return consume(taskRestoreResult(stores.task(context).loadSnapshot()));
+          return consume(taskRestoreResult(stores.task(context).loadSnapshot()), async () => {});
         },
       },
       observers: {
@@ -425,17 +426,20 @@ describe("asynchronous registry restoration", () => {
         ...store,
         async withSnapshotAsync(_context, consume) {
           loads += 1;
-          return consume({
-            ...taskRestoreResult(store.loadSnapshot()),
-            flowSyncs: [
-              {
-                taskId: task.taskId,
-                flowId: flow.flowId,
-                kind: "result",
-                result: { ok: true, flow },
-              },
-            ],
-          });
+          return consume(
+            {
+              ...taskRestoreResult(store.loadSnapshot()),
+              flowSyncs: [
+                {
+                  taskId: task.taskId,
+                  flowId: flow.flowId,
+                  kind: "result",
+                  result: { ok: true, flow },
+                },
+              ],
+            },
+            () => reconcileTaskFlowRestoreForTests(context, [flow.flowId]),
+          );
         },
       },
       observers: { onEvent: (event) => observed.push(event.kind) },
@@ -498,17 +502,20 @@ describe("asynchronous registry restoration", () => {
           loads += 1;
           started.resolve();
           await release.promise;
-          return consume({
-            ...taskRestoreResult(store.loadSnapshot()),
-            flowSyncs: [
-              {
-                taskId: task.taskId,
-                flowId: flow.flowId,
-                kind: "result",
-                result: { ok: true, flow: { ...flow, revision: 1 } },
-              },
-            ],
-          });
+          return consume(
+            {
+              ...taskRestoreResult(store.loadSnapshot()),
+              flowSyncs: [
+                {
+                  taskId: task.taskId,
+                  flowId: flow.flowId,
+                  kind: "result",
+                  result: { ok: true, flow: { ...flow, revision: 1 } },
+                },
+              ],
+            },
+            () => reconcileTaskFlowRestoreForTests(context, [flow.flowId]),
+          );
         },
       },
       observers: {
@@ -568,7 +575,7 @@ describe("asynchronous registry restoration", () => {
             if (outcome === "failure") {
               throw failure;
             }
-            return consume(taskRestoreResult(snapshot));
+            return consume(taskRestoreResult(snapshot), async () => {});
           },
         },
       });
@@ -625,19 +632,22 @@ describe("asynchronous registry restoration", () => {
               started.resolve();
               await release.promise;
             }
-            return consume({
-              ...taskRestoreResult(store.loadSnapshot()),
-              flowSyncs: settled
-                ? [
-                    {
-                      taskId: task.taskId,
-                      flowId: flow.flowId,
-                      kind: "result",
-                      result: { ok: true, flow: committedFlow },
-                    },
-                  ]
-                : [],
-            });
+            return consume(
+              {
+                ...taskRestoreResult(store.loadSnapshot()),
+                flowSyncs: settled
+                  ? [
+                      {
+                        taskId: task.taskId,
+                        flowId: flow.flowId,
+                        kind: "result",
+                        result: { ok: true, flow: committedFlow },
+                      },
+                    ]
+                  : [],
+              },
+              () => reconcileTaskFlowRestoreForTests(context, settled ? [flow.flowId] : []),
+            );
           },
         },
         observers: {
@@ -682,7 +692,7 @@ describe("asynchronous registry restoration", () => {
             started.resolve();
             await release.promise;
           }
-          return consume(taskRestoreResult(snapshot));
+          return consume(taskRestoreResult(snapshot), async () => {});
         },
       },
     });
@@ -711,7 +721,7 @@ describe("asynchronous registry restoration", () => {
           if (fail) {
             throw new Error("synthetic storage failure");
           }
-          return consume(taskRestoreResult(store.loadSnapshot()));
+          return consume(taskRestoreResult(store.loadSnapshot()), async () => {});
         },
       },
     });
