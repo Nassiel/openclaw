@@ -50,6 +50,11 @@ export type SessionPatchOptions = {
   ownsModelOverride?: () => boolean;
   /** Capture the current connection now, but dispatch only after this tail settles. */
   waitFor?: Promise<unknown>;
+  /** Same-tail acknowledgements identify queued targets independently of dispatch readiness. */
+  predecessorReceipt?: {
+    read: () => SessionPatchResult | null;
+    subscribe: (onConfirmed: () => void) => () => void;
+  };
   /** Revalidate explicit user intent after the settings tail, before dispatch. */
   canDispatch?: () => boolean;
   /**

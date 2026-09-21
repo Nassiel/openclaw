@@ -20,14 +20,16 @@ import {
   type SessionCapability,
   type SessionArchivedFilter,
   type SessionListOptions,
+  type SessionPatch,
+  type SessionPatchResult,
   type SessionRefreshTarget,
   type SessionScopeHost,
 } from "../../lib/sessions/index.ts";
-import type { SessionPatch } from "../../lib/sessions/patch.ts";
 import {
   areUiSessionKeysEquivalent,
   isUiSelectedGlobalSessionKey,
   resolveUiSelectedGlobalAgentId,
+  uiSessionRowMatchesSelectedChat,
 } from "../../lib/sessions/session-key.ts";
 import { getPendingChatPickerPatch, patchChatSessionSettings } from "./chat-settings-patches.ts";
 export { getPendingChatPickerPatch };
@@ -141,32 +143,30 @@ export function refreshChatSessionListForTarget(
   });
 }
 
-function setChatError(host: ChatModelSettingsHost, error: string | null, requestUpdate = false) {
+function setChatError(host: ChatModelSettingsHost, error: string | null) {
   const message = error === null ? null : formatUiError(error);
   host.lastError = message;
   host.chatError = message;
-  if (requestUpdate) {
-    host.requestUpdate?.();
-  }
+  host.requestUpdate?.();
 }
 
-function captureChatSettingsTarget(
-  host: ChatModelSettingsHost,
-  sessionKey: string,
-  activeRow: GatewaySessionRow | undefined,
-) {
+function findChatSettingsRow(host: ChatModelSettingsHost, sessionKey: string) {
+  return host.sessionsResult?.sessions.find((row) =>
+    uiSessionRowMatchesSelectedChat(host, row.key, sessionKey, row.agentId),
+  );
+}
+
+function captureChatSettingsTarget(host: ChatModelSettingsHost, sessionKey: string) {
+  const activeRow = findChatSettingsRow(host, sessionKey);
   const sessions = host.sessions;
   const scope = sessions.captureConnectionScope();
   const client = host.client;
   const agentId = scopedAgentListParamsForSession(host, sessionKey).agentId;
-  const target =
-    agentId && activeRow?.sessionId ? { agentId, sessionId: activeRow.sessionId } : undefined;
-  const matches = (row: GatewaySessionRow) =>
-    target &&
-    areUiSessionKeysEquivalent(row.key, sessionKey) &&
-    row.sessionId === target.sessionId &&
-    (row.agentId === undefined || row.agentId === target.agentId);
-  const isCurrent = () =>
+  const sessionId = activeRow?.sessionId;
+  const rowAgentId = agentId ?? activeRow?.agentId;
+  const matchesOwner = (row: GatewaySessionRow) =>
+    uiSessionRowMatchesSelectedChat(host, row.key, sessionKey, row.agentId ?? rowAgentId);
+  const isRouteCurrent = () =>
     Boolean(
       scope &&
       host.connected &&
@@ -174,45 +174,71 @@ function captureChatSettingsTarget(
       host.sessions === sessions &&
       sessions.isConnectionScopeCurrent(scope) &&
       areUiSessionKeysEquivalent(host.sessionKey, sessionKey) &&
-      scopedAgentListParamsForSession(host, sessionKey).agentId === agentId &&
-      (!target || host.sessionsResult?.sessions.some(matches)),
+      scopedAgentListParamsForSession(host, sessionKey).agentId === agentId,
     );
+  const isCurrent = () =>
+    isRouteCurrent() &&
+    (activeRow
+      ? host.sessionsResult?.sessions.some(
+          (row) => matchesOwner(row) && row.sessionId === sessionId,
+        ) === true
+      : !host.sessionsResult?.sessions.some(matchesOwner));
   return {
-    target,
+    sessionId,
+    settings: { ...activeRow, ...sessions.settingsPreview(sessionKey, agentId) },
     agentParams: scopedAgentParamsForSession(host, sessionKey),
     isCurrent,
-    row: () => host.sessionsResult?.sessions.find(matches),
+    row: (receipt?: SessionPatchResult | null) => {
+      if (
+        receipt
+          ? !isRouteCurrent() ||
+            !uiSessionRowMatchesSelectedChat(host, receipt.key, sessionKey, rowAgentId)
+          : !isCurrent()
+      ) {
+        return undefined;
+      }
+      // A matching ACK can identify an initially unbound row; dispatch keeps its original target.
+      return host.sessionsResult?.sessions.find(
+        (row) => matchesOwner(row) && row.sessionId === (sessionId ?? receipt?.entry.sessionId),
+      );
+    },
   };
 }
 
-async function applyChatSetting(
+function patchCapturedChatSetting(
   host: ChatModelSettingsHost,
   sessionKey: string,
   captured: ReturnType<typeof captureChatSettingsTarget>,
-  patch: Pick<SessionPatch, "fastMode" | "thinkingLevel" | "contextWindow">,
-  setting: string,
-  synchronize?: () => void,
+  patch: Pick<SessionPatch, "thinkingLevel" | "fastMode" | "contextWindow">,
+  settingName: "thinking level" | "speed" | "context window",
+  synchronize?: (receipt?: SessionPatchResult | null) => void,
 ): Promise<boolean> {
-  setChatError(host, null, true);
-  try {
-    if (!captured.isCurrent()) {
+  setChatError(host, null);
+  return (async () => {
+    let receipt: SessionPatchResult | null = null;
+    try {
+      if (!captured.isCurrent()) {
+        return false;
+      }
+      const pending = patchChatSessionSettings(host, sessionKey, patch, {
+        ...captured.agentParams,
+        expectedSessionId: captured.sessionId,
+        onRejected: (error, acknowledgement) => {
+          if (captured.isCurrent() || captured.row(acknowledgement)) {
+            setChatError(host, `Failed to set ${settingName}: ${formatUiError(error)}`);
+          }
+        },
+        reconcile: async () => refreshCurrentChatSessionList(host),
+      });
+      synchronize?.();
+      receipt = await pending;
+      return receipt !== null;
+    } catch {
       return false;
+    } finally {
+      synchronize?.(receipt);
     }
-    const pending = patchChatSessionSettings(host, sessionKey, patch, {
-      ...captured.agentParams,
-      expectedSessionId: captured.target?.sessionId,
-      reconcile: async () => refreshCurrentChatSessionList(host),
-    });
-    synchronize?.();
-    return (await pending) !== null;
-  } catch (err) {
-    if (captured.isCurrent()) {
-      setChatError(host, `Failed to set ${setting}: ${formatUiError(err)}`, true);
-    }
-    return false;
-  } finally {
-    synchronize?.();
-  }
+  })();
 }
 
 export function switchChatFastMode(
@@ -223,16 +249,19 @@ export function switchChatFastMode(
   if (!host.client || !host.connected) {
     return Promise.resolve(false);
   }
-  const activeRow = host.sessionsResult?.sessions?.find((row) =>
-    areUiSessionKeysEquivalent(row.key, targetSessionKey),
-  );
-  const captured = captureChatSettingsTarget(host, targetSessionKey, activeRow);
+  const captured = captureChatSettingsTarget(host, targetSessionKey);
   const next: FastMode | undefined =
     nextFastMode === "" ? undefined : nextFastMode === "auto" ? "auto" : nextFastMode === "on";
-  if (activeRow?.fastMode === next) {
+  if (captured.settings.fastMode === next) {
     return Promise.resolve(true);
   }
-  return applyChatSetting(host, targetSessionKey, captured, { fastMode: next ?? null }, "speed");
+  return patchCapturedChatSetting(
+    host,
+    targetSessionKey,
+    captured,
+    { fastMode: next ?? null },
+    "speed",
+  );
 }
 
 type ChatModelSelection = {
@@ -253,9 +282,7 @@ function claimChatModelSelection(host: ChatModelSettingsHost, targetSessionKey: 
   const sessions = host.sessions;
   const selectedSessionKey = host.sessionKey;
   const agentScope = scopedAgentParamsForSession(host, targetSessionKey);
-  const activeRow = host.sessionsResult?.sessions.find((row) =>
-    areUiSessionKeysEquivalent(row.key, targetSessionKey),
-  );
+  const activeRow = findChatSettingsRow(host, targetSessionKey);
   let expectedSessionId = activeRow?.sessionId;
   const ownsSelection = (sessionId = expectedSessionId) =>
     !owner.signal.aborted &&
@@ -266,9 +293,7 @@ function claimChatModelSelection(host: ChatModelSettingsHost, targetSessionKey: 
     host.sessions === sessions &&
     host.sessionKey === selectedSessionKey &&
     scopedAgentParamsForSession(host, targetSessionKey).agentId === agentScope.agentId &&
-    host.sessionsResult?.sessions.find((row) =>
-      areUiSessionKeysEquivalent(row.key, targetSessionKey),
-    )?.sessionId === sessionId;
+    findChatSettingsRow(host, targetSessionKey)?.sessionId === sessionId;
   return {
     owner,
     ownsSelection,
@@ -301,7 +326,7 @@ async function confirmChatNativeRuntimeRecovery(
     runtime: restriction.runtimeLabel,
   });
   const blocked = () =>
-    setChatError(host, `${explanation} ${t("chat.nativeRuntimeRecovery.chooseAnother")}`, true);
+    setChatError(host, `${explanation} ${t("chat.nativeRuntimeRecovery.chooseAnother")}`);
   const canRecover = () => ownsSelection() && selectionUnchanged();
   try {
     const materializedSessionId = restriction.recovery?.sessionId;
@@ -344,16 +369,11 @@ async function confirmChatNativeRuntimeRecovery(
       recovered.listRefreshError
         ? t("chat.nativeRuntimeRecovery.refreshFailed", { error: recovered.listRefreshError })
         : null,
-      true,
     );
     return true;
   } catch (error) {
     if (ownsSelection()) {
-      setChatError(
-        host,
-        t("chat.nativeRuntimeRecovery.failed", { error: formatUiError(error) }),
-        true,
-      );
+      setChatError(host, t("chat.nativeRuntimeRecovery.failed", { error: formatUiError(error) }));
     }
     return false;
   }
@@ -390,9 +410,7 @@ export function captureChatNativeRuntimeRecovery(
       undefined,
       selection,
       () => {
-        const row = host.sessionsResult?.sessions.find((candidate) =>
-          areUiSessionKeysEquivalent(candidate.key, targetSessionKey),
-        );
+        const row = findChatSettingsRow(host, targetSessionKey);
         if (unbound) {
           return Boolean(
             modelValue &&
@@ -418,10 +436,7 @@ export function captureChatNativeRuntimeRecovery(
     if (!recovered) {
       return undefined;
     }
-    const readRow = () =>
-      host.sessionsResult?.sessions.find((row) =>
-        areUiSessionKeysEquivalent(row.key, targetSessionKey),
-      );
+    const readRow = () => findChatSettingsRow(host, targetSessionKey);
     const confirmed = readRow();
     const confirmedModel = confirmed?.model;
     const confirmedProvider = confirmed?.modelProvider;
@@ -447,15 +462,13 @@ export async function switchChatModel(
   if (!host.client || !host.connected) {
     return false;
   }
-  const activeRow = host.sessionsResult?.sessions.find((row) =>
-    areUiSessionKeysEquivalent(row.key, targetSessionKey),
-  );
+  const activeRow = findChatSettingsRow(host, targetSessionKey);
   if (activeRow?.modelSelectionLocked === true) {
     return false;
   }
   // A newer intent retires even a confirmation for a previous selection.
   const selection = claimChatModelSelection(host, targetSessionKey);
-  const { ownsSelection, agentScope } = selection;
+  const { ownsSelection, agentScope, expectedSessionId } = selection;
   const currentOverride = resolveChatModelOverrideValue({
     activeSession: activeRow,
     chatModelCatalog: host.chatModelCatalog,
@@ -479,7 +492,7 @@ export async function switchChatModel(
   const ownsModelOverride = () =>
     !isUiSelectedGlobalSessionKey(host, targetSessionKey) ||
     resolveUiSelectedGlobalAgentId(host) === modelOwnerAgentId;
-  setChatError(host, null, true);
+  setChatError(host, null);
   const switchPromiseRef: { current?: Promise<boolean> } = {};
   const clearPendingSwitch = () => {
     if (host.chatModelSwitchPromises?.[targetSessionKey] === switchPromiseRef.current) {
@@ -499,6 +512,7 @@ export async function switchChatModel(
         },
         {
           ...agentScope,
+          expectedSessionId,
           ownsModelOverride,
           reconcile: async () => {
             await refreshCurrentChatSessionList(host);
@@ -518,7 +532,7 @@ export async function switchChatModel(
           ? readAgentRuntimeRestrictionErrorDetails(err.details)
           : undefined;
       if (!restriction) {
-        setChatError(host, `Failed to set model: ${formatUiError(err)}`, true);
+        setChatError(host, `Failed to set model: ${formatUiError(err)}`);
         return false;
       }
       return await confirmChatNativeRuntimeRecovery(
@@ -551,11 +565,8 @@ export function switchChatThinkingLevel(
   if (!host.client || !host.connected) {
     return Promise.resolve(false);
   }
-  const activeRow = host.sessionsResult?.sessions?.find((row) =>
-    areUiSessionKeysEquivalent(row.key, targetSessionKey),
-  );
-  const captured = captureChatSettingsTarget(host, targetSessionKey, activeRow);
-  const previousThinkingLevel = activeRow?.thinkingLevel;
+  const captured = captureChatSettingsTarget(host, targetSessionKey);
+  const previousThinkingLevel = captured.settings.thinkingLevel;
   const normalizedNext =
     (normalizeThinkLevel(nextThinkingLevel) ?? nextThinkingLevel.trim()) || undefined;
   const normalizedPrev =
@@ -565,12 +576,13 @@ export function switchChatThinkingLevel(
   if ((normalizedPrev ?? "") === (normalizedNext ?? "")) {
     return Promise.resolve(true);
   }
-  const synchronizeThinking = () => {
-    if (captured.target && captured.isCurrent()) {
-      host.chatThinkingLevel = captured.row()?.thinkingLevel ?? null;
+  const synchronizeThinking = (receipt?: SessionPatchResult | null) => {
+    const row = captured.row(receipt);
+    if (row) {
+      host.chatThinkingLevel = row.thinkingLevel ?? null;
     }
   };
-  return applyChatSetting(
+  return patchCapturedChatSetting(
     host,
     targetSessionKey,
     captured,
@@ -588,15 +600,12 @@ export function switchChatContextWindow(
   if (!host.client || !host.connected) {
     return Promise.resolve(false);
   }
-  const activeRow = host.sessionsResult?.sessions?.find((row) =>
-    areUiSessionKeysEquivalent(row.key, targetSessionKey),
-  );
-  const captured = captureChatSettingsTarget(host, targetSessionKey, activeRow);
+  const captured = captureChatSettingsTarget(host, targetSessionKey);
   const next = nextContextWindow.trim() || undefined;
-  if ((activeRow?.contextWindow ?? "") === (next ?? "")) {
+  if ((captured.settings.contextWindow ?? "") === (next ?? "")) {
     return Promise.resolve(true);
   }
-  return applyChatSetting(
+  return patchCapturedChatSetting(
     host,
     targetSessionKey,
     captured,

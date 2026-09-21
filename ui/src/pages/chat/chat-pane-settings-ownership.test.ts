@@ -61,6 +61,220 @@ function choose(
   return switchChatContextWindow(state, choice === "first" ? "128k" : "256k");
 }
 
+it.each(settings.flatMap((setting) => [false, true].map((removed) => ({ setting, removed }))))(
+  "preserves queued settings row presence for $setting (removed=$removed)",
+  async ({ setting, removed }) => {
+    const initial = initialRow();
+    delete initial.sessionId;
+    const rows = [initial];
+    const firstReply = createDeferred<unknown>();
+    const patch = vi.fn<GatewayRequestHandler>(() => {
+      if (patch.mock.calls.length === 1) {
+        return firstReply.promise;
+      }
+      rows[0] = { ...initial, ...choiceFields(setting, "second"), updatedAt: 4 };
+      return { ok: true, key: initial.key, path: "", entry: rows[0] };
+    });
+    const { sessions, mount } = createMountedPanes(rows, "main", undefined, {
+      "sessions.patch": patch,
+    });
+    let first: Promise<boolean> | undefined;
+    let queued: Promise<boolean> | undefined;
+    try {
+      await sessions.refresh({ agentId: "main", force: true });
+      const pane = mount(initial.key);
+      await refreshPane(pane);
+      expect(selectedChatSessionRow(pane.state)).toMatchObject(initial);
+      expect(selectedChatSessionRow(pane.state)?.sessionId).toBeUndefined();
+      first = choose(pane.state, setting, "first");
+      queued = choose(pane.state, setting, "second");
+      expect(patch).toHaveBeenCalledOnce();
+
+      if (removed) {
+        rows.length = 0;
+      }
+      await sessions.refresh({ agentId: "main", force: true });
+      expect(sessions.state.result?.sessions).toEqual(
+        removed ? [] : [expect.objectContaining(initial)],
+      );
+      expect(selectedChatSessionRow(pane.state)?.key).toBe(removed ? undefined : initial.key);
+      const confirmed = { ...initial, ...choiceFields(setting, "first"), updatedAt: 2 };
+      if (!removed) {
+        rows[0] = confirmed;
+      }
+      firstReply.resolve({ ok: true, key: initial.key, path: "", entry: confirmed });
+      await expect(first).resolves.toBe(true);
+      const completed = await queued;
+      expect.soft(completed).toBe(!removed);
+      expect(patch).toHaveBeenCalledTimes(removed ? 1 : 2);
+      expect(sessions.state.result?.sessions).toEqual(
+        removed
+          ? []
+          : [
+              expect.objectContaining({
+                ...initial,
+                ...choiceFields(setting, "second"),
+                updatedAt: 4,
+              }),
+            ],
+      );
+    } finally {
+      firstReply.resolve({ ok: true, key: initial.key, path: "", entry: initial });
+      await Promise.allSettled([first, queued]);
+      await vi.dynamicImportSettled();
+    }
+  },
+);
+
+it.each(["rejected", "confirmed"] as const)(
+  "preserves an initially empty thinking capture through %s readback",
+  async (outcome) => {
+    const key = "agent:main:initially-empty-thinking";
+    const rows: GatewaySessionRow[] = [];
+    const reply = createDeferred<unknown>();
+    const patch = vi.fn<GatewayRequestHandler>(() => reply.promise);
+    const { sessions, mount } = createMountedPanes(rows, "main", undefined, {
+      "sessions.patch": patch,
+    });
+    let operation: Promise<boolean> | undefined;
+    try {
+      await sessions.refresh({ agentId: "main", force: true });
+      const pane = mount(key);
+      await refreshPane(pane);
+      expect(selectedChatSessionRow(pane.state)).toBeUndefined();
+      pane.state.chatThinkingLevel = "high";
+      operation = switchChatThinkingLevel(pane.state, "low");
+      expect(patch).toHaveBeenCalledOnce();
+
+      const canonical: GatewaySessionRow = {
+        key,
+        agentId: "main",
+        kind: "direct",
+        updatedAt: 3,
+        thinkingLevel: "off",
+      };
+      rows.push(canonical);
+      await sessions.refresh({ agentId: "main", force: true });
+      expect(selectedChatSessionRow(pane.state)).toMatchObject(canonical);
+      expect(selectedChatSessionRow(pane.state)?.sessionId).toBeUndefined();
+      pane.state.chatThinkingLevel = "medium";
+      if (outcome === "rejected") {
+        reply.reject(new Error("Synthetic failure of the initially empty target"));
+      } else {
+        reply.resolve({
+          ok: true,
+          key,
+          path: "",
+          entry: { ...canonical, updatedAt: 2, thinkingLevel: "medium" },
+        });
+      }
+      await expect(operation).resolves.toBe(outcome === "confirmed");
+      expect(pane.state.chatThinkingLevel).toBe(outcome === "confirmed" ? "off" : "medium");
+      expect(selectedChatSessionRow(pane.state)).toMatchObject(canonical);
+    } finally {
+      reply.resolve({ ok: true, key, path: "", entry: rows[0] });
+      await operation;
+      await vi.dynamicImportSettled();
+    }
+  },
+);
+
+it.each(settings)(
+  "does not dispatch an initially ID-less queued %s patch against an identified successor",
+  async (setting) => {
+    const initial: GatewaySessionRow = { ...initialRow(), sessionId: undefined };
+    const successor = { ...initial, sessionId: "identified-successor", updatedAt: 3 };
+    const rows = [initial];
+    const firstReply = createDeferred<unknown>();
+    const patch = vi.fn<GatewayRequestHandler>(() => {
+      if (patch.mock.calls.length === 1) {
+        return firstReply.promise;
+      }
+      rows[0] = { ...successor, ...choiceFields(setting, "second"), updatedAt: 4 };
+      return { ok: true, key: initial.key, path: "", entry: rows[0] };
+    });
+    const { sessions, mount } = createMountedPanes(rows, "main", undefined, {
+      "sessions.patch": patch,
+    });
+    let first: Promise<boolean> | undefined;
+    let queued: Promise<boolean> | undefined;
+    try {
+      await sessions.refresh({ agentId: "main", force: true });
+      const pane = mount(initial.key);
+      await refreshPane(pane);
+      expect(selectedChatSessionRow(pane.state)?.sessionId).toBeUndefined();
+      first = choose(pane.state, setting, "first");
+      queued = choose(pane.state, setting, "second");
+      expect(patch).toHaveBeenCalledOnce();
+      expect(patch.mock.calls[0]?.[1]).not.toEqual(
+        expect.objectContaining({ expectedSessionId: expect.any(String) }),
+      );
+
+      rows[0] = successor;
+      await sessions.refresh({ agentId: "main", force: true });
+      await refreshPane(pane);
+      expect(pane.state.currentSessionId).toBe(successor.sessionId);
+      firstReply.resolve({
+        ok: true,
+        key: initial.key,
+        path: "",
+        entry: { ...initial, ...choiceFields(setting, "first"), updatedAt: 2 },
+      });
+      await expect(first).resolves.toBe(true);
+      await expect(queued).resolves.toBe(false);
+      expect(patch).toHaveBeenCalledOnce();
+      expect(selectedChatSessionRow(pane.state)).toMatchObject(successor);
+      expect(sessions.state.result?.sessions).toEqual([expect.objectContaining(successor)]);
+    } finally {
+      firstReply.resolve({ ok: true, key: initial.key, path: "", entry: initial });
+      await Promise.allSettled([first, queued]);
+      await vi.dynamicImportSettled();
+    }
+  },
+);
+
+it.each(settings)(
+  "keeps an initially ID-less in-flight %s rejection out of its successor's errors",
+  async (setting) => {
+    const initial: GatewaySessionRow = { ...initialRow(), sessionId: undefined };
+    const successor = { ...initial, sessionId: "identified-successor", updatedAt: 3 };
+    const rows = [initial];
+    const reply = createDeferred<unknown>();
+    const patch = vi.fn<GatewayRequestHandler>(() => reply.promise);
+    const { sessions, mount } = createMountedPanes(rows, "main", undefined, {
+      "sessions.patch": patch,
+    });
+    let operation: Promise<boolean> | undefined;
+    try {
+      await sessions.refresh({ agentId: "main", force: true });
+      const pane = mount(initial.key);
+      await refreshPane(pane);
+      expect(selectedChatSessionRow(pane.state)?.sessionId).toBeUndefined();
+      operation = choose(pane.state, setting, "first");
+      expect(patch).toHaveBeenCalledOnce();
+
+      rows[0] = successor;
+      await sessions.refresh({ agentId: "main", force: true });
+      await refreshPane(pane);
+      expect(pane.state.currentSessionId).toBe(successor.sessionId);
+      pane.state.chatError = "A successor warning";
+      pane.state.lastError = "A successor warning";
+      const sharedError = sessions.state.error;
+      reply.reject(new Error("Synthetic rejection for the previous unbound target"));
+      await expect(operation).resolves.toBe(false);
+      expect.soft(pane.state.chatError).toBe("A successor warning");
+      expect.soft(pane.state.lastError).toBe("A successor warning");
+      expect(sessions.state.error).toBe(sharedError);
+      expect(selectedChatSessionRow(pane.state)).toMatchObject(successor);
+      expect(patch).toHaveBeenCalledOnce();
+    } finally {
+      reply.resolve({ ok: true, key: initial.key, path: "", entry: initial });
+      await operation;
+      await vi.dynamicImportSettled();
+    }
+  },
+);
+
 it.each(
   settings.flatMap((setting) =>
     (["rejected", "confirmed"] as const).map((outcome) => ({ setting, outcome })),

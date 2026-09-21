@@ -352,6 +352,7 @@ export function createSessionCapabilityFixture(
     createSessionRowProvenance(),
   );
   return {
+    settingsPreview: () => undefined,
     captureConnectionScope: () => null,
     isConnectionScopeCurrent: () => false,
     deletionState: () => undefined,

@@ -24,7 +24,42 @@ type ChatCommandSettingsContext = {
   defaultAgentId?: string;
   agentId?: string;
 };
-const pendingChatPickerPatches = new WeakMap<SessionCapability, Map<string, Promise<boolean>>>();
+type PendingChatPickerPatch = {
+  ready: Promise<boolean>;
+  receipt: ReturnType<typeof createChatPickerPatchReceipt>;
+};
+const pendingChatPickerPatches = new WeakMap<
+  SessionCapability,
+  Map<string, PendingChatPickerPatch>
+>();
+
+function createChatPickerPatchReceipt(sessions: SessionCapability) {
+  const scope = sessions.captureConnectionScope();
+  const isCurrent = () => Boolean(scope && sessions.isConnectionScopeCurrent(scope));
+  let confirmed: SessionPatchResult | null = null;
+  const listeners = new Set<() => void>();
+  return {
+    isCurrent,
+    read: () => (isCurrent() ? confirmed : null),
+    subscribe(onConfirmed: () => void) {
+      listeners.add(onConfirmed);
+      return () => {
+        listeners.delete(onConfirmed);
+      };
+    },
+    confirm(receipt: SessionPatchResult) {
+      if (!isCurrent()) {
+        return;
+      }
+      confirmed = receipt;
+      // Decoration can change subscriptions while this receipt is being published.
+      const currentListeners = [...listeners];
+      for (const listener of currentListeners) {
+        listener();
+      }
+    },
+  };
+}
 
 function resolveChatPickerPatchKey(
   host: ChatPickerPatchHost,
@@ -68,22 +103,20 @@ export function getPendingChatPickerPatch(
   agentId?: string,
 ): Promise<boolean> | undefined {
   const patchKey = resolveChatPickerPatchKey(host, sessionKey, agentId);
-  return pendingChatPickerPatches.get(host.sessions)?.get(patchKey);
+  return pendingChatPickerPatches.get(host.sessions)?.get(patchKey)?.ready;
 }
 
 function trackPendingChatSettingsPatch(
-  host: ChatPickerPatchHost,
-  sessionKey: string,
-  patchPromise: Promise<boolean>,
-  agentId?: string,
+  sessions: SessionCapability,
+  patchKey: string,
+  pending: PendingChatPickerPatch,
 ): void {
   const pendingBySession =
-    pendingChatPickerPatches.get(host.sessions) ?? new Map<string, Promise<boolean>>();
-  pendingChatPickerPatches.set(host.sessions, pendingBySession);
-  const patchKey = resolveChatPickerPatchKey(host, sessionKey, agentId);
-  pendingBySession.set(patchKey, patchPromise);
-  void patchPromise.finally(() => {
-    if (pendingBySession.get(patchKey) === patchPromise) {
+    pendingChatPickerPatches.get(sessions) ?? new Map<string, PendingChatPickerPatch>();
+  pendingChatPickerPatches.set(sessions, pendingBySession);
+  pendingBySession.set(patchKey, pending);
+  void pending.ready.finally(() => {
+    if (pendingBySession.get(patchKey) === pending) {
       pendingBySession.delete(patchKey);
     }
   });
@@ -98,35 +131,52 @@ export function patchChatSessionSettings(
     expectedSessionId?: string;
     ownsModelOverride?: () => boolean;
     canDispatch?: () => boolean;
+    onRejected?: (error: unknown, receipt: SessionPatchResult | null) => void;
     reconcile?: (result: SessionPatchResult) => Promise<void> | void;
   } = {},
 ): Promise<SessionPatchResult | null> {
-  const previous = getPendingChatPickerPatch(host, sessionKey, options.agentId);
-  const operation = (async () => {
+  const sessions = host.sessions;
+  const patchKey = resolveChatPickerPatchKey(host, sessionKey, options.agentId);
+  const previous = pendingChatPickerPatches.get(sessions)?.get(patchKey);
+  const waitFor = previous?.ready;
+  // One flat receipt source survives failed intermediate writes without retaining
+  // settled predecessors. Each pending capability claim owns its subscription.
+  const receipt = previous?.receipt.isCurrent()
+    ? previous.receipt
+    : createChatPickerPatchReceipt(sessions);
+  const operation: Promise<SessionPatchResult | null> = (async () => {
     // Run-affecting settings and sends share this canonical per-session tail.
     // The capability captures this route before waiting, so a reconnect cannot
     // redirect queued intent to a replacement Gateway.
-    const result = await host.sessions.patch(sessionKey, patch, {
+    const result = await sessions.patch(sessionKey, patch, {
       agentId: options.agentId,
       expectedSessionId: options.expectedSessionId,
       ownsModelOverride: options.ownsModelOverride,
       canDispatch: options.canDispatch,
-      waitFor: previous,
+      waitFor,
+      ...(waitFor ? { predecessorReceipt: receipt } : {}),
     });
     if (result) {
+      // Publish identity before optional readback and before releasing FIFO dispatch.
+      receipt.confirm(result);
       await options.reconcile?.(result);
     }
     return result;
-  })();
-  trackPendingChatSettingsPatch(
-    host,
-    sessionKey,
-    operation.then(
+  })().catch((error: unknown) => {
+    // The canonical tail owns failure presentation as well as FIFO settlement.
+    if (pendingChatPickerPatches.get(sessions)?.get(patchKey) === pending) {
+      options.onRejected?.(error, receipt.read());
+    }
+    throw error;
+  });
+  const pending: PendingChatPickerPatch = {
+    ready: operation.then(
       (result) => result !== null,
       () => false,
     ),
-    options.agentId,
-  );
+    receipt,
+  };
+  trackPendingChatSettingsPatch(sessions, patchKey, pending);
   return operation;
 }
 

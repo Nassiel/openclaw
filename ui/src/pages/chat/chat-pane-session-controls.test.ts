@@ -10,6 +10,7 @@ import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { GatewaySessionRow } from "../../api/types.ts";
 import { icons } from "../../components/icons.ts";
 import { t } from "../../i18n/index.ts";
+import type { SessionPatchOptions } from "../../lib/sessions/patch.ts";
 import type { SessionRefreshOutcome } from "../../lib/sessions/session-capability.ts";
 import { createSessionsListResult } from "../../test-helpers/chat-model.ts";
 import {
@@ -18,6 +19,7 @@ import {
 } from "../../test-helpers/gateway-client.ts";
 import { makeChatHost } from "./chat-host.test-support.ts";
 import { renderChatPaneComposerControls } from "./chat-pane-session-controls.ts";
+import { createSessionCapabilityFixture } from "./chat-pane.test-support.ts";
 import { getPendingChatPickerPatch } from "./chat-settings-patches.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import { renderChatModelAccountControl } from "./components/chat-model-account-control.ts";
@@ -298,7 +300,11 @@ describe("chat pane composer controls", () => {
           ? [{ id: "cached-model", name: "Cached Model", provider: "openai", available: false }]
           : [],
         chatModelCatalogError: error,
-        sessions: { state: { modelOverrides: {} }, think: () => undefined, patch: vi.fn() },
+        sessions: createSessionCapabilityFixture({
+          state: { modelOverrides: {} },
+          think: () => undefined,
+          patch: vi.fn(),
+        }),
         chatModelSwitchPromises: {},
         sessionKey: "main",
         chatModelsLoading: false,
@@ -436,7 +442,11 @@ describe("chat pane composer controls", () => {
       client: {},
       chatLoading: false,
       chatModelCatalog: [],
-      sessions: { state: { modelOverrides: {} }, think: () => undefined, patch },
+      sessions: createSessionCapabilityFixture({
+        state: { modelOverrides: {} },
+        think: () => undefined,
+        patch,
+      }),
       chatModelSwitchPromises: {},
       sessionKey: "agent:main:permission-test",
       chatModelsLoading: false,
@@ -528,7 +538,11 @@ describe("chat pane composer controls", () => {
       connected: true,
       connectionEpoch: 1,
       client: {},
-      sessions: { state: { modelOverrides: {} }, think: () => undefined, patch },
+      sessions: createSessionCapabilityFixture({
+        state: { modelOverrides: {} },
+        think: () => undefined,
+        patch,
+      }),
       sessionKey: key,
       sessionsResult: { defaults: {}, sessions: [selectedSession] },
       chatModelCatalog: [],
@@ -621,11 +635,11 @@ describe("chat pane composer controls", () => {
       client: {},
       chatLoading: false,
       chatModelCatalog: [],
-      sessions: {
+      sessions: createSessionCapabilityFixture({
         state: { modelOverrides: {} },
         think: () => undefined,
         patch: vi.fn(() => pending.promise),
-      },
+      }),
       chatModelSwitchPromises: {},
       sessionKey:
         "initialSessionKey" in lifecycleCase
@@ -873,7 +887,7 @@ describe("chat pane composer controls", () => {
       client: {},
       chatLoading: false,
       chatModelCatalog: [],
-      sessions: {
+      sessions: createSessionCapabilityFixture({
         state: { modelOverrides: {} },
         think: () => undefined,
         patch,
@@ -882,7 +896,7 @@ describe("chat pane composer controls", () => {
           selectedSession.sessionId = replacementSessionId;
           return { status: "refreshed" as const };
         }),
-      },
+      }),
       chatModelSwitchPromises: {},
       sessionKey: selectedSession.key,
       chatModelsLoading: false,
@@ -929,7 +943,7 @@ describe("chat pane composer controls", () => {
         params: {
           permissionMode?: "workspace" | "read-only" | "guarded" | "full" | null;
         },
-        options?: { expectedSessionId?: string; waitFor?: Promise<boolean> },
+        options?: SessionPatchOptions,
       ) => {
         if (options?.expectedSessionId === "permission-session-before-replacement") {
           return await firstPatch.promise;
@@ -948,13 +962,13 @@ describe("chat pane composer controls", () => {
       client: {},
       chatLoading: false,
       chatModelCatalog: [],
-      sessions: {
+      sessions: createSessionCapabilityFixture({
         state: { modelOverrides: {} },
         think: () => undefined,
         patch,
         capturePermissionObservation: () => () => true,
         reconcileMutation: vi.fn(async () => await firstRefresh.promise),
-      },
+      }),
       chatModelSwitchPromises: {},
       sessionKey: selectedSession.key,
       chatModelsLoading: false,
