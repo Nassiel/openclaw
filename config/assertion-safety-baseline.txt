@@ -1869,10 +1869,8 @@ src/agents/shell-snapshot.ts	1
 src/agents/spawn-plan.ts	1
 src/agents/subagents/announce/subagent-announce-completion-delivery.ts	2
 src/agents/subagents/announce/subagent-announce-delivery-retry.ts	2
-src/agents/subagents/announce/subagent-announce-delivery.runtime.ts	1
-src/agents/subagents/announce/subagent-announce-delivery.ts	1
 src/agents/subagents/announce/subagent-announce-origin.ts	2
-src/agents/subagents/announce/subagent-announce-output.ts	7
+src/agents/subagents/announce/subagent-announce-output.ts	6
 src/agents/subagents/completion/subagent-completion-admission.store.ts	2
 src/agents/subagents/registry/subagent-recovery-state.ts	1
 src/agents/subagents/registry/subagent-registry-lifecycle-delivery.ts	2
