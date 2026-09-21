@@ -10301,6 +10301,7 @@ describe("handleAbortChat", () => {
       sourceClient: client,
       runId: "run-main",
       sessionKey: "agent:main",
+      conversation: { sessionKey: "agent:main" },
     });
     expect(host.chatMessage).toBe("");
     expect(request).not.toHaveBeenCalled();
@@ -10328,6 +10329,7 @@ describe("handleAbortChat", () => {
       sourceClient: client,
       runId: "run-main",
       sessionKey: "agent:main",
+      conversation: { sessionKey: "agent:main" },
     });
     expect(host.chatMessage).toBe(preserveDraft ? "draft" : "");
     expect(host.chatRunId).toBe("run-main");
