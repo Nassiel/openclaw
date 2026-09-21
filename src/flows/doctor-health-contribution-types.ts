@@ -20,6 +20,7 @@ import type { FlowContribution } from "./types.js";
 
 type DoctorConfigResult = {
   cfg: OpenClawConfig;
+  warnings?: string[];
   /** Source before the first write; later writes use cfgForPersistence. */
   sourceConfigForWrite?: OpenClawConfig;
   pluginInstallConfigImport?: ShippedPluginInstallConfigImport;
