@@ -18,8 +18,8 @@ import { buildTaskStatusSnapshot } from "../tasks/task-status.js";
 import { normalizeSessionDeliveryState } from "../utils/delivery-context.shared.js";
 import { compactToolOutputHint } from "./tool-schema-hints.js";
 
-const loadSessionStoreMock = vi.fn();
-const updateSessionStoreMock = vi.fn();
+const sessionSnapshotMock = vi.fn();
+const replaceSessionSnapshotMock = vi.fn();
 const callGatewayMock = vi.fn();
 const agentToolGatewayCallMock = vi.fn();
 const buildStatusMessageMock = vi.hoisted(() =>
@@ -94,12 +94,12 @@ function createScopedSessionStores() {
 function installScopedSessionStores(syncUpdates = false) {
   // Tests choose whether session-store writes should mutate the backing map.
   const stores = createScopedSessionStores();
-  loadSessionStoreMock.mockClear();
-  updateSessionStoreMock.mockClear();
+  sessionSnapshotMock.mockClear();
+  replaceSessionSnapshotMock.mockClear();
   callGatewayMock.mockClear();
-  loadSessionStoreMock.mockImplementation((storePath: string) => stores.get(storePath) ?? {});
+  sessionSnapshotMock.mockImplementation((storePath: string) => stores.get(storePath) ?? {});
   if (syncUpdates) {
-    updateSessionStoreMock.mockImplementation(
+    replaceSessionSnapshotMock.mockImplementation(
       (storePath: string, store: Record<string, unknown>) => {
         if (storePath) {
           stores.set(storePath, store);
@@ -114,8 +114,8 @@ async function createSessionsModuleMock() {
   const { createSessionStatusStoreMock } =
     await import("./openclaw-tools.session-status.test-support.js");
   return createSessionStatusStoreMock({
-    loadSessionStore: (storePath) => loadSessionStoreMock(storePath),
-    updateSessionStore: (storePath, store) => updateSessionStoreMock(storePath, store),
+    snapshot: (storePath) => sessionSnapshotMock(storePath),
+    replace: (storePath, snapshot) => replaceSessionSnapshotMock(storePath, snapshot),
   });
 }
 
@@ -353,8 +353,8 @@ function resetSessionStore(inputStore: Record<string, SessionEntry>) {
   resolveEnvApiKeyMock.mockReturnValue(null);
   resolveUsableCustomProviderApiKeyMock.mockReset();
   resolveUsableCustomProviderApiKeyMock.mockReturnValue(null);
-  loadSessionStoreMock.mockClear();
-  updateSessionStoreMock.mockClear();
+  sessionSnapshotMock.mockClear();
+  replaceSessionSnapshotMock.mockClear();
   callGatewayMock.mockClear();
   agentToolGatewayCallMock.mockReset();
   agentToolGatewayCallMock.mockImplementation((opts: unknown) => callGatewayMock(opts));
@@ -369,7 +369,7 @@ function resetSessionStore(inputStore: Record<string, SessionEntry>) {
     earliestAvailableSequence: 0,
     historyGap: false,
   });
-  loadSessionStoreMock.mockReturnValue(store);
+  sessionSnapshotMock.mockReturnValue(store);
   callGatewayMock.mockImplementation(async (opts: unknown) => {
     const request = opts as { method?: string; params?: Record<string, unknown> };
     if (request.method === "sessions.resolve") {
@@ -835,7 +835,7 @@ describe("session_status tool", () => {
     await expect(tool.execute("call2", { sessionKey: "nope" })).rejects.toThrow(
       "Unknown sessionId",
     );
-    expect(updateSessionStoreMock).not.toHaveBeenCalled();
+    expect(replaceSessionSnapshotMock).not.toHaveBeenCalled();
   });
 
   it("resolves sessionKey=current to the requester session", async () => {
@@ -1496,8 +1496,11 @@ describe("session_status tool", () => {
     expect(details.model).toBe("claude-sonnet-4-6");
     expect(details.modelProvider).toBe("anthropic");
     expect(details.modelOverride).toBe("anthropic/claude-sonnet-4-6");
-    expect(updateSessionStoreMock).toHaveBeenCalledTimes(1);
-    const savedStore = latestMockCallArg(updateSessionStoreMock, 1) as Record<string, SessionEntry>;
+    expect(replaceSessionSnapshotMock).toHaveBeenCalledTimes(1);
+    const savedStore = latestMockCallArg(replaceSessionSnapshotMock, 1) as Record<
+      string,
+      SessionEntry
+    >;
     const saved = expectDefined(
       savedStore["agent:main:scope:scopy:direct:scopy"],
       'savedStore["agent:main:scope:scopy:direct:scopy"] test invariant',
@@ -1533,8 +1536,11 @@ describe("session_status tool", () => {
     expect(details.ok).toBe(true);
     expect(details.sessionKey).toBe("main");
     expect(details.modelOverride).toBe("anthropic/claude-sonnet-4-6");
-    expect(updateSessionStoreMock).toHaveBeenCalledTimes(1);
-    const savedStore = latestMockCallArg(updateSessionStoreMock, 1) as Record<string, SessionEntry>;
+    expect(replaceSessionSnapshotMock).toHaveBeenCalledTimes(1);
+    const savedStore = latestMockCallArg(replaceSessionSnapshotMock, 1) as Record<
+      string,
+      SessionEntry
+    >;
     expect(savedStore.main).toMatchObject({
       sessionId: "legacy-main-session",
       label: "Legacy Main",
@@ -1599,7 +1605,7 @@ describe("session_status tool", () => {
       }),
     ).rejects.toThrow(MODEL_SELECTION_LOCKED_MESSAGE);
 
-    expect(updateSessionStoreMock).not.toHaveBeenCalled();
+    expect(replaceSessionSnapshotMock).not.toHaveBeenCalled();
     expect(store.main).toMatchObject({
       providerOverride: "openai",
       modelOverride: "gpt-5.4",
@@ -1618,8 +1624,11 @@ describe("session_status tool", () => {
     const details = result.details as { ok?: boolean; sessionKey?: string };
     expect(details.ok).toBe(true);
     expect(details.sessionKey).toBe("agent:main:scope:scopy:direct:scopy");
-    expect(updateSessionStoreMock).toHaveBeenCalledTimes(1);
-    const savedStore = latestMockCallArg(updateSessionStoreMock, 1) as Record<string, SessionEntry>;
+    expect(replaceSessionSnapshotMock).toHaveBeenCalledTimes(1);
+    const savedStore = latestMockCallArg(replaceSessionSnapshotMock, 1) as Record<
+      string,
+      SessionEntry
+    >;
     const saved = expectDefined(
       savedStore["agent:main:scope:scopy:direct:scopy"],
       'savedStore["agent:main:scope:scopy:direct:scopy"] test invariant',
@@ -1847,8 +1856,8 @@ describe("session_status tool", () => {
     const details = result.details as { ok?: boolean; sessionKey?: string };
     expect(details.ok).toBe(true);
     expect(details.sessionKey).toBe("agent:main:subagent:child");
-    expect(mockCallArg(updateSessionStoreMock)).toBe("/tmp/main/sessions.json");
-    const savedStore = mockCallArg(updateSessionStoreMock, 0, 1) as Record<string, unknown>;
+    expect(mockCallArg(replaceSessionSnapshotMock)).toBe("/tmp/main/sessions.json");
+    const savedStore = mockCallArg(replaceSessionSnapshotMock, 0, 1) as Record<string, unknown>;
     expectRecordFields(savedStore["agent:main:subagent:child"], {
       liveModelSwitchPending: true,
       modelOverride: "claude-sonnet-4-6",
@@ -2272,9 +2281,9 @@ describe("session_status tool", () => {
     );
 
     if (row.checksStoreLookup) {
-      expect(loadSessionStoreMock).not.toHaveBeenCalled();
+      expect(sessionSnapshotMock).not.toHaveBeenCalled();
     }
-    expect(updateSessionStoreMock).not.toHaveBeenCalled();
+    expect(replaceSessionSnapshotMock).not.toHaveBeenCalled();
   });
 
   it("blocks unsandboxed same-agent session_status outside tree visibility before mutation", async () => {
@@ -2292,8 +2301,8 @@ describe("session_status tool", () => {
       "Session status visibility is restricted to the current session tree (tools.sessions.visibility=tree).",
     );
 
-    expect(loadSessionStoreMock).not.toHaveBeenCalled();
-    expect(updateSessionStoreMock).not.toHaveBeenCalled();
+    expect(sessionSnapshotMock).not.toHaveBeenCalled();
+    expect(replaceSessionSnapshotMock).not.toHaveBeenCalled();
     expect(callGatewayMock).toHaveBeenCalledTimes(1);
     expect(callGatewayMock).toHaveBeenCalledWith({
       method: "sessions.resolve",
@@ -2318,7 +2327,7 @@ describe("session_status tool", () => {
     const details = result.details as { ok?: boolean; sessionKey?: string };
     expect(details.ok).toBe(true);
     expect(details.sessionKey).toBe("agent:main:main");
-    expect(updateSessionStoreMock).toHaveBeenCalledTimes(1);
+    expect(replaceSessionSnapshotMock).toHaveBeenCalledTimes(1);
   });
 
   it("blocks explicit incognito session_status before opening its store", async () => {
@@ -2349,8 +2358,8 @@ describe("session_status tool", () => {
       }),
     ).rejects.toThrow(`Session not visible from session tools: ${incognitoSessionKey}`);
 
-    expect(loadSessionStoreMock).not.toHaveBeenCalled();
-    expect(updateSessionStoreMock).not.toHaveBeenCalled();
+    expect(sessionSnapshotMock).not.toHaveBeenCalled();
+    expect(replaceSessionSnapshotMock).not.toHaveBeenCalled();
     expect(callGatewayMock).not.toHaveBeenCalled();
     expect(buildStatusMessageMock).not.toHaveBeenCalled();
   });
@@ -2388,8 +2397,8 @@ describe("session_status tool", () => {
       tool.execute(`call-incognito-${args.sessionKey ?? "implicit"}`, args),
     ).rejects.toThrow(`Session not visible from session tools: ${incognitoSessionKey}`);
 
-    expect(loadSessionStoreMock).not.toHaveBeenCalled();
-    expect(updateSessionStoreMock).not.toHaveBeenCalled();
+    expect(sessionSnapshotMock).not.toHaveBeenCalled();
+    expect(replaceSessionSnapshotMock).not.toHaveBeenCalled();
     expect(callGatewayMock).not.toHaveBeenCalled();
     expect(buildStatusMessageMock).not.toHaveBeenCalled();
   });
@@ -2421,7 +2430,7 @@ describe("session_status tool", () => {
       "Session status visibility is restricted to the current session tree (tools.sessions.visibility=tree).",
     );
 
-    expect(updateSessionStoreMock).not.toHaveBeenCalled();
+    expect(replaceSessionSnapshotMock).not.toHaveBeenCalled();
   });
 
   it("blocks sandboxed child session_status access outside its tree before store lookup", async () => {
@@ -2456,8 +2465,8 @@ describe("session_status tool", () => {
       }),
     ).rejects.toThrow(expectedError);
 
-    expect(loadSessionStoreMock).not.toHaveBeenCalled();
-    expect(updateSessionStoreMock).not.toHaveBeenCalled();
+    expect(sessionSnapshotMock).not.toHaveBeenCalled();
+    expect(replaceSessionSnapshotMock).not.toHaveBeenCalled();
     expectSpawnedSessionLookupCalls("agent:main:subagent:child", [
       "agent:main:main",
       "agent:main:subagent:missing",
@@ -2492,7 +2501,7 @@ describe("session_status tool", () => {
       }),
     ).rejects.toThrow(expectedError);
 
-    expect(updateSessionStoreMock).not.toHaveBeenCalled();
+    expect(replaceSessionSnapshotMock).not.toHaveBeenCalled();
     expect(callGatewayMock).toHaveBeenCalledTimes(1);
     expect(callGatewayMock).toHaveBeenCalledWith({
       method: "sessions.resolve",
@@ -2555,8 +2564,8 @@ describe("session_status tool", () => {
       }),
     ).rejects.toThrow(expectedError);
 
-    expect(loadSessionStoreMock).not.toHaveBeenCalled();
-    expect(updateSessionStoreMock).not.toHaveBeenCalled();
+    expect(sessionSnapshotMock).not.toHaveBeenCalled();
+    expect(replaceSessionSnapshotMock).not.toHaveBeenCalled();
     expect(callGatewayMock).toHaveBeenCalledTimes(checksOwnership ? 3 : 2);
     expect(callGatewayMock).toHaveBeenNthCalledWith(1, {
       method: "sessions.resolve",
@@ -2651,8 +2660,8 @@ describe("session_status tool", () => {
     const result = await tool.execute("call3", { model: "default" });
     const details = result.details as { modelOverride?: string | null };
     expect(details.modelOverride).toBeNull();
-    expect(updateSessionStoreMock).toHaveBeenCalledTimes(1);
-    const savedStore = latestMockCallArg(updateSessionStoreMock, 1) as Record<string, unknown>;
+    expect(replaceSessionSnapshotMock).toHaveBeenCalledTimes(1);
+    const savedStore = latestMockCallArg(replaceSessionSnapshotMock, 1) as Record<string, unknown>;
     const saved = savedStore.main as Record<string, unknown>;
     expect(saved.providerOverride).toBeUndefined();
     expect(saved.modelOverride).toBeUndefined();
@@ -2685,10 +2694,10 @@ describe("session_status tool", () => {
     await expect(
       getSessionStatusTool().execute("literal-denied", { model: "Reader" }),
     ).rejects.toThrow('Model "custom/team/Reader" is not allowed.');
-    expect(updateSessionStoreMock).not.toHaveBeenCalled();
+    expect(replaceSessionSnapshotMock).not.toHaveBeenCalled();
 
     await getSessionStatusTool().execute("literal-allowed", { model: "custom/team/Reader" });
-    const saved = latestMockCallArg(updateSessionStoreMock, 1) as Record<string, SessionEntry>;
+    const saved = latestMockCallArg(replaceSessionSnapshotMock, 1) as Record<string, SessionEntry>;
     expect(saved.main).toMatchObject({
       providerOverride: "custom",
       modelOverride: "team/Reader",
@@ -2747,7 +2756,7 @@ describe("session_status tool", () => {
         profiles: { "session-status-team:prod": { provider: "openai", mode: "api_key" } },
       },
     };
-    updateSessionStoreMock.mockImplementation(
+    replaceSessionSnapshotMock.mockImplementation(
       (_storePath: string, store: Record<string, SessionEntry>) => {
         persistedStore = structuredClone(store);
       },

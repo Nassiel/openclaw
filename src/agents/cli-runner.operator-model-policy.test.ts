@@ -48,11 +48,17 @@ describe("CLI operator model execution", () => {
       config: cfg,
     });
     const cleanup = vi.fn(async () => {});
-    prepareCliRunContext.mockImplementation(async (params) => ({
-      ...context,
-      params,
-      preparedBackend: { ...context.preparedBackend, cleanup },
-    }));
+    prepareCliRunContext.mockImplementation(async (params) => {
+      const admittedRunContext = params.admittedRunContext;
+      if (!admittedRunContext) {
+        throw new Error("CLI model policy fixture requires an admitted run");
+      }
+      return {
+        ...context,
+        params: { ...params, admittedRunContext },
+        preparedBackend: { ...context.preparedBackend, cleanup },
+      };
+    });
     const started = createDeferred<AbortSignal | undefined>();
     const complete = createDeferred();
     executePreparedCliRun.mockImplementationOnce(async (prepared) => {

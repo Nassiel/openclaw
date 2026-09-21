@@ -374,7 +374,7 @@ async function runIsolatedCompletionOwned(
     assertCurrent,
     runtime: lease,
   });
-  onAcquired({ release: modelAuthority.release });
+  onAcquired({ release: () => modelAuthority.release() });
   try {
     assertCurrent();
     const run = async (): Promise<IsolatedCompletionResult> => {

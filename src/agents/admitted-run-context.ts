@@ -1,5 +1,6 @@
 /** Canonical operational instance and optional enabled execution-identity evidence. */
 import { randomUUID } from "node:crypto";
+import type { ProviderModelRef as ModelRef } from "@openclaw/model-catalog-core/model-catalog-refs";
 import { isExecutionIdentityCollectionEnabled } from "../audit/audit-config.js";
 import {
   createExecutionIdentityAdmissionToken,
@@ -17,8 +18,7 @@ import {
   type AgentRunDelegatedAuthority,
 } from "../infra/agent-run-registry.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
-import type { ModelRef } from "./model-ref-shared.js";
-import type { PreparedOperatorModelPolicy } from "./operator-model-policy.js";
+import type { PreparedOperatorModelPolicy } from "./operator-model-policy.types.js";
 
 /** Operational lifecycle correlation. This is never identity or authorization evidence. */
 export type OperationalRunInstanceRef = Readonly<{

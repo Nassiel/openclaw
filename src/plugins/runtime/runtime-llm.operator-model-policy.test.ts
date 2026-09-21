@@ -11,7 +11,7 @@ import { AsyncWorkScope, trackAsyncWork } from "../../shared/async-work-scope.js
 import { createDeferredCore } from "../../shared/deferred.js";
 import { withPluginRuntimeGatewayRequestScope } from "./gateway-request-scope.js";
 import { createRuntimeLlm } from "./runtime-llm.runtime.js";
-import type { LlmCompleteParams } from "./types-core.js";
+import type { LlmCompleteParams, LlmIsolatedAgentRuntimeCompleteParams } from "./types-core.js";
 
 const mocks = vi.hoisted(() => ({
   acquire:
@@ -77,7 +77,9 @@ function operator(assertCurrent: () => void = () => {}, retain?: () => () => voi
 
 type CompletionMode = "direct" | "isolated";
 function request(mode: CompletionMode): LlmCompleteParams {
-  const messages = [{ role: "user" as const, content: "Answer the synthetic question." }];
+  const messages: LlmIsolatedAgentRuntimeCompleteParams["messages"] = [
+    { role: "user", content: "Answer the synthetic question." },
+  ];
   return mode === "isolated"
     ? { messages, model: "friendly-alias", execution: { mode: "isolated-agent-runtime" } }
     : { messages, model: "friendly-alias" };

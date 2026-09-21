@@ -1,11 +1,52 @@
+import type { ProviderModelRef as ModelRef } from "@openclaw/model-catalog-core/model-catalog-refs";
 import { registerAgentEventLifecycleRotationHandler } from "../../infra/agent-events.js";
 import { getAgentRunLifecycleGeneration } from "../../infra/agent-run-registry.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import {
+  bindOperatorModelExecution,
   readAdmittedRunOperatorAuthority,
   type AdmittedRunContext,
 } from "../admitted-run-context.js";
 import type { AgentHarnessHostCapabilities } from "./host-capability-types.js";
+
+/** Native selection changes stay bound to the original host source and foreground lifetime. */
+export function bindHarnessModelExecution(
+  admittedRunContext: AdmittedRunContext,
+  model: ModelRef | undefined,
+  assertActive: () => void,
+  hostSignal: AbortSignal,
+): ReturnType<NonNullable<AgentHarnessHostCapabilities["bindModelExecution"]>> {
+  assertActive();
+  const execution = bindOperatorModelExecution(
+    readAdmittedRunOperatorAuthority(admittedRunContext),
+    model,
+  );
+  let released = false;
+  const release = () => {
+    if (!released) {
+      released = true;
+      hostSignal.removeEventListener("abort", release);
+      execution?.release();
+    }
+  };
+  const signal = execution ? AbortSignal.any([hostSignal, execution.signal]) : hostSignal;
+  hostSignal.addEventListener("abort", release, { once: true });
+  if (hostSignal.aborted) {
+    release();
+  }
+  return Object.freeze({
+    signal,
+    assertCurrent: () => {
+      assertActive();
+      signal.throwIfAborted();
+      if (released) {
+        throw new Error("agent harness model execution is no longer active");
+      }
+      execution?.assertCurrent();
+    },
+    release,
+  });
+}
 
 const retainedSources = resolveGlobalSingleton(
   Symbol.for("openclaw.harness.retainedSources"),

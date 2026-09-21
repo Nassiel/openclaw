@@ -195,6 +195,7 @@ describe("applySessionModelSelection", () => {
         }
       },
     });
+    params.request.runtime = { kind: "set", runtime: "openclaw" };
     vi.mocked(preparePublishedModelRuntimeChoice).mockImplementationOnce(
       async ({ runtimeId, preferredRuntimeId }) => {
         current = false;

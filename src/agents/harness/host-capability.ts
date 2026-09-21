@@ -65,7 +65,8 @@ import {
   resolveAgentQuestionAnswerAuthority,
   withAgentQuestionAnswerAuthority,
 } from "./host-private-capabilities.js";
-import { retainHarnessSource } from "./host-source-authority.js";
+import { bindHarnessModelExecution, retainHarnessSource } from "./host-source-authority.js";
+import { bindHarnessTrajectory } from "./host-trajectory.js";
 import { formatHarnessApprovalPresentation } from "./native-hook-relay-approval-presentation.js";
 import { createSessionNodeAuthorities } from "./node-execution-authority.js";
 import { bindHarnessReplyMedia } from "./reply-media.js";
@@ -471,6 +472,13 @@ export function createAgentHarnessHostCapabilities(params: {
     kind: "agent-harness-host-capability" as const,
     version: 1 as const,
     assertActive,
+    bindModelExecution: (model) =>
+      bindHarnessModelExecution(
+        attempt.admittedRunContext,
+        model,
+        assertActive,
+        capabilityAbortController.signal,
+      ),
     retainSourceAuthority: () => retainHarnessSource(attempt.admittedRunContext, assertActive),
     reportOutputTokens: (outputTokens) => {
       assertActive();
@@ -493,17 +501,7 @@ export function createAgentHarnessHostCapabilities(params: {
     ...(prepareReplyMedia ? { prepareReplyMedia } : {}),
     ...(trajectoryRecorder
       ? {
-          trajectory: Object.freeze({
-            recordEvent: (type: string, data?: Record<string, unknown>) => {
-              assertActive();
-              trajectoryRecorder.recordEvent(type, data);
-            },
-            flush: async () => {
-              assertActive();
-              await trajectoryRecorder.flush();
-              assertActive();
-            },
-          }),
+          trajectory: bindHarnessTrajectory(trajectoryRecorder, assertActive),
         }
       : {}),
     preparedEnvironment: () => {

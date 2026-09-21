@@ -59,6 +59,7 @@ describe("Codex native configuration", () => {
     hasAnswer: boolean;
     nativeProvider: string;
     configuredProvider?: string;
+    modelPolicyAction?: "deny" | "revoke";
   }>([
     { transport: "stdio", hasAnswer: true, nativeProvider: "openai" },
     { transport: "stdio", hasAnswer: false, nativeProvider: "openai" },
@@ -72,9 +73,17 @@ describe("Codex native configuration", () => {
     { transport: "unix", hasAnswer: true, nativeProvider: "copilot", configuredProvider: "openai" },
     // Earlier releases recorded disabled search for custom native providers.
     { transport: "stdio", hasAnswer: true, nativeProvider: "copilot" },
+    { transport: "stdio", hasAnswer: true, nativeProvider: "openai", modelPolicyAction: "deny" },
+    { transport: "stdio", hasAnswer: true, nativeProvider: "openai", modelPolicyAction: "revoke" },
   ])(
-    "preserves supervised native model and transport/home guards over $transport (answer: $hasAnswer, provider: $nativeProvider, configured: $configuredProvider)",
-    async ({ transport, hasAnswer, nativeProvider, configuredProvider = nativeProvider }) => {
+    "preserves supervised native model and transport/home guards over $transport (answer: $hasAnswer, provider: $nativeProvider, configured: $configuredProvider, model policy: $modelPolicyAction)",
+    async ({
+      transport,
+      hasAnswer,
+      nativeProvider,
+      configuredProvider = nativeProvider,
+      modelPolicyAction,
+    }) => {
       const nativeSearchEnabled =
         nativeProvider === "copilot" || configuredProvider !== nativeProvider;
       const approvalsReviewer =
@@ -199,6 +208,22 @@ describe("Codex native configuration", () => {
       setCodexTestToolFactory(params, () =>
         nativeSearchEnabled ? [createRuntimeDynamicTool("web_search")] : [],
       );
+      const modelRevocation = new AbortController();
+      const releaseModelExecution = vi.fn();
+      const bindModelExecution = vi.fn<
+        NonNullable<typeof params.hostCapabilities.bindModelExecution>
+      >((model) => {
+        expect(model).toEqual({ provider: nativeProvider, model: "gpt-5.6-luna" });
+        if (modelPolicyAction === "deny") {
+          throw new Error("operator role cannot use this model");
+        }
+        return {
+          signal: modelRevocation.signal,
+          assertCurrent: () => modelRevocation.signal.throwIfAborted(),
+          release: releaseModelExecution,
+        };
+      });
+      params.hostCapabilities = { ...params.hostCapabilities, bindModelExecution };
       params.registerPluginRuntimeRefreshConsumer = vi.fn();
       params.agentDir = agentDir;
       params.provider = "anthropic";
@@ -242,12 +267,31 @@ describe("Codex native configuration", () => {
           ).toBe(false);
           return;
         }
+        if (modelPolicyAction === "deny") {
+          await expect(run).rejects.toThrow("operator role cannot use this model");
+          expect(bindModelExecution).toHaveBeenCalledOnce();
+          expect(requests.some(({ method }) => method === "turn/start")).toBe(false);
+          return;
+        }
         await Promise.race([
           turnStarted.promise,
           run.then((result) => {
             throw new Error("Codex attempt ended before turn/start", { cause: result });
           }),
         ]);
+        if (modelPolicyAction === "revoke") {
+          modelRevocation.abort(new Error("operator model permission was revoked"));
+          harness.send({
+            method: "turn/completed",
+            params: {
+              threadId: "thread-existing",
+              turn: { id: "turn-1", status: "interrupted", items: [] },
+            },
+          });
+          await expect(run).rejects.toThrow("operator model permission was revoked");
+          expect(releaseModelExecution).toHaveBeenCalledOnce();
+          return;
+        }
         for (const method of ["item/started", "item/completed"]) {
           harness.send({
             method,
@@ -281,6 +325,8 @@ describe("Codex native configuration", () => {
           },
         });
         const result = await run;
+        expect(bindModelExecution).toHaveBeenCalledOnce();
+        expect(releaseModelExecution).toHaveBeenCalledOnce();
         expect(result.terminal).toEqual({ kind: "ok" });
         expect(params.registerPluginRuntimeRefreshConsumer).not.toHaveBeenCalled();
         expect(beforePromptBuild).toHaveBeenCalled();

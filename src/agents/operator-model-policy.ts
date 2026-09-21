@@ -8,13 +8,9 @@ import { normalizeProviderId } from "./model-ref-shared.js";
 import { resolveDefaultModelForAgent } from "./model-selection-config.js";
 import { resolveConfiguredModelFallbacks } from "./model-selection-resolve.js";
 import { buildModelAliasIndex, resolveModelRefFromString } from "./model-selection-shared.js";
+import type { PreparedOperatorModelPolicy } from "./operator-model-policy.types.js";
 
-export type PreparedOperatorModelPolicy = Readonly<{
-  /** Ordered concrete choices for Default and automatic fallback; never a global catalog. */
-  models: readonly ModelRef[];
-  /** Compares resolved logical identities, preserving provider/auth routing. */
-  allows: (ref: ModelRef) => boolean;
-}>;
+export type { PreparedOperatorModelPolicy } from "./operator-model-policy.types.js";
 
 /** Preserve the already-selected default when allowed, otherwise use the first compatible source choice. */
 export function resolveOperatorModelDefault(

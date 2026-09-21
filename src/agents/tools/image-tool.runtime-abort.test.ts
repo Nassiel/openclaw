@@ -123,7 +123,7 @@ describe("image tool run abort", () => {
           manifestPlugins: [],
         }),
       });
-      const loadWebMedia: MockImageLoadWebMedia = vi.fn(async () => {
+      const loadWebMedia = vi.fn<MockImageLoadWebMedia>(async () => {
         active = scenario !== "retired after download";
         return {
           buffer: Buffer.from(ONE_PIXEL_PNG_B64, "base64"),

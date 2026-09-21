@@ -324,6 +324,7 @@ describe("plugin background completions", () => {
             default: "limited",
             definitions: {
               limited: {
+                sessions: { others: "none" },
                 agents: ["research"],
                 scopes: ["operator.write"],
                 modelPolicy: {

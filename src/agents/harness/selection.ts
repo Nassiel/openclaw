@@ -202,6 +202,18 @@ export async function runAgentHarnessAttempt(
         })
       : selectPreparedAgentHarness(params);
   const harness = selection.harness;
+  const nativeOwnsModel = nativeSessionRuntime?.auth === "native";
+  const nativeModelPolicySupported = harness.nativeModelPolicySupport === "exact";
+  const assertNativeModelPolicySupport = () => {
+    const authority = readRunOperatorAuthority(params);
+    if (nativeOwnsModel && authority?.modelPolicy && !nativeModelPolicySupported) {
+      throw new AgentHarnessPreflightError(
+        `Agent harness ${harness.id} cannot enforce your operator role's model policy for native-owned models. Choose a compatible runtime or ask a gateway administrator to update the harness.`,
+      );
+    }
+    return authority;
+  };
+  assertNativeModelPolicySupport();
   const runPreparedAttempt = async (
     prepared: Parameters<typeof runAgentHarnessLifecycleAttempt>[1],
   ) => {
@@ -213,14 +225,18 @@ export async function runAgentHarnessAttempt(
         model: params.modelId,
       });
     }
-    const modelExecution = selection.builtIn
-      ? undefined
-      : bindOperatorModelExecution(
-          readRunOperatorAuthority(params),
-          nativeSessionRuntime
-            ? nativeSessionRuntime.modelRef
-            : { provider: params.provider, model: params.modelId },
-        );
+    const operatorAuthority = assertNativeModelPolicySupport();
+    const modelExecution =
+      selection.builtIn || (nativeOwnsModel && nativeModelPolicySupported)
+        ? undefined
+        : bindOperatorModelExecution(
+            operatorAuthority,
+            nativeOwnsModel
+              ? undefined
+              : nativeSessionRuntime
+                ? nativeSessionRuntime.modelRef
+                : { provider: params.provider, model: params.modelId },
+          );
     try {
       const result = await runAgentHarnessLifecycleAttempt(
         harness,

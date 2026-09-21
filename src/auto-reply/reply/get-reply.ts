@@ -1143,8 +1143,10 @@ export async function getReplyFromConfig(
       }
       return { text: error.message };
     }
-    runProvider = runModelState.provider;
-    runModel = runModelState.model;
+    if (runModelState.operatorModelOverride) {
+      runProvider = runModelState.provider;
+      runModel = runModelState.model;
+    }
     resolveRunModelLevels = await createReplyProbeModelLevelResolver({
       modelState: runModelState,
       previous: resolveModelLevels,

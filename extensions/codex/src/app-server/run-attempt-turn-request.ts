@@ -7,7 +7,10 @@ import {
   createCodexModelCallDiagnosticEmitter,
   utf8JsonByteLength,
 } from "./attempt-diagnostics.js";
-import { assertCodexSessionRuntimeOwnership } from "./binding-connection.js";
+import {
+  assertCodexSessionRuntimeOwnership,
+  requireCodexSupervisionModelSelection,
+} from "./binding-connection.js";
 import { prepareCodexWorkspaceReferences } from "./client-runtime.js";
 import { isCodexAppServerIndeterminateRequestCancellationError } from "./client.js";
 import { resolveCodexExplicitSkillInputs } from "./explicit-skill-input.js";
@@ -134,6 +137,27 @@ export async function prepareCodexAttemptTurnRequest(
       resourceState.thread,
       params.expectedSessionRuntimeOwnership,
     );
+    const nativeModel = usesSupervisionConnection
+      ? requireCodexSupervisionModelSelection(resourceState.thread)
+      : undefined;
+    connection.bindModelExecution(
+      nativeModel
+        ? { provider: nativeModel.modelProvider, model: nativeModel.model }
+        : { provider: params.provider, model: params.modelId },
+    );
+    const selectedThread = resourceState.thread;
+    const assertTurnCurrent = () => {
+      connection.assertCurrent();
+      selectedThread.liveThreadOwnership?.assertCurrent();
+      if (
+        resourceState.thread !== selectedThread ||
+        (nativeModel &&
+          (selectedThread.model !== nativeModel.model ||
+            selectedThread.modelProvider !== nativeModel.modelProvider))
+      ) {
+        throw new Error("Codex native model or thread ownership changed before turn dispatch.");
+      }
+    };
     const turnAppServer = withCodexAppServerFastModeServiceTier(
       connection.mutable.pluginAppServer,
       runtimeParams,
@@ -258,7 +282,7 @@ export async function prepareCodexAttemptTurnRequest(
         await resourceState.client.request("turn/start", turnStartParams, {
           timeoutMs: params.timeoutMs,
           signal: runAbortController.signal,
-          assertCurrent: connection.assertCurrent,
+          assertCurrent: assertTurnCurrent,
         }),
       );
       acceptedTurnId = startedTurn.turn.id;
@@ -267,7 +291,7 @@ export async function prepareCodexAttemptTurnRequest(
         resourceState.thread.threadId,
         acceptedTurnId,
       );
-      connection.assertCurrent();
+      assertTurnCurrent();
       // Fitting may drop or truncate references; only acknowledge the complete block.
       if (referencesRetained) {
         references.accepted();

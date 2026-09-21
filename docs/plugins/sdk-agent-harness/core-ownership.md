@@ -206,6 +206,15 @@ same binding. Do not infer a missing value from outer configuration, credentials
 or usage. Host-auth ownership requires this tuple before credential preparation;
 native-auth pending branches may omit it until their native owner selects a model.
 
+Declare `nativeModelPolicySupport: "exact"` only when the harness calls
+`hostCapabilities.bindModelExecution({ provider, model })` with the actual native
+selection before every inference dispatch, including after resume. Observe the
+returned cancellation signal, recheck its assertion after awaited preparation and
+immediately before transport writes and result settlement, and release it after
+execution cleanup. The host retains the original operator's model policy; a
+cached pre-resume model is not authority for a different resumed model. Missing
+support rejects native-owned inference when the operator has a model policy.
+
 Read the existing private binding synchronously. Call `assertCurrent()` before
 and after the read. Do not discover models, reclaim a generation, start a client,
 authenticate, or mutate the binding. The assertion expires when the callback

@@ -28,6 +28,10 @@ export type AgentHarnessHostCapabilities = Readonly<{
   version: 1;
   /** Fails closed unless this exact admitted run capability remains active. */
   assertActive: () => void;
+  /** Binds the actual native model before inference; absence does not authorize execution. */
+  bindModelExecution?: (
+    model: import("@openclaw/model-catalog-core/model-catalog-refs").ProviderModelRef | undefined,
+  ) => Readonly<{ signal: AbortSignal; assertCurrent: () => void; release: () => void }>;
   /** Retains the original source for already-admitted work beyond foreground completion. */
   retainSourceAuthority?: () =>
     | Readonly<{

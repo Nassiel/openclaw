@@ -1,13 +1,18 @@
-import { resolveSessionStoreEntryCore } from "../config/sessions/store-entry.js";
+import { resolveSessionEntryCandidates } from "../config/sessions/store-entry.js";
 import { mergeSessionEntry, type SessionEntry } from "../config/sessions/types.js";
 
 export function createSessionStatusStoreMock(params: {
-  loadSessionStore: (storePath: string) => Record<string, SessionEntry>;
-  updateSessionStore: (storePath: string, store: Record<string, SessionEntry>) => void;
+  snapshot: (storePath: string) => Record<string, SessionEntry>;
+  replace: (storePath: string, snapshot: Record<string, SessionEntry>) => void;
 }) {
   const resolveMockStorePath = (_store: string | undefined, opts?: { agentId?: string }) =>
     opts?.agentId === "support" ? "/tmp/support/sessions.json" : "/tmp/main/sessions.json";
   const cloneEntry = (entry: SessionEntry): SessionEntry => structuredClone(entry);
+  const resolveSnapshotEntry = (snapshot: Record<string, SessionEntry>, sessionKey: string) =>
+    resolveSessionEntryCandidates({
+      entries: Object.entries(snapshot).map(([key, entry]) => ({ sessionKey: key, entry })),
+      sessionKey,
+    });
   return {
     patchSessionEntryWithKey: async (
       scope: { agentId?: string; sessionKey: string; storePath?: string },
@@ -19,14 +24,14 @@ export function createSessionStatusStoreMock(params: {
     ) => {
       const storePath =
         scope.storePath ?? resolveMockStorePath(undefined, { agentId: scope.agentId });
-      const store = params.loadSessionStore(storePath);
-      const resolved = resolveSessionStoreEntryCore({ store, sessionKey: scope.sessionKey });
-      const existing = resolved.existing ?? options?.fallbackEntry;
+      const store = params.snapshot(storePath);
+      const resolved = resolveSnapshotEntry(store, scope.sessionKey);
+      const existing = resolved.existing?.entry ?? options?.fallbackEntry;
       if (!existing) {
         return null;
       }
       const patch = await update(cloneEntry(existing), {
-        existingEntry: resolved.existing ? cloneEntry(resolved.existing) : undefined,
+        existingEntry: resolved.existing ? cloneEntry(resolved.existing.entry) : undefined,
       });
       if (!patch) {
         return { sessionKey: resolved.normalizedKey, entry: cloneEntry(existing) };
@@ -35,7 +40,7 @@ export function createSessionStatusStoreMock(params: {
         ? cloneEntry(patch as SessionEntry)
         : mergeSessionEntry(existing, patch);
       store[resolved.normalizedKey] = next;
-      params.updateSessionStore(storePath, store);
+      params.replace(storePath, store);
       return { sessionKey: resolved.normalizedKey, entry: cloneEntry(next) };
     },
     resolveSessionEntryCandidateTarget: (scope: {
@@ -45,20 +50,20 @@ export function createSessionStatusStoreMock(params: {
       fallback?: { sessionKey: string; entry: SessionEntry };
     }) => {
       const storePath = resolveMockStorePath(scope.cfg.session?.store, { agentId: scope.agentId });
-      const store = params.loadSessionStore(storePath);
+      const store = params.snapshot(storePath);
       const candidates = [...new Set(scope.candidateKeys.map((key) => key.trim()))];
       for (const candidateKey of candidates) {
         if (!candidateKey) {
           continue;
         }
-        const resolved = resolveSessionStoreEntryCore({ store, sessionKey: candidateKey });
+        const resolved = resolveSnapshotEntry(store, candidateKey);
         if (!resolved.existing) {
           continue;
         }
         return {
           agentId: scope.agentId,
           candidateKey,
-          entry: cloneEntry(resolved.existing),
+          entry: cloneEntry(resolved.existing.entry),
           persisted: true,
           sessionKey: resolved.normalizedKey,
         };

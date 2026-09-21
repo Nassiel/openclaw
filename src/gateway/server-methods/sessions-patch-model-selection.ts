@@ -33,6 +33,7 @@ import { resolveCollapsedSessionAuthPinSource } from "../../config/sessions/auth
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { isSessionStatusModelPatchOrigin } from "../session-model-patch-origin.js";
+import { SessionMutationAuthorizationChangedError } from "../session-sharing.js";
 import type { SessionWorkerPlacementContext } from "../worker-environments/session-placement-lifecycle.js";
 import { resolveGatewayModelSelectionPolicy } from "./session-model-selection-policy.js";
 import { resolveSessionWorkerPlacementPatchError } from "./sessions-shared.js";
@@ -209,7 +210,9 @@ export function prepareSessionPatchModelSelection(params: {
       assertOperatorModelAllowed(params.operatorAuthority, selected);
       return undefined;
     } catch (error) {
-      return errorShape(ErrorCodes.FORBIDDEN, formatErrorMessage(error));
+      return error instanceof SessionMutationAuthorizationChangedError
+        ? error.error
+        : errorShape(ErrorCodes.FORBIDDEN, formatErrorMessage(error));
     }
   };
   const error = validate();
