@@ -28,14 +28,19 @@ Worker environment inventory is a committed, revisioned projection owned by its
 store. Startup hydrates through the read-only worker scope; runtime mutations use
 the shared-state SQLite worker broker and re-read environment, credential, and
 placement authority inside the committing transaction. The broker rechecks live
-caller authority before commit, and the store fences affected environments until
-committed facts are installed. List and keyed inventory reads use the projection.
+caller authority before commit, and the store fences changed authority until
+committed facts are installed. Diagnostic writes preserve keyed reads only when
+the worker proves that every environment and credential field except the error
+text and update timestamp is unchanged. Transfer capabilities keep their separate
+authority and lifetime checks. List and keyed inventory reads use the projection.
 
-Placement activation, prepared-environment consumption, and node pairing retain
-their existing atomic transactions and publish the fields already prepared by
-those transactions through the same inventory owner after commit, without another
-SQLite read. Field revisions preserve newer native publications when a delayed
-worker reply supplies the rest of the committed row. Retention reads bounded pages
+Placement activation and prepared-environment consumption retain their existing
+synchronous atomic parent transactions. Node pairing uses its existing write
+worker and carries inventory changes in its committed receipt. All three publish
+fields already prepared by their transactions through the same inventory owner,
+before observers and without another SQLite read. Revisions reserved at commit
+admission preserve newer publications when a delayed worker reply supplies the
+rest of the committed row. Retention reads bounded pages
 in a read-only worker, applies the existing demand policy, and deletes only exact,
 still-unreferenced observations in the write worker. Shutdown joins accepted writes;
 stored rows, schemas, retention policy, configuration, and update behavior are unchanged.

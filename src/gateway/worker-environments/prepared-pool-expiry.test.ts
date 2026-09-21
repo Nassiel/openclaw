@@ -7,6 +7,7 @@ import { createWorkerCredentialBroker } from "./credential-broker.js";
 import { PROJECT_KEY, RECEIPT, usePreparedPoolFixture } from "./prepared-pool.test-support.js";
 import { createWorkerProviderLifecycle } from "./provider-lifecycle.js";
 import type { WorkerProviderLifecycleOptions } from "./provider-lifecycle.types.js";
+import { publishWorkerEnvironmentNativeMutation } from "./store-native-publication.js";
 
 class TestWorkerServiceError extends Error {
   constructor(
@@ -168,7 +169,7 @@ describe("prepared worker expiry during admitted work", () => {
         }
         runOpenClawStateWriteTransaction(
           () => {
-            bindCloudWorkerSetupCompletion({
+            const { environmentId, ...patch } = bindCloudWorkerSetupCompletion({
               db: fixture.database.db,
               completion: {
                 setupId: enrollment.setupId,
@@ -176,6 +177,7 @@ describe("prepared worker expiry during admitted work", () => {
                 completedAtMs: fixture.nowMs,
               },
             });
+            publishWorkerEnvironmentNativeMutation(fixture.database.db, environmentId, patch);
           },
           { database: fixture.database },
         );

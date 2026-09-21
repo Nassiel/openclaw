@@ -12,6 +12,7 @@ import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
 } from "../../state/openclaw-state-db.js";
+import { publishWorkerEnvironmentNativeMutation } from "./store-native-publication.js";
 import { createWorkerEnvironmentStore } from "./store.js";
 
 const delivery = vi.hoisted(() => ({
@@ -84,15 +85,17 @@ it("shares committed inventory and native pairing publications across database a
   });
   const enrollment = await store.ensureNodeEnrollment(intent.environmentId);
   runOpenClawStateWriteTransaction(
-    ({ db }) =>
-      bindCloudWorkerSetupCompletion({
+    ({ db }) => {
+      const { environmentId, ...patch } = bindCloudWorkerSetupCompletion({
         db,
         completion: {
           setupId: enrollment.nodeSetupId!,
           deviceId: "alias-device",
           completedAtMs: 2_000,
         },
-      }),
+      });
+      publishWorkerEnvironmentNativeMutation(db, environmentId, patch);
+    },
     { database: aliasDatabase },
   );
   expect(alias.get(intent.environmentId)).toEqual(store.get(intent.environmentId));

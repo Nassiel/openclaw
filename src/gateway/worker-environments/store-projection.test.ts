@@ -15,6 +15,7 @@ import {
 } from "../../state/openclaw-state-db.js";
 import type { WorkerCredentialRecord } from "./credential.js";
 import type { WorkerEnvironmentRecord } from "./environment-record.js";
+import { createWorkerEnvironmentCommitAdmission } from "./store-commit-authority.js";
 import { publishWorkerEnvironmentNativeMutation } from "./store-native-publication.js";
 import { workerEnvironmentProjections } from "./store-projection.js";
 import type { WorkerEnvironmentFacts } from "./store-worker-contract.js";
@@ -128,7 +129,13 @@ it.each([false, true])(
     const workerRevision = owner.nextSequence();
     const token = {};
     owner.fence(
-      [{ environmentId: environment.environmentId, transferAuthority: "unknown" }],
+      [
+        {
+          environmentId: environment.environmentId,
+          recordAuthority: "unknown",
+          transferAuthority: "unknown",
+        },
+      ],
       token,
     );
     owner.publishPatch(
@@ -171,6 +178,47 @@ it.each([false, true])(
     expect(owner.get(environment.environmentId)).toEqual(environment);
   },
 );
+
+it("preserves diagnostic record reads while fencing attachment and transport changes", () => {
+  const owner = acquireProjection();
+  const before = facts(environment, true);
+  const attachment = {
+    environmentId: environment.environmentId,
+    sessionId: "session",
+    sessionKey: "agent:main:session",
+    agentId: "main",
+    generation: 1,
+    createdAtMs: 1,
+    lastUsedAtMs: 1,
+    closedAtMs: null,
+  };
+  before.attachments.push(attachment);
+  owner.install(before, owner.nextSequence(), false);
+  const after = facts({ ...environment, updatedAtMs: 2, lastError: "diagnostic" }, true);
+  after.attachments.push({ ...attachment, closedAtMs: 2 });
+  const token = {};
+  owner.fence(createWorkerEnvironmentCommitAdmission(after), token);
+  expect(owner.get(environment.environmentId)).toEqual(environment);
+  expect(owner.credential(environment.environmentId)).toEqual(credential);
+  expect(owner.credentialByHash(credential.credentialHash)).toEqual(credential);
+  expect(owner.hasNodeEnrollmentOwner("node")).toBe(true);
+  expect(owner.hasPendingNodeEnrollmentSetup("setup", "node")).toBe(true);
+  expect(() => owner.attachment("session")).toThrow("unsettled mutation");
+  expect(owner.withAdmission(token, () => owner.attachment("session"))).toEqual(attachment);
+  owner.install(after, owner.nextSequence(), false);
+  owner.release(token);
+  expect(owner.attachment("session")?.closedAtMs).toBe(2);
+
+  owner.fence(
+    createWorkerEnvironmentCommitAdmission(facts({ ...environment, leaseId: "replacement" }, true)),
+    token,
+  );
+  expect(() => owner.get(environment.environmentId)).toThrow("unsettled mutation");
+  expect(() => owner.credentialByHash(credential.credentialHash)).toThrow("unsettled mutation");
+  expect(owner.withAdmission(token, () => owner.get(environment.environmentId))).toEqual(
+    after.environments[0],
+  );
+});
 
 it("publishes native fields only after commit and before reentrant observers without host reads", async () => {
   const database = openOpenClawStateDatabase({

@@ -7,9 +7,9 @@ import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
+import { createWorkerEnvironmentCommitAdmission } from "./store-commit-authority.js";
 import { reconcileAttachedSessionOwners } from "./store-mutations.js";
 import { readWorkerEnvironmentFacts } from "./store-row-codec.js";
-import { createWorkerEnvironmentCommitAdmission } from "./store-transfer-authority.js";
 import type { WorkerEnvironmentWorkerOperations } from "./store-worker-contract.js";
 import { readTotalChanges } from "./store-write.js";
 import { createWorkerEnvironmentStoreKernel } from "./store.kernel.js";

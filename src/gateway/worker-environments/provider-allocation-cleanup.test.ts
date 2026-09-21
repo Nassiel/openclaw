@@ -5,6 +5,7 @@ import { WorkerProviderError } from "../../plugins/types.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { runOpenClawStateWriteTransaction } from "../../state/openclaw-state-db.js";
 import * as support from "./service.test-support.js";
+import { publishWorkerEnvironmentNativeMutation } from "./store-native-publication.js";
 
 describe("worker allocation cleanup", () => {
   support.setupWorkerEnvironmentServiceSuite();
@@ -38,15 +39,17 @@ describe("worker allocation cleanup", () => {
           }
           if (bound) {
             runOpenClawStateWriteTransaction(
-              ({ db }) =>
-                bindCloudWorkerSetupCompletion({
+              ({ db }) => {
+                const { environmentId, ...patch } = bindCloudWorkerSetupCompletion({
                   db,
                   completion: {
                     setupId: enrollment.setupId,
                     deviceId: "cleanup-device",
                     completedAtMs: 1_000,
                   },
-                }),
+                });
+                publishWorkerEnvironmentNativeMutation(db, environmentId, patch);
+              },
               { database: support.testState.stateDb },
             );
           }

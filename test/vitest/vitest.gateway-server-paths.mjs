@@ -194,6 +194,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/worker-environments/worker-turn-launcher-reconcile-error.test.ts",
   "src/gateway/worker-environments/worker-turn-launcher-terminal-results.test.ts",
   "src/gateway/worker-environments/worker-turn-rpc.computer.test.ts",
+  "src/gateway/worker-environments/worker-turn-rpc.inference-publication.test.ts",
   "src/gateway/worker-environments/worker-turn-rpc.portal.test.ts",
   "src/gateway/worker-environments/worker-turn-rpc.test.ts",
   "src/gateway/worker-environments/worker-turn-rpc.transcript.test.ts",

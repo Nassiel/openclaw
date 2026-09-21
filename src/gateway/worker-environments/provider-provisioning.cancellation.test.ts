@@ -9,6 +9,7 @@ import { createDeferredCore } from "../../shared/deferred.js";
 import { runOpenClawStateWriteTransaction } from "../../state/openclaw-state-db.js";
 import { createWorkerNodeEnrollmentManager } from "./node-enrollment.js";
 import * as support from "./service.test-support.js";
+import { publishWorkerEnvironmentNativeMutation } from "./store-native-publication.js";
 import { createWorkerBootstrapArtifactTransferService } from "./worker-bootstrap-artifact-transfer-service.js";
 
 function observeDestroyIntent(environmentId: string) {
@@ -426,11 +427,13 @@ describe("worker provisioning cancellation ownership", () => {
             throw new Error("Expected persisted enrollment setup identity");
           }
           runOpenClawStateWriteTransaction(
-            ({ db }) =>
-              bindCloudWorkerSetupCompletion({
+            ({ db }) => {
+              const { environmentId, ...patch } = bindCloudWorkerSetupCompletion({
                 db,
                 completion: { setupId, deviceId, completedAtMs: 1_000 },
-              }),
+              });
+              publishWorkerEnvironmentNativeMutation(db, environmentId, patch);
+            },
             { database: support.testState.stateDb },
           );
           enrolled.resolve(await options!.beginNodeEnrollment!());

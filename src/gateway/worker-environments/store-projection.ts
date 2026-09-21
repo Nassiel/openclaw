@@ -6,7 +6,10 @@ import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import type { WorkerCredentialRecord } from "./credential.js";
 import type { WorkerEnvironmentRecord } from "./environment-record.js";
 import type { WorkerEnvironmentAttachmentRecord } from "./session-attachment.js";
-import { encodeWorkerEnvironmentTransferAuthority } from "./store-transfer-authority.js";
+import {
+  digestWorkerEnvironmentRecordAuthority,
+  encodeWorkerEnvironmentTransferAuthority,
+} from "./store-commit-authority.js";
 import { assertShape } from "./store-validation.js";
 import type {
   WorkerEnvironmentCommitAdmission,
@@ -65,7 +68,10 @@ function createWorkerEnvironmentProjection() {
   const attachments = new Map<string, WorkerEnvironmentAttachmentRecord>();
   const revisions = new Map<string, number>();
   const nativeOverlays = new Map<string, NativeOverlay>();
-  const pending = new Map<string, { token: object; transferAuthorityUnchanged: boolean }>();
+  const pending = new Map<
+    string,
+    { token: object; recordAuthorityUnchanged: boolean; transferAuthorityUnchanged: boolean }
+  >();
   const reconciliations = new Map<
     object,
     { ids: string[]; error: unknown; revocationId?: string }
@@ -83,10 +89,14 @@ function createWorkerEnvironmentProjection() {
       throw new Error("Worker environment inventory has closed");
     }
   };
-  const assertReadable = (id: string) => {
+  const assertReadable = (
+    id: string,
+    authority: "record" | "transfer" | "attachment" = "record",
+  ) => {
     assertActive();
     const mutation = pending.get(id);
-    if (mutation && mutation.token !== ownAdmission.getStore()) {
+    const unchanged = authority !== "attachment" && mutation?.[`${authority}AuthorityUnchanged`];
+    if (mutation && mutation.token !== ownAdmission.getStore() && !unchanged) {
       throw new Error(
         `Worker environment ${id} has an unsettled mutation; retry after it completes`,
       );
@@ -155,13 +165,19 @@ function createWorkerEnvironmentProjection() {
     },
     fence(facts: WorkerEnvironmentCommitAdmission, token: object) {
       assertActive();
-      for (const { environmentId, transferAuthority } of facts) {
+      for (const { environmentId, recordAuthority, transferAuthority } of facts) {
         const previous = pending.get(environmentId);
         if (previous && previous.token !== token) {
           throw new Error("Worker inventory mutation ordering was lost");
         }
         pending.set(environmentId, {
           token,
+          recordAuthorityUnchanged:
+            recordAuthority ===
+            digestWorkerEnvironmentRecordAuthority(
+              environments.get(environmentId),
+              credentials.get(environmentId),
+            ),
           transferAuthorityUnchanged:
             transferAuthority ===
             encodeWorkerEnvironmentTransferAuthority(
@@ -348,10 +364,7 @@ function createWorkerEnvironmentProjection() {
       return structuredClone(record);
     },
     transferOwner(id: string) {
-      assertActive();
-      if (pending.get(id)?.transferAuthorityUnchanged !== true) {
-        assertReadable(id);
-      }
+      assertReadable(id, "transfer");
       const row = environments.get(id);
       if (!row) {
         return undefined;
@@ -405,7 +418,7 @@ function createWorkerEnvironmentProjection() {
       assertActive();
       const row = attachments.get(sessionId);
       if (row) {
-        assertReadable(row.environmentId);
+        assertReadable(row.environmentId, "attachment");
       }
       return structuredClone(row);
     },

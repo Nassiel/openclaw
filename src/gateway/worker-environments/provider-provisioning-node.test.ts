@@ -24,6 +24,7 @@ import { REQUEST, seedActivePlacement } from "./placement-dispatch-test-fixtures
 import { createWorkerSessionPlacementStore } from "./placement-store.js";
 import { createWorkerSessionPlacementGate } from "./placement-worker-gate.js";
 import * as support from "./service.test-support.js";
+import { publishWorkerEnvironmentNativeMutation } from "./store-native-publication.js";
 
 describe("node worker provider provisioning", () => {
   support.setupWorkerEnvironmentServiceSuite();
@@ -570,11 +571,13 @@ describe("node worker provider provisioning", () => {
             throw new Error("expected pending enrollment");
           }
           runOpenClawStateWriteTransaction(
-            ({ db }) =>
-              bindCloudWorkerSetupCompletion({
+            ({ db }) => {
+              const { environmentId, ...patch } = bindCloudWorkerSetupCompletion({
                 db,
                 completion: { setupId: enrollment.setupId, deviceId, completedAtMs: 1_000 },
-              }),
+              });
+              publishWorkerEnvironmentNativeMutation(db, environmentId, patch);
+            },
             { database: support.testState.stateDb },
           );
           throw new Error("provider response was lost after node allocation");

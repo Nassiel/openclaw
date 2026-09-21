@@ -28,6 +28,7 @@ export type WorkerEnvironmentFacts = {
 };
 export type WorkerEnvironmentCommitAdmission = Array<{
   environmentId: string;
+  recordAuthority: string;
   transferAuthority: string;
 }>;
 export type WorkerEnvironmentPruneCursor = { changedAtMs: number; environmentId: string };

@@ -172,7 +172,6 @@ describe("node workspace credential revocation", () => {
             throw new Error("Inventory mutation finished before its publication gate");
           }),
         ]);
-        expect(() => store.get(record.environmentId)).toThrow("unsettled mutation");
         resumeVerification.resolve();
         const response = await handled.promise;
         if (mutationKind === "revocation") {
@@ -189,7 +188,9 @@ describe("node workspace credential revocation", () => {
         publish.resolve();
         requestAbort.abort();
         server.closeAllConnections();
-        await new Promise<void>((resolve) => server.close(() => resolve()));
+        await new Promise<void>((resolve) => {
+          server.close(() => resolve());
+        });
         await Promise.allSettled([mutation, request, handling]);
         delivery.command = undefined;
         delivery.afterCommit = undefined;

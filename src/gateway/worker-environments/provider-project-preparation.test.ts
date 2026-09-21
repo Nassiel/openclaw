@@ -15,6 +15,7 @@ import { createDeferredCore } from "../../shared/deferred.js";
 import { runOpenClawStateWriteTransaction } from "../../state/openclaw-state-db.js";
 import { readWorkerProjectPreparation } from "./preparation-identity.js";
 import * as support from "./service.test-support.js";
+import { publishWorkerEnvironmentNativeMutation } from "./store-native-publication.js";
 import * as workspaceGitBase from "./workspace-git-base.js";
 
 type ProjectPreparation = NonNullable<
@@ -91,15 +92,17 @@ describe("worker provider project preparation ownership", () => {
             throw new Error("Fresh worker must use its pending enrollment");
           }
           runOpenClawStateWriteTransaction(
-            ({ db }) =>
-              bindCloudWorkerSetupCompletion({
+            ({ db }) => {
+              const { environmentId, ...patch } = bindCloudWorkerSetupCompletion({
                 db,
                 completion: {
                   setupId: enrollment.setupId,
                   deviceId,
                   completedAtMs: support.testState.nowMs,
                 },
-              }),
+              });
+              publishWorkerEnvironmentNativeMutation(db, environmentId, patch);
+            },
             { database: support.testState.stateDb },
           );
           return {

@@ -1,9 +1,21 @@
+import { sha256StableValue } from "@openclaw/normalization-core/node-crypto";
 import type { WorkerCredentialRecord } from "./credential.js";
 import type { WorkerEnvironmentRecord } from "./environment-record.js";
 import type {
   WorkerEnvironmentCommitAdmission,
   WorkerEnvironmentFacts,
 } from "./store-worker-contract.js";
+
+export function digestWorkerEnvironmentRecordAuthority(
+  environment: WorkerEnvironmentRecord | undefined,
+  credential: WorkerCredentialRecord | undefined,
+): string {
+  // Diagnostics cannot revoke a live reader; every other environment and credential field can.
+  return sha256StableValue([
+    environment ? { ...environment, updatedAtMs: undefined, lastError: undefined } : null,
+    credential ?? null,
+  ]).digest;
+}
 
 /** Equality facts only; transfer admission still checks the current owner and capability. */
 export function encodeWorkerEnvironmentTransferAuthority(
@@ -36,6 +48,10 @@ export function createWorkerEnvironmentCommitAdmission(
   const credentials = new Map(facts.credentials.map((row) => [row.environmentId, row]));
   return facts.ids.map((environmentId) => ({
     environmentId,
+    recordAuthority: digestWorkerEnvironmentRecordAuthority(
+      environments.get(environmentId),
+      credentials.get(environmentId),
+    ),
     transferAuthority: encodeWorkerEnvironmentTransferAuthority(
       environments.get(environmentId),
       credentials.get(environmentId),
