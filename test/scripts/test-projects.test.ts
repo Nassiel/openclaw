@@ -6,7 +6,10 @@ import path from "node:path";
 import { assert, beforeAll, describe, expect, it, vi } from "vitest";
 import { listExtensionTestFilesForRoots } from "../../scripts/lib/extension-test-plan.mts";
 import { readTestSelectorSourceFacts } from "../../scripts/lib/test-selector-source-facts.mts";
-import { resolveVitestPretestBuildMode } from "../../scripts/lib/vitest-build-prerequisites.mts";
+import {
+  resolveVitestPretestBuildMode,
+  resolveVitestRuntimeConfigScopes,
+} from "../../scripts/lib/vitest-build-prerequisites.mts";
 import { resolveDefaultVitestNoOutputTimeoutMs } from "../../scripts/lib/vitest-process-env.mts";
 import { resolveVitestRuntimeCliSelections } from "../../scripts/lib/vitest-runtime-selection.mts";
 import { resolveShardTimingKey } from "../../scripts/lib/vitest-shard-metadata.mts";
@@ -21,6 +24,7 @@ import {
   findUnmatchedExplicitTestTargets,
   formatFailedShardDigest,
   formatNoChangedTestTargetLines,
+  isTestFileTarget,
   orderFullSuiteSpecsForParallelRun,
   parseTestProjectsArgs,
   resolveChangedTestTargetPlanForArgs,
@@ -43,9 +47,39 @@ import {
 } from "../vitest/vitest.startup-corpus-paths.mjs";
 
 const normalizeRepoPath = toRepoPath;
-const CODEX_TEST_PROCESS_FILE_LIMIT = 12;
+const CODEX_TEST_PROCESS_FILE_LIMIT = 24;
 const MATRIX_TEST_PROCESS_FILE_LIMIT = 40;
 const TELEGRAM_TEST_PROCESS_FILE_LIMIT = 1;
+
+describe("Windows CI partitions", () => {
+  it("keeps explicit coverage disjoint without repeating small project setup", () => {
+    const { scripts } = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
+      scripts: Record<string, string>;
+    };
+    const [first, second] = [1, 2].map((part) => {
+      const command = scripts[`test:windows:ci:${part}`];
+      assert(command);
+      const entrypoint = "scripts/test-projects.mts ";
+      expect(command).toContain(entrypoint);
+      const targets = command.slice(command.indexOf(entrypoint) + entrypoint.length).split(/\s+/u);
+      expect(targets.every((target) => isTestFileTarget(target))).toBe(true);
+      expect(findUnmatchedExplicitTestTargets(targets)).toEqual([]);
+      return {
+        targets,
+        configs: new Set(createVitestRunSpecs(targets, { baseEnv: {} }).map((spec) => spec.config)),
+      };
+    });
+    assert(first && second);
+    const targets = [...first.targets, ...second.targets];
+    expect(new Set(targets).size).toBe(targets.length);
+    // Tooling owns the long compiler fixtures; the extension catch-all retains
+    // separate plugin processes. The other projects share setup within one part.
+    expect([...first.configs].filter((config) => second.configs.has(config))).toEqual([
+      "test/vitest/vitest.tooling.config.ts",
+      "test/vitest/vitest.extensions.config.ts",
+    ]);
+  });
+});
 
 describe("test runtime prerequisites", () => {
   it.each([
@@ -101,6 +135,11 @@ describe("test runtime prerequisites", () => {
     ["native setup registry SDK", ["src/plugins/setup-registry.migrations.test.ts"], "runtime"],
     ["native source checkout SDK", ["src/plugins/source-checkout-runtime.test.ts"], "runtime"],
     ["native provider contract SDK", ["extensions/deepinfra/provider.contract.test.ts"], "runtime"],
+    [
+      "native workspace Memory and Skills workers",
+      ["extensions/file-transfer/src/workspace-service.test.ts"],
+      "runtime",
+    ],
     ["native catalog auth SDK", ["test/openai-model-discovery-auth-order.test.ts"], "runtime"],
     ["models.list native catalog", ["test/plugins/codex-model-catalog.gateway.test.ts"], "runtime"],
     ["native package setup SDK", ["test/plugin-npm-runtime-build.test.ts"], "runtime"],
@@ -272,7 +311,8 @@ describe("test runtime prerequisites", () => {
     ["unit", ["src/entry.memory-json.test.ts"], "runtime"],
     ["unit-src", ["src/entry.memory-json.test.ts"], "runtime"],
     ["extensions", ["deepinfra/**"], "runtime"],
-    ["extensions", ["deepinfra/**", "google-meet/**"], undefined],
+    ["extensions", ["deepinfra/**", "google-meet/**"], "runtime"],
+    ["extensions", ["deepinfra/**", "google-meet/**", "file-transfer/**"], undefined],
     ["tooling", ["test/**"], undefined],
     ["plugins", ["plugin-module-generation.sdk.test.ts"], undefined],
     ["runtime-config", ["config/config-startup-corpus.test.ts"], "runtime"],
@@ -290,28 +330,16 @@ describe("test runtime prerequisites", () => {
     ],
     ["agents-core", ["simple-completion-runtime.plugin-scope.test.ts"], "runtime"],
     ["agents", ["simple-completion-runtime.plugin-scope.test.ts"], "runtime"],
-    [
-      "agents-core",
-      [
-        "agent-command-local.test.ts",
-        "simple-completion-runtime.plugin-scope.test.ts",
-        "prepared-model-catalog-worker.custody.integration.test.ts",
-        "prepared-model-catalog-worker.integration.test.ts",
-        "runtime-plugins.context-engine.integration.test.ts",
-      ],
-      undefined,
-    ],
-    [
-      "agents",
-      [
-        "agent-command-local.test.ts",
-        "simple-completion-runtime.plugin-scope.test.ts",
-        "prepared-model-catalog-worker.custody.integration.test.ts",
-        "prepared-model-catalog-worker.integration.test.ts",
-        "runtime-plugins.context-engine.integration.test.ts",
-      ],
-      undefined,
-    ],
+    ...(["agents-core", "agents"] as const).map(
+      (project) =>
+        [
+          project,
+          resolveVitestRuntimeConfigScopes(`test/vitest/vitest.${project}.config.ts`).map(
+            ({ file, dir }) => path.posix.relative(dir, file),
+          ),
+          undefined,
+        ] as const,
+    ),
     ["gateway-core", ["gateway-*.test.ts"], undefined],
     ["gateway-server", ["server-sidecar-retention.test.ts"], "runtime"],
     ["gateway-server", ["server.config-patch.test.ts"], "runtime"],
@@ -2170,14 +2198,16 @@ describe("scripts/test-projects changed-target routing", () => {
     },
   );
 
-  it("routes the schema-upgrade counter consumer exactly once to its broker owner", () => {
-    const testFile = "src/state/openclaw-state-db.test.ts";
-    expectSingleVitestRunPlan(buildVitestRunPlans([testFile]), {
-      config: "test/vitest/vitest.infra.config.ts",
-      includePatterns: [testFile],
-    });
-    expect(databaseWorkerCoreTestFiles.filter((file) => file === testFile)).toEqual([testFile]);
-  });
+  it.each(["src/state/openclaw-state-db.test.ts", "src/worker/worker.runtime.test.ts"])(
+    "routes native shared-state consumer %s exactly once to its broker owner",
+    (testFile) => {
+      expectSingleVitestRunPlan(buildVitestRunPlans([testFile]), {
+        config: "test/vitest/vitest.infra.config.ts",
+        includePatterns: [testFile],
+      });
+      expect(databaseWorkerCoreTestFiles.filter((file) => file === testFile)).toEqual([testFile]);
+    },
+  );
 
   it.each(databaseWorkerCoreTestFiles)(
     "routes host-owned database consumer %s to the infra fork shard",
@@ -2217,6 +2247,7 @@ describe("scripts/test-projects changed-target routing", () => {
   it.each([
     ["src/agents/**/*.test.ts", "test/vitest/vitest.agents.config.ts"],
     ["test/plugins", "test/vitest/vitest.tooling.config.ts"],
+    ["test/scripts", "test/vitest/vitest.tooling.config.ts"],
     ["src/plugin-state", "test/vitest/vitest.unit.config.ts"],
   ])("preserves watch selection across database ownership for %s", (target, owner) => {
     expect(buildVitestRunPlans(["--watch", target])).toEqual([
@@ -2432,19 +2463,13 @@ describe("scripts/test-projects changed-target routing", () => {
     }
   });
 
-  const embeddedRunWorkerFiles = [
-    "src/agents/embedded-agent-runner/run/model-setup.ownership.test.ts",
-    "src/agents/embedded-agent-runner/run/model-setup.selected-model.test.ts",
-    "src/agents/embedded-agent-runner/run/runtime-preparation.thinking.test.ts",
-    "src/agents/embedded-agent-runner/run/run-attempt-dispatch.owner.test.ts",
-    "src/agents/embedded-agent-runner/run/failover-retry-controller.inline-auth.worker.test.ts",
-  ];
-
   it.each([
     {
       directory: "src/agents/embedded-agent-runner/run",
       config: "test/vitest/vitest.agents-embedded-agent-run.config.ts",
-      workerFiles: embeddedRunWorkerFiles,
+      workerFiles: databaseWorkerCoreTestFiles.filter((file) =>
+        file.startsWith("src/agents/embedded-agent-runner/run/"),
+      ),
     },
     {
       directory: "src/agents/runtime-plan",
@@ -2503,7 +2528,9 @@ describe("scripts/test-projects changed-target routing", () => {
       {
         config: "test/vitest/vitest.infra.config.ts",
         forwardedArgs: ["--sequence.shuffle", "--sequence.seed", "3"],
-        includePatterns: embeddedRunWorkerFiles,
+        includePatterns: databaseWorkerCoreTestFiles.filter((file) =>
+          file.startsWith(`${directory}/`),
+        ),
         watchMode: false,
       },
       {
@@ -3031,14 +3058,6 @@ describe("scripts/test-projects changed-target routing", () => {
     expect(() => buildVitestRunPlans(["--watch", "src/cli"])).toThrow(
       "watch mode with mixed test suites is not supported",
     );
-  });
-
-  it("keeps broad shell helper watch targets in one tooling shard", () => {
-    expectSingleVitestRunPlan(buildVitestRunPlans(["--watch", "test/scripts"], process.cwd()), {
-      config: "test/vitest/vitest.tooling.config.ts",
-      includePatterns: ["test/scripts/**/*.test.ts"],
-      watchMode: true,
-    });
   });
 
   it("preserves post-separator Vitest args without parsing them as targets", () => {
@@ -5015,6 +5034,14 @@ describe("scripts/test-projects full-suite sharding", () => {
         const toolingPlans = targetedPlans("test/vitest/vitest.tooling.config.ts");
         expect(toolingPlans.length).toBeGreaterThan(1);
         expect(toolingPlans.every((plan) => plan.forwardedArgs.length <= 2)).toBe(true);
+        const toolingTargets = toolingPlans.flatMap((plan) => plan.forwardedArgs);
+        expect(toolingTargets.filter((file) => file.startsWith("test/fixtures/"))).toEqual([]);
+        expect(plans.flatMap((plan) => plan.forwardedArgs)).toEqual(
+          expect.arrayContaining([
+            "test/scripts/oxlint-boundary-guards.test.ts",
+            "test/scripts/ts-topology.test.ts",
+          ]),
+        );
         for (const plan of plans.filter((entry) => entry.forwardedArgs.length > 0)) {
           expect(plan.timingTargets).toEqual(plan.forwardedArgs);
           expect(plan.includePatterns).toBeNull();

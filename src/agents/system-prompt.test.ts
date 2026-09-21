@@ -826,7 +826,7 @@ describe("buildAgentSystemPrompt", () => {
     });
 
     expect(prompt).toContain(
-      "- exec: Run JavaScript/TypeScript Code Mode; call exact catalog tools from code, never shell/Python/imports",
+      "- exec: Run JavaScript Code Mode; call exact catalog tools from code, never shell/Python/imports",
     );
     expect(prompt).toContain("- wait: Resume a suspended Code Mode exec");
     expect(prompt).not.toContain("- exec: Run shell");
@@ -1682,17 +1682,6 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt.indexOf("NEVER use [[tts:...]]")).toBeGreaterThan(-1);
     expect(prompt.lastIndexOf("## Voice (TTS)")).toBeGreaterThan(
       prompt.indexOf("NEVER use [[tts:...]]"),
-    );
-  });
-
-  it("adds USER guidance when a user-model file is present", () => {
-    const prompt = buildAgentSystemPrompt({
-      workspaceDir: "/tmp/openclaw",
-      contextFiles: [{ path: "USER.md", content: "- Prefer concise answers." }],
-    });
-
-    expect(prompt).toContain(
-      "USER.md: durable user preferences and profile directives; follow unless higher-priority instructions override.",
     );
   });
 

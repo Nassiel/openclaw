@@ -68,9 +68,16 @@ export async function waitForAcceptedRunDispatch(params: {
   if (ok !== true || (payload as { status?: string } | undefined)?.status !== "accepted") {
     return;
   }
-  // Accepted work still owns this clock until dispatch or a terminal response. An arbitrary
-  // pump limit can restore real timers just after awaited work queues the acknowledgement timer.
-  while (!params.hasDispatched() && respond.mock.calls.length <= respondCallCount) {
+  // Keep clock ownership through delayed acknowledgement timers, but fail explicitly if
+  // accepted work never settles; an unbounded microtask loop can starve the test timeout.
+  for (
+    let pumps = 0;
+    !params.hasDispatched() && respond.mock.calls.length <= respondCallCount;
+    pumps++
+  ) {
+    if (pumps === 1_000) {
+      throw new Error("Accepted agent request did not dispatch or return a terminal response");
+    }
     await flushScheduledDispatchStep();
   }
 }

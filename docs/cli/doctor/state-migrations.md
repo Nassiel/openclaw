@@ -13,6 +13,18 @@ describes each migration source and what to do when one stays blocked.
 
 `openclaw doctor --fix` is the only owner for persistent file-to-SQLite migrations. It validates and claims each recognized source, writes and verifies canonical rows, records a migration receipt, then removes the retired source. Runtime code does not perform lazy imports or fallback reads.
 
+Gateway startup invokes the same migration owners under exclusive maintenance
+ownership before checking runtime readiness. This lets container image upgrades
+complete agent schema, shared-state, session, and workspace migrations without
+an offline operator command. Startup preserves verified SQLite copies before
+schema upgrades, plus Doctor's normal config backups and legacy-file archives.
+An unsafe required store exits with code 78 and its specific reason. Refused default
+or system agents never produce a healthy readiness response. Unused legacy stores,
+including loose `agent/settings.json` files without an agent owner, remain untouched
+and deferred. Startup records an advisory and continues independent migrations;
+Doctor reports the retained source for follow-up. An advisory never hides a separate
+required-store refusal.
+
 When a refused step blocks later work, each blocked execution receipt keeps
 `refusal.code: "blocked-by-prior-refusal"` and includes `originatingRefusal` with
 the first refusal's `stepId`, reason `code`, and human-readable `message`.
@@ -81,3 +93,15 @@ After explicit repair (`--fix`, `--repair`, or `--yes`), Doctor verifies runtime
 Doctor also discovers retired setup state and interrupted migration claims in every resolved agent workspace, active sandbox workspace, and explicitly configured `agents.defaults.workspace` root. That shared root is included even when an explicit multi-agent roster uses only its subdirectories. Doctor imports both `<workspace>/openclaw-workspace-state.json` and `<workspace>/.openclaw/workspace-state.json` through the existing migration; it does not assign the root to an agent or move persona and memory files.
 
 Repair exits nonzero while retained legacy state still blocks agent turns, even if its data already reached SQLite. Gateway startup and live config candidates check readiness only for the workspaces they would use, not an unused default root. An unready live candidate is rejected and the last-good runtime stays active. Stop OpenClaw processes, save the intended workspace path if the live write was rejected before persistence, and keep the retained files in place. Run `openclaw doctor --fix` before restarting. Readiness checks never import or delete legacy state.
+
+## Pending plugin migrations
+
+When Doctor runs inside an update or repair, let that command finish before
+following recovery advice from an intermediate plugin warning. The updater may
+complete package convergence and run Doctor again before it exits.
+
+If the installed plugin still has not reported migration completion, run
+`openclaw doctor --fix`. If that cannot complete the migration, report the
+remaining warning to the plugin maintainer. Repeating a package update alone
+does not prove that the plugin migrated its retained state. Keep the retained
+state and config inputs until the migration owner reports completion.

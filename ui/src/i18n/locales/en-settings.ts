@@ -3,6 +3,75 @@ import { en } from "./en.ts";
 
 // Settings copy loads with its lazy page or search, not the startup shell.
 const enSettings = {
+  searchPage: {
+    enabled: "Web search",
+    advanced: "Advanced search settings",
+    enabledHint: "Allow agents to find up-to-date information on the web.",
+    provider: "Search provider",
+    automatic: "Automatic",
+    automaticHint:
+      "Prefer native search when supported; otherwise use a configured search provider.",
+    scopeHint:
+      "Search settings apply to all agents. Choose an agent and model to see their effective route.",
+    agent: "Agent",
+    model: "Model",
+    agentDefault: "Agent default",
+    route: "Search for this model",
+    routeKinds: {
+      native: "Native search",
+      external: "Check in chat",
+      managed: "Provider search",
+      disabled: "Off",
+      unavailable: "Unavailable",
+    },
+    loading: "Checking search configuration…",
+    offline: "Connect to the Gateway to configure search.",
+    readOnly: "An administrator can change search settings and credentials.",
+    setup: "Provider setup",
+    setupProvider: "Configure provider",
+    setupHint:
+      "Configure a provider for OpenClaw web search. External harnesses may also supply their own search tools.",
+    configured: "Configured",
+    pluginUnavailable: "Enable plugin to use",
+    pluginMissing: "Install plugin to use",
+    testInChat: "Test in chat",
+    testInChatHint:
+      "Open a new chat with this agent and model selected. Nothing is sent automatically.",
+    needsSetup: "Needs setup",
+    configuration: "Configuration",
+    credentialSources: {
+      config: "Saved credential",
+      secretRef: "Secret reference",
+      env: "Gateway environment",
+      "auth-profile": "Connected account",
+      none: "No separate API key required",
+      missing: "Credential missing",
+    },
+    health: "Search health",
+    untested: "Not tested",
+    untestedHint:
+      "Configuration alone does not verify access. Run a search to check the current route.",
+    test: "Test search",
+    testProvider: "Test {provider}",
+    testing: "Searching…",
+    query: "Search query",
+    queryPlaceholder: "What would you like to find?",
+    queryDefault: "OpenClaw documentation",
+    success: "Search succeeded",
+    failure: "Search failed",
+    duration: "{ms} ms",
+    cached: "Cached result",
+    result: "Answer",
+    sources: "Sources",
+    noResults: "The provider returned no results for this query.",
+    pluginSettings: "All provider settings",
+    pluginSettingsHint: "Open the plugin’s complete configuration and access controls.",
+    moreProviders: "Add search providers",
+    moreProvidersHint:
+      "Install a search plugin, or configure a custom endpoint with a compatible provider.",
+    docs: "Provider documentation",
+    refresh: "Refresh search status",
+  },
   connection: {
     browser: {
       title: "Browser",
@@ -497,13 +566,23 @@ const enSettings = {
     },
     installedAgents: {
       title: "Installed agents",
-      description: "Coding apps on the computer that runs OpenClaw. Sign in through each app.",
+      description:
+        "Coding apps on the Gateway computer. Each app manages its own account and permissions. Enabling an app does not sign you in.",
       status: {
         installed: "Installed",
         missing: "Not detected",
         unverified: "Not verified",
+        signIn: "Sign in required",
+        discovering: "Discovering models…",
+        modelsAvailable: "Models available",
       },
-      unverifiedHint: "OpenClaw could not check the launch command set for this app.",
+      unverifiedHint:
+        "Check this app's custom launch command on the Gateway computer, then check again.",
+      installHint: "Install and sign in to {name} on the Gateway computer, then check again.",
+      disabledHint: "Enable this app to include its models in the picker.",
+      signInHint: "Open {name} on the Gateway computer and check its sign-in, then check again.",
+      discoveryHint:
+        "Open {name} on the Gateway computer and check its connection and sign-in, then check again.",
       toggle: "Use {name}",
       check: "Check again",
       checking: "Checking…",
@@ -648,6 +727,8 @@ const enSettings = {
       cameraHint: "Allow the agent to capture a photo or short video via the built-in camera.",
       keepAwake: "Keep awake",
       keepAwakeHint: "Keep the screen awake while OpenClaw is active.",
+      keepAwakeComputerHint:
+        "Prevent idle sleep while OpenClaw is running. Manual sleep and locking remain available.",
       healthSummary: "Health summaries",
       healthSummaryHint: "Allow the agent to request a health summary from this device.",
       device: "Device",
@@ -662,6 +743,18 @@ const enSettings = {
       computerControlHint:
         "Starts enabled. After this Mac is paired and macOS access is granted, the paired Gateway can move the pointer, click, and type without per-action confirmation. High risk.",
       computerControlProvider: "Computer Control provider",
+      desktopSharing: "Desktop sharing",
+      desktopSharingHint:
+        "View and control this Mac from Systems. Enabled by default. Requires Screen Sharing in macOS System Settings → General → Sharing. Changes briefly reconnect this Mac; a new capability may need pairing approval.",
+      desktopSharingComputerHint:
+        "View and control this computer from Systems. Enabled by default. Requires an authenticated local VNC server. Changes briefly reconnect this computer; a new capability may need pairing approval.",
+      desktopSharingStatus: "Desktop sharing status",
+      desktopSharingStates: {
+        off: "Off",
+        starting: "Starting",
+        running: "Running",
+        error: "Unavailable",
+      },
       unattendedDesktop: "Keep computer awake",
       unattendedDesktopHint:
         "Keep this Mac awake between jobs while it is connected and hosting. Manual lock and logout are still respected; OpenClaw never unlocks the Mac.",
@@ -1376,6 +1469,7 @@ export const registerSettingsEnglish = Object.assign(
   () => {
     en.memoryPage = enSettings.memoryPage;
     en.modelProviders = enSettings.modelProviders;
+    en.searchPage = enSettings.searchPage;
     // Extend the shared objects: eager save/update copy and existing readers survive.
     en.cloudWorkersPage = enSettings.cloudWorkersPage;
     Object.assign(en.connection, enSettings.connection);
