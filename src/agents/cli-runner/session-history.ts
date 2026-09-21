@@ -14,6 +14,8 @@ import {
   waitForSessionTranscriptProjection,
   type SessionTranscriptRuntimeTarget,
 } from "../../config/sessions/session-accessor.js";
+import { SessionTranscriptStorageUnavailableError } from "../../config/sessions/session-transcript-projection-error.js";
+import { resolveSessionTranscriptReadFence } from "../../config/sessions/session-transcript-read-fence.js";
 import { estimateToolResultTextChars } from "../embedded-agent-runner/tool-result-text-budget.js";
 import { MAX_AGENT_HOOK_HISTORY_MESSAGES } from "../harness/hook-history.js";
 import { isOpenClawRuntimeContextCustomMessage } from "../internal-runtime-context.js";
@@ -331,19 +333,34 @@ async function loadCliSessionEntries({
   if (!sessionTarget) {
     return [];
   }
+  const admission = resolveSessionTranscriptReadFence(sessionTarget);
   const { restoreSessionColdTranscript } =
     await import("../../config/sessions/session-cold-storage.js");
   await restoreSessionColdTranscript(sessionTarget);
   await waitForSessionTranscriptProjection(sessionTarget);
   // Normalize bounded cuts with opaque ancestry before rebuilding CLI context.
-  return SessionManager.openBounded(sessionTarget, {
-    maxBytes: MAX_CLI_SESSION_HISTORY_BYTES,
-    maxEvents: MAX_CLI_SESSION_HISTORY_EVENTS,
-    onTruncated: () =>
-      cliBackendLog.warn(
-        `cli session history truncated to bounded active context: ${sessionTarget.sessionId}`,
-      ),
-  }).getBranch();
+  try {
+    return (
+      await SessionManager.openBoundedAsync(sessionTarget, {
+        maxBytes: MAX_CLI_SESSION_HISTORY_BYTES,
+        maxEvents: MAX_CLI_SESSION_HISTORY_EVENTS,
+        onTruncated: () =>
+          cliBackendLog.warn(
+            `cli session history truncated to bounded active context: ${sessionTarget.sessionId}`,
+          ),
+      })
+    ).getBranch();
+  } catch (error) {
+    if (
+      error instanceof SessionTranscriptStorageUnavailableError &&
+      error.reason === "database-missing" &&
+      !admission
+    ) {
+      // History precedes the approved user-turn writer, which owns first-store creation.
+      return [];
+    }
+    throw error;
+  }
 }
 
 /** Checks whether the transcript owner has any session events. */

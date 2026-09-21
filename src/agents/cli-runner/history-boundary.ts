@@ -108,13 +108,16 @@ export async function prepareCliHistoryBoundary(
     !params.cliSessionBinding
   ) {
     let truncated = false;
-    const branch = SessionManager.openBounded(target, {
-      maxBytes: 1024 * 1024,
-      maxEvents: 100,
-      onTruncated: () => {
-        truncated = true;
-      },
-    }).getBranch();
+    const branch = (
+      await SessionManager.openBoundedAsync(target, {
+        maxBytes: 1024 * 1024,
+        maxEvents: 100,
+        onTruncated: () => {
+          truncated = true;
+        },
+      })
+    ).getBranch();
+    assertCurrent();
     // Bookkeeping is not a conversation. Retained reset rows, summaries, custom
     // context, missing anchors and bounded cuts must never look like a fresh start.
     allowed = !truncated && buildSessionContext(branch).messages.length === 0;

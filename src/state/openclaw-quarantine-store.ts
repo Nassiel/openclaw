@@ -263,7 +263,7 @@ export class OpenClawQuarantineReadCleanupError extends AggregateError {
 }
 
 // Read admission needs this error without importing schema migrations.
-export function createOpenClawDatabaseVerificationError(
+function createOpenClawDatabaseVerificationError(
   kind: "agent" | "state",
   pathname: string,
   storedError: string | null,
@@ -365,7 +365,7 @@ function withQuarantineWriter<T>(env: NodeJS.ProcessEnv, operation: (db: Databas
 }
 
 /** Read one authoritative quarantine decision without creating the store. */
-export function readOpenClawDatabaseQuarantine(
+function readOpenClawDatabaseQuarantine(
   pathname: string,
   options: { env?: NodeJS.ProcessEnv } = {},
 ): OpenClawDatabaseQuarantine | undefined {
@@ -481,6 +481,27 @@ function readQuarantineDecision(
     }
   }
   return { kind: row.kind, quarantinedAt: row.quarantined_at, reason: row.reason };
+}
+
+/** Runtime opens refuse recorded damage while tolerating a broken quarantine index. */
+export function readOpenClawDatabaseQuarantineFailure(
+  kind: OpenClawDatabaseKind,
+  pathname: string,
+  options: { env?: NodeJS.ProcessEnv } = {},
+): Error | undefined {
+  try {
+    const quarantine = readOpenClawDatabaseQuarantine(pathname, options);
+    return quarantine
+      ? createOpenClawDatabaseVerificationError(kind, pathname, quarantine.reason)
+      : undefined;
+  } catch (error) {
+    // Native cleanup must remain visible to the caller's disposal owner.
+    if (error instanceof OpenClawQuarantineReadCleanupError) {
+      throw error;
+    }
+    // The process latch and daily verifier still cover known damage.
+    return undefined;
+  }
 }
 
 /** Persist one authoritative quarantine decision. */

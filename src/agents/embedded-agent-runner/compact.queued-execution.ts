@@ -474,7 +474,7 @@ export async function executeQueuedContextEngineCompaction(input: {
             expected,
             params.abortSignal,
           );
-          const sessionManager = SessionManager.open(
+          const sessionManager = await SessionManager.openAsync(
             postCompactionSessionTarget,
             resolvedWorkspaceDir,
           );
@@ -494,7 +494,7 @@ export async function executeQueuedContextEngineCompaction(input: {
             withSessionManagerRewriteLock: async (operation) =>
               await withOwnedSessionTranscriptWrites(rewriteContext, async () => {
                 rewriteContext.assertCommitAllowed();
-                sessionManager.reloadPersistedTranscript();
+                await sessionManager.reloadPersistedTranscriptAsync(params.abortSignal);
                 rewriteContext.assertCommitAllowed();
                 return await operation();
               }),
