@@ -602,8 +602,9 @@ class SqliteReclamationWorker {
         this.taskCustodyReleased = true;
         this.nativeExitProven ||= !this.healthyCloseAcknowledged;
       }
-      // Native exit is joined before exact receipt cleanup; PID-wide cleanup is never safe.
-      if (this.lease && this.nativeExitProven) {
+      // A settled close released the lease even when the request failed.
+      // Only unsettled cleanup needs the parent's exact receipt after native exit.
+      if (this.lease && this.nativeExitProven && !this.cleanup?.settled) {
         const lease = this.lease;
         await cleanupRetiredAgentDatabaseLease({
           context: this.stateContext,
