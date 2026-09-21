@@ -3897,6 +3897,12 @@ export const en: TranslationMap & {
       archived: "No longer pending",
       archivedReason: "The conversation moved on. You can still answer this question.",
       sendFailed: "Could not send your answer. Your draft is preserved.",
+      queued: "Answer queued",
+      sending: "Sending answer…",
+      sent: "Answer sent",
+      failed: "Answer not sent",
+      awaitingConfirmation: "Awaiting delivery confirmation",
+      retry: "Retry answer",
     },
     questions: {
       other: "Type your own answer here",

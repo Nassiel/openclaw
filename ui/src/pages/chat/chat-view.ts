@@ -91,7 +91,11 @@ export type ChatProps = Omit<
   ChatTaskSuggestionTrayProps &
   ChatPlacementStartupNoticeProps & {
     transcript: ChatTranscriptController;
-    onAsyncQuestionSubmit?: (message: string) => Promise<boolean>;
+    onAsyncQuestionSubmit?: (
+      message: string,
+      itemId?: string,
+      sourceMessageId?: string,
+    ) => Promise<boolean>;
     presented?: boolean;
     historyState?: ChatState;
     onSessionKeyChange: (next: string) => void;
@@ -367,6 +371,7 @@ export function renderChat(props: ChatProps) {
   const notices = renderChatComposerNotices(props);
   // Transcript invalidation replaces its render context; bind submission afterward.
   questionState.transcriptRenderContext.onAsyncQuestionSubmit = props.onAsyncQuestionSubmit;
+  questionState.transcriptRenderContext.onAsyncQuestionDiscard = asyncQuestions.discard;
   const defaultComposer = renderChatComposer({
     ...props,
     asyncQuestions,

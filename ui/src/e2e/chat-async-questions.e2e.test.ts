@@ -362,7 +362,7 @@ suite.define(() => {
           `> ${title}\n\n/stop is an example for the whole team\n\n> ${followUpTitle}\n\nInclude one practical example.\nKeep the next steps separate.`,
         );
         expect(params.queueMode).toBe(active ? "steer" : undefined);
-        expect(params).not.toHaveProperty("replyToId");
+        expect(params.replyToId).toBe("audience-prompt");
         expect(await composer.inputValue()).toBe("Keep this separate composer draft.");
         expect(await composerReply.textContent()).toContain(replyMessage.content);
         expect(await gateway.getRequests("chat.abort")).toHaveLength(0);
@@ -519,53 +519,181 @@ suite.define(() => {
     }
   });
 
-  it("transfers rejected answers to the existing outbox retry without a second form submission", async () => {
-    const context = await suite.newBrowserContext(createControlUiE2eContextOptions());
-    const page = await context.newPage();
-    const gateway = await installMockGateway(page, { historyMessages: [questionMessage] });
-    try {
-      await page.goto(`${suite.server.baseUrl}chat`);
-      const card = page.locator(".agent-chat__question-dock openclaw-chat-question-panel");
-      const custom = card.getByRole("textbox", { name: `Your own answer for ${title}` });
-      await custom.fill("The customer support team");
-      await gateway.deferNext("chat.send");
-      await card.getByRole("button", { name: "Submit", exact: true }).click();
-      await gateway.waitForRequest("chat.send");
-      await gateway.resolveDeferred("chat.send", {
-        __mockError: { code: "UNAVAILABLE", message: "Synthetic send rejection" },
+  it.each(["receipt", "reload", "discard", "legacy"] as const)(
+    "recovers rejected answers for retry or explicit discard without another submission (%s)",
+    async (confirmation) => {
+      const context = await suite.newBrowserContext(createControlUiE2eContextOptions());
+      const page = await context.newPage();
+      const gateway = await installMockGateway(page, {
+        historyMessages: [{ ...questionMessage, __openclaw: { id: "delivery-question", seq: 1 } }],
       });
-      await card.waitFor({ state: "detached" });
-      expect(await card.getByRole("button", { name: "Submit", exact: true }).count()).toBe(0);
-      const summary = page
-        .locator(".chat-thread .chat-question-summary")
-        .filter({ hasText: title });
-      await summary.waitFor();
-      expect(await summary.textContent()).toContain("The customer support team");
-      const failedSend = page.locator('.chat-send-status[data-send-state="failed"]');
-      const retry = failedSend.getByRole("button", { name: "Retry queued message" });
-      await retry.waitFor();
-      expect(await failedSend.getAttribute("title")).toBe("Synthetic send rejection");
-      const queued = await readOutboxQueue(page);
-      expect(queued).toHaveLength(1);
-      const queueId = queued[0]?.id;
-      expect(queueId).toBeTruthy();
-      await expectRequestCountStable(gateway, "chat.send", 1);
-      await gateway.deferNext("chat.send");
-      await retry.click();
-      const retried = await gateway.waitForRequest("chat.send", { after: 1 });
-      expect(requireRecord(retried.params).message).toBe(`> ${title}\n\nThe customer support team`);
-      const userMessages = page.locator(".chat-group.user .chat-bubble");
-      expect(await userMessages.count()).toBe(1);
-      expect((await readOutboxQueue(page)).map((item) => item.id)).toEqual([queueId]);
-      await gateway.resolveDeferred("chat.send");
-      await failedSend.waitFor({ state: "detached" });
-      expect(await userMessages.count()).toBe(1);
-      expect(await card.getByRole("button", { name: "Submit", exact: true }).count()).toBe(0);
-      await expectRequestCountStable(gateway, "chat.send", 2);
-    } finally {
-      await suite.closeBrowserContext(context);
-    }
-  });
+      const artifactDir = createControlUiE2eArtifactDir(`async-question-delivery-${confirmation}`);
+      try {
+        await page.goto(`${suite.server.baseUrl}chat`);
+        const card = page.locator(".agent-chat__question-dock openclaw-chat-question-panel");
+        const custom = card.getByRole("textbox", { name: `Your own answer for ${title}` });
+        await custom.fill("The customer support team");
+        await gateway.deferNext("chat.send");
+        await card.getByRole("button", { name: "Submit", exact: true }).click();
+        const original = await gateway.waitForRequest("chat.send");
+        expect(requireRecord(original.params)).toMatchObject({
+          message: `> ${title}\n\nThe customer support team`,
+          replyToId: "delivery-question",
+        });
+        const summary = page
+          .locator(".chat-thread .chat-question-summary")
+          .filter({ hasText: title });
+        await expectBrowser(summary).toContainText("Sending answer");
+        await page.screenshot({
+          path: path.join(artifactDir, "sending.png"),
+          animations: "disabled",
+        });
+        await gateway.resolveDeferred("chat.send", {
+          __mockError: { code: "UNAVAILABLE", message: "Synthetic send rejection" },
+        });
+        await card.waitFor({ state: "detached" });
+        expect(await card.getByRole("button", { name: "Submit", exact: true }).count()).toBe(0);
+        await summary.waitFor();
+        expect(await summary.textContent()).toContain("The customer support team");
+        const failedSend = page.locator('.chat-send-status[data-send-state="failed"]');
+        const retry = summary.getByRole("button", { name: "Retry answer", exact: true });
+        await retry.waitFor();
+        await expectBrowser(summary).toContainText("Answer not sent");
+        await expectBrowser(summary).toContainText("Synthetic send rejection");
+        await page.screenshot({
+          path: path.join(artifactDir, "failed.png"),
+          animations: "disabled",
+        });
+        expect(await failedSend.getAttribute("title")).toBe("Synthetic send rejection");
+        const queued = await readOutboxQueue(page);
+        expect(queued).toHaveLength(1);
+        expect(queued[0]?.asyncQuestionItemId).toBe("audience-question");
+        expect(queued[0]?.replyToId).toBe("delivery-question");
+        const queueId = queued[0]?.id;
+        expect(queueId).toBeTruthy();
+        await expectRequestCountStable(gateway, "chat.send", 1);
+        if (confirmation === "legacy") {
+          // Seed the pre-change row after leaving the app, so no live writer
+          // races the old producer. Every other payload/target field is retained.
+          await page.route("**/delivery-legacy-seed", (route) =>
+            route.fulfill({ contentType: "text/html", body: "Synthetic legacy delivery seed" }),
+          );
+          await page.goto(`${suite.server.baseUrl}delivery-legacy-seed`);
+          await page.evaluate(() => {
+            for (const key of Object.keys(sessionStorage)) {
+              if (!key.startsWith("openclaw.control.chatComposer.v4:")) {
+                continue;
+              }
+              const stored = JSON.parse(sessionStorage.getItem(key)!) as {
+                sessions: Record<string, { queue?: Array<{ asyncQuestionItemId?: string }> }>;
+              };
+              for (const session of Object.values(stored.sessions)) {
+                for (const item of session.queue ?? []) {
+                  delete item.asyncQuestionItemId;
+                }
+              }
+              sessionStorage.setItem(key, JSON.stringify(stored));
+            }
+          });
+          await page.goto(`${suite.server.baseUrl}chat`);
+          await failedSend.waitFor();
+          expect((await readOutboxQueue(page))[0]?.asyncQuestionItemId).toBeUndefined();
+        } else {
+          await page.reload();
+          await expectBrowser(summary).toContainText("Answer not sent");
+          await expectBrowser(card).toHaveCount(0);
+        }
+        expect((await readOutboxQueue(page)).map((item) => item.id)).toEqual([queueId]);
+        await expectRequestCountStable(gateway, "chat.send", 0);
+        if (confirmation === "discard") {
+          await failedSend.getByRole("button", { name: "Discard", exact: true }).click();
+          await expectBrowser(card).toBeVisible();
+          await expectBrowser(card.locator(".chat-question-panel__other")).toHaveValue(
+            "The customer support team",
+          );
+          expect(await readOutboxQueue(page)).toEqual([]);
+          await expectBrowser(summary).not.toContainText("Awaiting delivery confirmation");
+          await expectRequestCountStable(gateway, "chat.send", 0);
+          return;
+        }
+        await gateway.deferNext("chat.send");
+        await (
+          confirmation === "legacy"
+            ? failedSend.getByRole("button", { name: "Retry queued message", exact: true })
+            : retry
+        ).click();
+        const retried = await gateway.waitForRequest("chat.send");
+        expect(requireRecord(retried.params)).toMatchObject({
+          message: requireRecord(original.params).message,
+          replyToId: requireRecord(original.params).replyToId,
+        });
+        const userMessages = page.locator(".chat-group.user .chat-bubble");
+        expect(await userMessages.count()).toBe(1);
+        expect((await readOutboxQueue(page)).map((item) => item.id)).toEqual([queueId]);
+        if (confirmation === "legacy") {
+          // Old persisted rows have no question association. Their existing
+          // outbox status owns retry until canonical saved history resolves it.
+          await expectBrowser(failedSend).toHaveCount(0);
+          await expectBrowser(summary).toContainText("Answer above the message box");
+          expect((await readOutboxQueue(page))[0]?.asyncQuestionItemId).toBeUndefined();
+        } else {
+          await expectBrowser(summary).toContainText("Sending answer");
+        }
+        await page.screenshot({
+          path: path.join(artifactDir, "retrying.png"),
+          animations: "disabled",
+        });
+        await gateway.resolveDeferred("chat.send");
+        if (confirmation !== "legacy") {
+          await expectBrowser(summary).toContainText("Awaiting delivery confirmation");
+          await expectBrowser(card).toHaveCount(0);
+        }
+        if (confirmation === "reload") {
+          // A durable row retires on messageSeq only after the Gateway commits
+          // canonical source. A missed live receipt must be recovered by startup,
+          // with no pane-local submitted marker and no new answer submission.
+          expect(await readOutboxQueue(page)).toEqual([]);
+          await page.reload();
+          await expectBrowser(summary).toContainText("Answer sent");
+          await expectBrowser(summary).toContainText("The customer support team");
+          await expectBrowser(card).toHaveCount(0);
+          expect(await userMessages.count()).toBe(1);
+          expect(await readOutboxQueue(page)).toEqual([]);
+          await expectRequestCountStable(gateway, "chat.send", 0);
+          await page.screenshot({
+            path: path.join(artifactDir, "sent-after-reload.png"),
+            animations: "disabled",
+          });
+          return;
+        }
+        const runId = String(requireRecord(retried.params).idempotencyKey);
+        // The plain-text mock ACK commits canonical source but does not emit its
+        // receipt. Deliver that separate Gateway event after proving the ACK gap.
+        const savedAnswer = {
+          role: "user",
+          content: requireRecord(retried.params).message,
+          idempotencyKey: `${runId}:user`,
+          __openclaw: { id: `mock-user:${runId}`, seq: 2, replyToId: "delivery-question" },
+        };
+        const { __openclaw: savedAnswerIdentity } = savedAnswer;
+        await gateway.emitGatewayEvent("session.message", {
+          sessionKey: "agent:main:main",
+          clientRunId: runId,
+          messageId: savedAnswerIdentity.id,
+          messageSeq: savedAnswerIdentity.seq,
+          message: savedAnswer,
+        });
+        await expectBrowser(summary).toContainText("Answer sent");
+        await page.screenshot({ path: path.join(artifactDir, "sent.png"), animations: "disabled" });
+        await failedSend.waitFor({ state: "detached" });
+        expect(await userMessages.count()).toBe(1);
+        expect(await card.getByRole("button", { name: "Submit", exact: true }).count()).toBe(0);
+        await expectRequestCountStable(gateway, "chat.send", 1);
+      } finally {
+        await suite.closeBrowserContext(context);
+      }
+    },
+  );
 
   it("does not resurrect a saved async answer after reload or remount", async () => {
     const context = await suite.newBrowserContext(createControlUiE2eContextOptions());
