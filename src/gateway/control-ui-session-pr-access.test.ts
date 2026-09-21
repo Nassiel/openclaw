@@ -657,7 +657,7 @@ it.each(["concurrency limit", "earlier refresh", "publication"] as const)(
             : Promise.resolve();
         const source = loadGatewaySessionEntryReadOnly(keys[0]!, { agentId: "main" }).readSource;
         expect(source).toBeDefined();
-        let retirement: Promise<void> | undefined;
+        let retirement: ReturnType<typeof closeOpenClawAgentDatabaseByPathAsync> | undefined;
         const peer = waitingOn === "publication" ? f.addReader("publication-peer") : undefined;
         if (peer) {
           await f.subscribe(keys, peer.client);
