@@ -29,6 +29,21 @@ export function roleScopesAllow(params: {
   return resolveMissingRequestedScope(params) === null;
 }
 
+/** Keeps only permissions shared by both ceilings, including implied operator scopes. */
+export function intersectOperatorScopes(
+  scopes: readonly string[],
+  ceiling: readonly string[],
+): string[] {
+  if (roleScopesAllow({ role: "operator", requestedScopes: scopes, allowedScopes: ceiling })) {
+    return [...scopes];
+  }
+  return [...new Set([...scopes, ...ceiling])].filter(
+    (scope) =>
+      roleScopesAllow({ role: "operator", requestedScopes: [scope], allowedScopes: scopes }) &&
+      roleScopesAllow({ role: "operator", requestedScopes: [scope], allowedScopes: ceiling }),
+  );
+}
+
 /** Returns the original first requested scope not covered by the role's allowed scopes. */
 export function resolveMissingRequestedScope(params: {
   role: string;

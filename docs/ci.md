@@ -13,7 +13,7 @@ job. Open the page that matches your task.
 
 For the published-upgrade regression gate, see [selection and routing](/ci/scope-and-routing#scope-and-routing), [runner budgets](/ci/capacity#runner-registration-budget), and [Package Acceptance baselines](/ci/release-validation#suite-profiles). Weekly validation is listed under [Update Migration](/ci/scheduled-workflows#update-migration).
 
-Docs-only `main` pushes skip CI. Docker seed and QA Smoke use the same owner-path selection on pull requests and `main`; manual CI and Full Release Validation retain their coverage. Control UI performance uses its own UI/build/import scope. See [scope selection](/ci/scope-and-routing/selection) for the coverage trade-off.
+Docs-only `main` pushes skip CI and cache warming. The cache warmer publishes dependencies independently of long builds and maintains a bounded hosted seed in hybrid mode. Docker seed and QA Smoke use the same owner-path selection on pull requests and `main`; manual CI and Full Release Validation retain their coverage. Control UI performance uses its own UI/build/import scope. See [scope selection](/ci/scope-and-routing/selection) for the coverage trade-off.
 
 Core-test-only PRs use targeted type checks only when every selected test exists in the checkout. Deleting a core test keeps the full type-check plan, including the existing core stripes on GitHub and hybrid profiles.
 
@@ -48,6 +48,9 @@ Roomy serial Blacksmith Node jobs use [measured Vitest worker sizing](/ci/capaci
 Source-only Linux Node shards can reuse content-validated compiled workers from the protected warmer; [fixed preparation costs](/ci/capacity#fixed-job-preparation) remain separate from test execution and runner capacity.
 
 Vitest transform-cache fingerprints exclude the generated `.ci-harness` checkout so CI consumers and the protected warmer hash the same source inputs. Node bytecode caching remains enabled for ordinary Vitest runs; Vitest owns the worker-level coverage safeguard described in [local testing](/reference/test/local#core-commands).
+
+Linux PR tests use Bun for the measured compatible lanes. Full Release Validation
+keeps their Node coverage and runs them on Bun too; see [test runtime selection](/ci/pipeline#test-runtime-selection).
 
 The complete [startup corpus](/ci/pipeline) uses eight state test files so existing workers can share its release/config matrix. Its explicit fallback prepares the runtime once and uses four workers; historical frozen targets retain their legacy process layout.
 

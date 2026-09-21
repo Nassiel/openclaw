@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { convertAnthropicMessagesToResponsesInput } from "./mock-anthropic-wire.js";
+import type { AnthropicMessage } from "./mock-openai-contracts.js";
+import { unwrapScenarioCatalogOutput } from "./mock-openai-tool-routing.js";
 import {
   createMockServerTestHarness,
   expectOpenAiNonStreamingResponsesJson,
@@ -9,6 +12,7 @@ import {
   outputItems,
   outputText,
   outputToolArgs,
+  postJson,
 } from "./server.test-harness.js";
 
 const shellExec = {
@@ -166,6 +170,62 @@ describe("mock scenario tool routing", () => {
         ),
       );
       expect(outputText(await request())).toBe("Failed to delegate: Child admission denied");
+    },
+  );
+
+  it.each([true, false])(
+    "honors protocol failure %s over accepted catalog details",
+    async (isError) => {
+      const server = await startMockServer();
+      const messages: AnthropicMessage[] = [
+        {
+          role: "user",
+          content: "Delegate one bounded QA task to a subagent. Wait for the subagent to finish.",
+        },
+      ];
+      const request = async () => {
+        const response = await postJson(server, "/v1/messages", {
+          model: "qa-model",
+          max_tokens: 128,
+          stream: false,
+          tools: [toolCall, { name: "sessions_yield" }].map((tool) => ({
+            name: tool.name,
+            input_schema: { type: "object" },
+          })),
+          messages,
+        });
+        expect(response.status).toBe(200);
+        return response.json();
+      };
+      const call = (await request()).content[0];
+      expect(call).toMatchObject({ type: "tool_use", name: "tool_call" });
+      messages.push(
+        { role: "assistant", content: [call] },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: call.id,
+              is_error: isError,
+              content: catalogResult("sessions_spawn", {
+                status: "accepted",
+                runId: "child-run",
+                childSessionKey: "agent:qa:subagent:protocol-receipt",
+              }),
+            },
+          ],
+        },
+      );
+      expect((await request()).content).toEqual([
+        isError
+          ? { type: "text", text: "Failed to delegate: spawn failed" }
+          : expect.objectContaining({ type: "tool_use", name: "sessions_yield" }),
+      ]);
+      const normalized = JSON.parse(
+        unwrapScenarioCatalogOutput(convertAnthropicMessagesToResponsesInput({ messages })),
+      );
+      expect(normalized.status).toBe(isError ? "error" : "accepted");
     },
   );
 

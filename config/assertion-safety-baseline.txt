@@ -1042,7 +1042,6 @@ extensions/signal/src/approval-reactions.ts	1
 extensions/signal/src/channel.ts	2
 extensions/signal/src/client-container.ts	34
 extensions/signal/src/client.ts	4
-extensions/signal/src/install-signal-cli.ts	2
 extensions/signal/src/monitor/event-handler.ts	1
 extensions/signal/src/probe.ts	1
 extensions/signal/src/send.ts	1
@@ -3755,6 +3754,6 @@ ui/src/pages/skill-workshop/view.ts	1
 ui/src/pages/skills/view.ts	2
 ui/src/pages/usage/heatmap.ts	1
 ui/src/pages/usage/view-details.ts	6
-ui/src/pages/usage/view-overview.ts	3
+ui/src/pages/usage/view-overview.ts	2
 ui/src/pages/usage/view.ts	5
 ui/src/pages/worktrees/worktrees-page.ts	3

@@ -259,7 +259,7 @@ export function createMainRefreshFixture(
       | "wrong-workflow"
       | "scheduled-failure"
       | "api-error",
-    requiredChecks: "pass" as "pass" | "fail" | "pending" | "api-error",
+    requiredChecks: "pass" as "pass" | "fail" | "pending" | "api-error" | "missing-gate",
     reviewComments: [
       {
         id: 1,
@@ -417,6 +417,12 @@ if (args[0] === 'pr' && args[1] === 'view') {
   if (!args.includes('--match-head-commit') || !args.includes(control.metadata.headRefOid)) {
     throw new Error('Unpinned synthetic merge');
   }
+  if (args.includes('--auto')) {
+    control.metadata.autoMergeRequest = { mergeMethod: 'SQUASH' };
+    writeFileSync(controlFile, JSON.stringify(control));
+    console.log('{}');
+    process.exit(0);
+  }
   const parent = runGit(['-C', origin, 'rev-parse', 'refs/heads/main']);
   const tree = runGit(['-C', origin, 'merge-tree', '--write-tree', parent, control.metadata.headRefOid]);
   const bodyIndex = args.indexOf('--body-file');
@@ -438,9 +444,14 @@ if (args[0] === 'pr' && args[1] === 'view') {
     process.exit(1);
   }
   value = [{ name: 'openclaw/ci-gate', bucket: 'pass', state: 'SUCCESS' }];
-  if (control.requiredChecks !== 'pass') value.push({
+  if (control.requiredChecks === 'missing-gate') value = [];
+  if (control.requiredChecks === 'pending') {
+    value[0] = { name: 'openclaw/ci-gate', bucket: 'pending', state: 'IN_PROGRESS' };
+    process.exitCode = 8;
+  }
+  if (control.requiredChecks === 'fail') value.push({
     name: 'independent required check', bucket: control.requiredChecks,
-    state: control.requiredChecks === 'pending' ? 'IN_PROGRESS' : 'FAILURE',
+    state: 'FAILURE',
   });
 } else if (args[0] === 'repo' && args[1] === 'view') {
   value = { id: 'fixture-repo', nameWithOwner: 'fixture/repo', url: 'https://github.com/fixture/repo' };

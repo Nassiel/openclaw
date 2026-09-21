@@ -935,6 +935,9 @@ suite.define(() => {
           picker.locator('[data-chat-model-option="anthropic/claude-sonnet-4-6"]'),
         );
         const search = picker.locator("[data-chat-model-search]");
+        // Enter search with the pointer so row tooltips do not own Escape.
+        await search.click();
+        await expect.poll(() => page.locator("openclaw-tooltip[open]").count()).toBe(0);
         await search.fill("anthropic");
         await expect.poll(() => picker.locator("[data-chat-model-option]:visible").count()).toBe(1);
         if (artifactDir) {

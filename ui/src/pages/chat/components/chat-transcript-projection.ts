@@ -634,6 +634,7 @@ export function projectChatTranscript(
     Boolean(props.waitingApproval),
     props.questionPrompts,
     state.asyncQuestionRevision,
+    props.asyncQuestions?.historyKey,
     Boolean(props.autoExpandToolCalls),
     props.assistantName,
     assistantIdentity.avatar,
