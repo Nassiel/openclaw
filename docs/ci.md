@@ -39,9 +39,15 @@ In-process Gateway test configs use [exclusive plan admission within existing pa
 
 Changed-extension PR jobs use [measured fallback rates and a 240-second packing budget](/ci/capacity#runner-registration-budget) within the landed 90-row compact, 130-row PR and 70-row push caps.
 
+Compact planning reserves the actual appended plugin rows before applying those
+Node matrix caps, allowing existing hosted tooling compaction to use the
+remaining capacity.
+
 Roomy serial Blacksmith Node jobs use [measured Vitest worker sizing](/ci/capacity#vitest-worker-sizing), with existing hosted, frozen-target, and overlapping-plan limits.
 
 Source-only Linux Node shards can reuse content-validated compiled workers from the protected warmer; [fixed preparation costs](/ci/capacity#fixed-job-preparation) remain separate from test execution and runner capacity.
+
+Vitest transform-cache fingerprints exclude the generated `.ci-harness` checkout so CI consumers and the protected warmer hash the same source inputs. Node bytecode caching remains enabled for ordinary Vitest runs; Vitest owns the worker-level coverage safeguard described in [local testing](/reference/test/local#core-commands).
 
 The complete [startup corpus](/ci/pipeline) uses eight state test files so existing workers can share its release/config matrix. Its explicit fallback prepares the runtime once and uses four workers; historical frozen targets retain their legacy process layout.
 

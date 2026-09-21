@@ -665,6 +665,7 @@ function runCiManifestFixture(options: {
             includePatterns: options.changedPaths,
             env: {
               OPENCLAW_CI_TEST_COMPACT_MODE: options.compactMode ?? "full",
+              OPENCLAW_CI_TEST_COMPACT_NODE_JOB_CAP: String(options.compactNodeJobCap ?? ""),
               OPENCLAW_CI_TEST_RUNNER_BACKEND: options.runnerBackend ?? "",
             },
             requiresDist: false,
@@ -8934,6 +8935,7 @@ server.listen(0, "127.0.0.1", () => {
                 "test/vitest/**",
                 "src/state/*.sql",
                 "!**/node_modules/**",
+                "!.ci-harness/**",
               ]);
               const prefix = `openclaw/openclaw-vitest-fs-v3-protected-${os}-X64-node-24.x-${generation}-`;
               expect(cacheInputs).toEqual({
@@ -8949,6 +8951,62 @@ server.listen(0, "127.0.0.1", () => {
           }
         }
       }
+    }
+  });
+
+  it("shares transform generations with the warmer after CI exports its harness", () => {
+    const action = parse(readFileSync(".github/actions/setup-node-env/action.yml", "utf8"));
+    const generationStep = (action.runs.steps as WorkflowStep[]).find(
+      (step) => step.name === "Resolve Vitest transform cache generation",
+    );
+    const expression = expectDefined(
+      generationStep?.run?.match(/\$\{\{(.*?)\}\}/u)?.[1],
+      "transform generation expression",
+    );
+    const sourceFiles = {
+      "pnpm-lock.yaml": "lockfileVersion: '9.0'",
+      "pnpm-workspace.yaml": "packages: ['packages/*']",
+      "package.json": '{"name":"fixture"}',
+      "packages/worker/package.json": '{"name":"worker"}',
+      "packages/worker/tsconfig.json": "{}",
+      "vitest.config.ts": "export default {}",
+      "test/vitest/shared.ts": "export const shared = {}",
+      "src/state/schema.sql": "CREATE TABLE fixture (id TEXT);",
+      ".github/actions/setup-security-review/package.json": '{"name":"review"}',
+      ".ci-harness-source/package.json": '{"name":"real-source"}',
+    };
+    const files: Record<string, string> = { ...sourceFiles };
+    const fingerprint = () =>
+      runInNewContext(expression, {
+        hashFiles: (...patterns: string[]) => {
+          const includes = patterns.filter((pattern) => !pattern.startsWith("!"));
+          const excludes = patterns
+            .filter((pattern) => pattern.startsWith("!"))
+            .map((pattern) => pattern.slice(1));
+          const hash = createHash("sha256");
+          for (const [file, contents] of Object.entries(files).toSorted(([left], [right]) =>
+            left.localeCompare(right),
+          )) {
+            if (
+              includes.some((pattern) => minimatch(file, pattern, { dot: true })) &&
+              !excludes.some((pattern) => minimatch(file, pattern, { dot: true }))
+            ) {
+              hash.update(createHash("sha256").update(contents).digest());
+            }
+          }
+          return hash.digest("hex");
+        },
+      });
+    const warmer = fingerprint();
+    files[".ci-harness/.github/actions/setup-security-review/package.json"] =
+      sourceFiles[".github/actions/setup-security-review/package.json"];
+    files[".ci-harness/tsconfig.json"] = "{}";
+    files["node_modules/dependency/package.json"] = '{"name":"dependency"}';
+    expect(fingerprint()).toBe(warmer);
+    for (const [file, contents] of Object.entries(sourceFiles)) {
+      files[file] = `${contents}\n`;
+      expect(fingerprint(), file).not.toBe(warmer);
+      files[file] = contents;
     }
   });
 
@@ -14318,6 +14376,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
         check_name: "bundled-node-plan",
         env: {
           OPENCLAW_CI_TEST_COMPACT_MODE: "full",
+          OPENCLAW_CI_TEST_COMPACT_NODE_JOB_CAP: "70",
           OPENCLAW_CI_TEST_RUNNER_BACKEND: "blacksmith",
         },
         shard_name: "bundled-node-plan",
@@ -14343,6 +14402,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
           check_name: "bundled-node-plan",
           env: {
             OPENCLAW_CI_TEST_COMPACT_MODE: "push",
+            OPENCLAW_CI_TEST_COMPACT_NODE_JOB_CAP: "70",
             OPENCLAW_CI_TEST_RUNNER_BACKEND: runnerBackend ?? "blacksmith",
           },
         }),
@@ -14407,6 +14467,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
           check_name: "bundled-node-plan",
           env: {
             OPENCLAW_CI_TEST_COMPACT_MODE: "pull-request",
+            OPENCLAW_CI_TEST_COMPACT_NODE_JOB_CAP: "129",
             OPENCLAW_CI_TEST_RUNNER_BACKEND: "blacksmith",
           },
         }),

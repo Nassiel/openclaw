@@ -6,7 +6,7 @@ import { sha256File, sha256Hex } from "../infra/crypto-digest.js";
 import { ensureAbsoluteDirectory } from "../infra/fs-safe.js";
 import { executeSqliteQueryTakeFirstSync } from "../infra/kysely-sync.js";
 import { createSqliteWorkerWriteAdmission } from "../infra/sqlite-worker-store.js";
-import { iterateOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db-readonly.js";
+import { iterateOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db-read-connection.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -17,10 +17,7 @@ import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths
 import { withOpenClawStateLease } from "../state/openclaw-state-lease.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerOperations } from "../state/openclaw-state-worker-contract.js";
-import {
-  executeOpenClawStateWorker,
-  runOpenClawStateWorkerOperation,
-} from "../state/openclaw-state-worker-store.js";
+import { runOpenClawStateWorkerOperation } from "../state/openclaw-state-worker-store.js";
 import type {
   TranscriptSessionDescriptor,
   TranscriptSourceLocator,
@@ -38,6 +35,7 @@ import {
   transcriptSessionSelector,
   writeTranscriptArtifact,
 } from "./store-artifacts.js";
+import { prepareTranscriptDateReader } from "./store-date-preparation.js";
 import { TranscriptsSummaryChangedError } from "./store-errors.js";
 import { transcriptJsonlDigest, writeTranscriptJsonlArtifact } from "./store-export-jsonl.js";
 import {
@@ -107,7 +105,20 @@ export class TranscriptsStore {
     const context = captureOpenClawStateWorkerContext(this.databaseOptions);
     const input = structuredClone(request);
     input.readOnly = this.databaseOptions.readOnly;
-    const result = await executeOpenClawStateWorker<Key>(context, { type, input });
+    const preparation =
+      type === "transcripts.readEntries"
+        ? prepareTranscriptDateReader(
+            context.admission.assertCurrent,
+            context.admission.databasePath,
+          )
+        : undefined;
+    const result = await runOpenClawStateWorkerOperation(
+      context,
+      (scope) => scope.execute<Key>({ type, input }),
+      preparation,
+    );
+    context.admission.assertCurrent();
+    preparation?.assertCurrent();
     if (!result.ok) {
       throw new read.TranscriptLibraryError(
         result.error.type,
@@ -341,7 +352,7 @@ export class TranscriptsStore {
   }
 
   async listReadEntries(options: read.TranscriptReadOptions) {
-    return read.queryTranscriptReadEntries(this.database().db, options);
+    return this.readWorker("transcripts.readEntries", { params: options });
   }
 
   async writeSession(

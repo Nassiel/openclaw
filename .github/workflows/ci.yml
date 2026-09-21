@@ -1692,6 +1692,7 @@ jobs:
             runNodeFull &&
             changedScopeHasQaImpact &&
             (!frozenTarget || existsSync("extensions/qa-lab/src/ci-smoke-plan.ts"));
+          const nodeMatrixLimit = compactPlanMode === "pull-request" ? 130 : 70;
           const rawNodeTestShards = runNodeFull
             ? changedNodeTestShards
               ? changedNodeTestShards
@@ -1703,6 +1704,7 @@ jobs:
                     // current planners use the event-specific mode.
                     compact: compactPlanMode !== undefined,
                     compactMode: compactPlanMode,
+                    compactNodeJobCap: nodeMatrixLimit - changedExtensionFallbackShards.filter((shard) => !shard.requiresDist).length,
                     runnerBackend: runnerProfile,
                   }),
                   ...changedExtensionFallbackShards,
@@ -1791,7 +1793,6 @@ jobs:
             });
           const nodeTestNonDistShards = nodeTestShards.filter((shard) => !shard.requires_dist);
           // Bound the final matrix: precise plans and appended plugin rows can bypass compact caps.
-          const nodeMatrixLimit = compactPlanMode === "pull-request" ? 130 : 70;
           if (compactPlanMode && nodeTestNonDistShards.length > nodeMatrixLimit) {
             throw new Error(
               `Canonical ${eventName} Node matrix has ${nodeTestNonDistShards.length} jobs, exceeding limit ${nodeMatrixLimit}`,

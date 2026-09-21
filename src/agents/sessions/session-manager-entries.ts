@@ -437,6 +437,7 @@ export class SessionManagerEntries extends SessionManagerPersistence {
     details?: unknown,
     fromHook?: boolean,
     metadata?: CompactionEntry["__openclaw"],
+    tokensAfter?: number,
   ): string {
     const entry: CompactionEntry = {
       type: "compaction",
@@ -446,6 +447,7 @@ export class SessionManagerEntries extends SessionManagerPersistence {
       summary,
       firstKeptEntryId,
       tokensBefore,
+      ...(tokensAfter !== undefined ? { tokensAfter } : {}),
       details,
       fromHook,
       ...(metadata?.runId || metadata?.itemId ? { __openclaw: metadata } : {}),

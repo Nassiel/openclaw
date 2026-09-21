@@ -226,7 +226,10 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
 - CI matrix caps: fast/check lanes at 12, Node test shards at 96, Windows at 2,
   and Android at 2. Every compact profile has an enforced 90-row budget, plugin
   fallback has a 50-row budget, and the final Node matrix enforces 70 push or
-  130 PR rows, including precise plans. Excess inventory fails preflight.
+  130 PR rows, including precise plans. Preflight reserves actual appended
+  plugin Node rows in compact admission so existing hosted tooling compaction
+  can meet that tighter budget; dist rows remain outside the Node budget and
+  inside the compact cap. Excess inventory fails preflight.
 - Windows keeps two disjoint file inventories and at most two concurrent jobs.
   Each job runs project processes serially with one Vitest worker on every
   backend, after runtime preparation completes. Native allocation can be smaller
