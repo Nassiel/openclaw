@@ -31,6 +31,7 @@ import {
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { removePreparedWorkerOwnershipColumns } from "../../state/openclaw-state-schema-v17.test-support.js";
 import type { UpdateCommandOptions } from "./shared.js";
+import { createConfigValidationFailure } from "./update-cli-config.test-support.js";
 import type { PostCorePluginUpdateResult } from "./update-command-plugins.js";
 
 const mocks = vi.hoisted(() => ({
@@ -447,14 +448,10 @@ describe("post-plugin update readiness", () => {
           await fs.writeFile(configPath, '{"gateway":{"mode":"invalid"}}');
         }
         if (args.includes("validate")) {
-          throw Object.assign(new Error("Config invalid"), {
-            failed: true,
-            exitCode: 1,
-            stdout: JSON.stringify({
-              valid: false,
-              issues: [{ path: "gateway.mode", message: "Invalid gateway mode" }],
-            }),
-          });
+          throw createConfigValidationFailure(
+            [{ path: "gateway.mode", message: "Invalid gateway mode" }],
+            "Config invalid",
+          );
         }
         return { stdout: "", stderr: "" };
       });

@@ -62,6 +62,8 @@ import type { TempHomeEnv } from "../test-utils/temp-home.js";
 import { VERSION } from "../version.js";
 import { createCliRuntimeCapture, getMockCallOutput } from "./test-runtime-capture.js";
 import {
+  createChangedPostCoreUpdateOptions,
+  createConfigValidationFailure,
   createUpdateCliConfigFixtures,
   pluginSyncResult,
   npmPluginUpdateResult,
@@ -1360,29 +1362,7 @@ describe("update-cli", () => {
 
   const completeChangedPostCorePluginUpdate = (
     overrides: Partial<Parameters<typeof completePostCorePluginUpdate>[0]> = {},
-  ) =>
-    completePostCorePluginUpdate({
-      root: "/tmp/openclaw-updated-root",
-      pluginUpdate: {
-        status: "ok",
-        changed: true,
-        warnings: [],
-        sync: {
-          changed: false,
-          switchedToBundled: [],
-          switchedToNpm: [],
-          warnings: [],
-          errors: [],
-        },
-        npm: { changed: true, outcomes: [] },
-        integrityDrifts: [],
-      },
-      freshDoctorRequired: true,
-      yes: true,
-      json: true,
-      timeoutMs: 30_000,
-      ...overrides,
-    });
+  ) => completePostCorePluginUpdate(createChangedPostCoreUpdateOptions(overrides));
 
   const setupNpmUpdatedRootRefresh = () => {
     const updatedRoot = createCaseDir("openclaw-updated-root");
@@ -3841,13 +3821,7 @@ describe("update-cli", () => {
     const issues = [{ path: "channels.signal.httpUrl", message: "legacy Signal transport field" }];
     vi.mocked(runExec)
       .mockRejectedValueOnce(new Error("doctor process failed"))
-      .mockRejectedValueOnce(
-        Object.assign(new Error("config invalid"), {
-          failed: true,
-          exitCode: 1,
-          stdout: JSON.stringify({ valid: false, issues }),
-        }),
-      );
+      .mockRejectedValueOnce(createConfigValidationFailure(issues));
     vi.mocked(readConfigFileSnapshot).mockResolvedValueOnce(
       configSnapshot(baseConfig, {
         valid: false,
@@ -10716,11 +10690,10 @@ describe("update-cli", () => {
     mockGitUpdateAfterMutation();
     vi.mocked(runExec).mockImplementation(async (_file, args) => {
       if (args[1] === "config" && args[2] === "validate") {
-        throw Object.assign(new Error("target plugin config invalid"), {
-          failed: true,
-          exitCode: 1,
-          stdout: JSON.stringify({ valid: false, issues: invalidPostUpdateSnapshot.issues }),
-        });
+        throw createConfigValidationFailure(
+          invalidPostUpdateSnapshot.issues,
+          "target plugin config invalid",
+        );
       }
       return { stdout: new Date(Date.now() - 1000).toString(), stderr: "" };
     });
