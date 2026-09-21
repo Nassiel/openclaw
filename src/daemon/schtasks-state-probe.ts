@@ -1,5 +1,6 @@
 /** Locale-independent Task Scheduler registration and runtime facts. */
 import { spawnSync } from "node:child_process";
+import { resolveIntegerOption } from "@openclaw/normalization-core/number-coercion";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { hasErrnoCode } from "../infra/errno.js";
 import { getWindowsPowerShellExePath } from "../infra/windows-install-roots.js";
@@ -20,8 +21,11 @@ export function probeScheduledTaskState(
   taskName: string,
   timeoutMs?: number,
 ): ScheduledTaskStateProbe {
-  const probeTimeoutMs =
-    timeoutMs !== undefined && Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 5_000;
+  if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs < 1)) {
+    return { status: "unknown", detail: "Scheduled Task inspection deadline expired." };
+  }
+  // spawnSync requires an integer; rounding up or using zero would extend the allowance.
+  const probeTimeoutMs = resolveIntegerOption(timeoutMs, 5_000);
   const encodedTaskName = Buffer.from(taskName, "utf8").toString("base64");
   const script = [
     "$ErrorActionPreference='Stop'",
