@@ -8,7 +8,7 @@ type NodeAvailabilityWait = (
   options: Parameters<typeof waitForNodeWorkerSupervisor>[2],
 ) => Promise<void>;
 
-/** Bind pre-handoff refresh admission to this Gateway's node registry and lifetime. */
+/** Bind pre-handoff admission to this Gateway's node registry and lifetime. */
 export function createWorkerRuntimeRefreshWaiter(params: {
   environments: WorkerEnvironmentService;
   isStopping: () => boolean;
@@ -16,7 +16,7 @@ export function createWorkerRuntimeRefreshWaiter(params: {
   let waitForNode: NodeAvailabilityWait | undefined;
   const wait: Parameters<
     typeof createWorkerSessionTurnPlacementProvider
-  >[0]["waitForRuntimeRefreshNode"] = async ({ placement, signal, assertCurrent }) => {
+  >[0]["waitForAdmissionNode"] = async ({ placement, signal, assertCurrent }) => {
     const environment = params.environments.get(placement.environmentId);
     if (!environment?.nodeDeviceId) {
       return;
@@ -40,7 +40,7 @@ export function createWorkerRuntimeRefreshWaiter(params: {
         current.attachedSessionIds.length !== 1 ||
         current.attachedSessionIds[0] !== placement.sessionId
       ) {
-        throw new Error("Worker runtime refresh lost its environment while waiting for reconnect");
+        throw new Error("Worker admission lost its environment while waiting for reconnect");
       }
     };
     assertWaitingCurrent();

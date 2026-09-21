@@ -19,7 +19,11 @@ import type {
 import { ActiveTurnClaimError } from "./placement-turn-claims.js";
 import { WorkerRuntimeRefreshPendingError } from "./provider-runtime-refresh.js";
 import type { WorkerSessionWorkspace } from "./session-workspace.js";
-import { WorkerRunnerCapacityError, WorkerRunnerUnavailableError } from "./tunnel-contract.js";
+import {
+  WorkerRunnerCapacityError,
+  WorkerRunnerUnavailableError,
+  WorkerTunnelOwnerDisconnectedError,
+} from "./tunnel-contract.js";
 import {
   claimWorkerTurn,
   executeLocalTurn,
@@ -52,7 +56,7 @@ type WorkerTurnLauncherOptions = {
     identity: ReturnType<typeof resolvePlacementIdentity>,
   ) => Promise<WorkerSessionWorkspace>;
   reconcileActivePlacement: (environmentId: string) => Promise<void>;
-  waitForRuntimeRefreshNode: (params: {
+  waitForAdmissionNode: (params: {
     placement: ActiveWorkerPlacement;
     signal: AbortSignal;
     assertCurrent: () => void;
@@ -187,7 +191,7 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
       };
       let placement: ActiveWorkerPlacement;
       let turnClaim: WorkerSessionTurnClaim;
-      let recoveredStaleBuild = false;
+      let recoveredAdmission = false;
       let admissionReported = false;
       let userMessagePersisted = inputTurn.suppressNextUserMessagePersistence === true;
       for (;;) {
@@ -407,17 +411,22 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
             assertRunCurrent: remoteExec ? assertRunCurrent : assertAdmissionCurrent,
           });
         } catch (error) {
+          const disconnectedBeforeHandoff =
+            !handedOff &&
+            (error instanceof WorkerTunnelOwnerDisconnectedError ||
+              error instanceof WorkerRunnerUnavailableError);
           if (
             error instanceof StaleWorkerBuildError ||
-            error instanceof WorkerRuntimeRefreshPendingError
+            error instanceof WorkerRuntimeRefreshPendingError ||
+            disconnectedBeforeHandoff
           ) {
-            const canRecoverBuild =
+            const canRecoverAdmission =
               !handedOff &&
               options.placements.validateTurnClaim(turnClaim) &&
               !options.placements
                 .listPendingWorkspaceResults(placement.sessionId)
                 .some((pending) => pending.sessionId === placement.sessionId);
-            if (canRecoverBuild) {
+            if (canRecoverAdmission) {
               // This claim never launched work. Release it so runtime refresh does not
               // mistake admission for an executing turn that must finish first.
               try {
@@ -430,7 +439,7 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
               turn.abortSignal?.throwIfAborted();
               // Reconciliation may supersede the placement captured by initial setup.
               assertInitialSetupCurrent = undefined;
-              if (!recoveredStaleBuild) {
+              if (!recoveredAdmission) {
                 const waitTimeoutMs = Math.min(WORKER_ADMISSION_DEADLINE_MS, turn.timeoutMs);
                 if (waitTimeoutMs <= 0) {
                   throw new WorkerRunnerUnavailableError();
@@ -451,7 +460,7 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
                     sessionKey: identity.sessionKey,
                     agentId: identity.agentId,
                   });
-                  await options.waitForRuntimeRefreshNode({
+                  await options.waitForAdmissionNode({
                     placement,
                     signal: reconnectSignal,
                     assertCurrent: () => {
@@ -468,7 +477,7 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
                           0
                       ) {
                         throw new Error(
-                          "Worker placement changed while waiting for runtime refresh",
+                          "Worker placement changed while waiting for node admission",
                           { cause: error },
                         );
                       }
@@ -479,9 +488,11 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
                 }
               }
             }
-            await options.reconcileActivePlacement(placement.environmentId);
+            if (!disconnectedBeforeHandoff) {
+              await options.reconcileActivePlacement(placement.environmentId);
+            }
             const reconciled = options.placements.get(placement.sessionId);
-            if (canRecoverBuild) {
+            if (canRecoverAdmission) {
               assertAdmissionCurrent();
               turn.abortSignal?.throwIfAborted();
             }
@@ -489,7 +500,8 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
               reconciled?.state === "active" &&
               matchesWorkerPlacementTarget(reconciled, placement) &&
               reconciled.turnClaim === null &&
-              reconciled.workerBundleHash !== placement.workerBundleHash &&
+              (disconnectedBeforeHandoff ||
+                reconciled.workerBundleHash !== placement.workerBundleHash) &&
               reconciled.remoteWorkspaceDir === placement.remoteWorkspaceDir;
             const reclaimedSameOwner =
               reconciled?.state === "reclaimed" &&
@@ -497,19 +509,19 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
               reconciled.activeOwnerEpoch === placement.activeOwnerEpoch &&
               reconciled.generation === placement.generation + 3;
             if (
-              canRecoverBuild &&
-              !recoveredStaleBuild &&
+              canRecoverAdmission &&
+              !recoveredAdmission &&
               (refreshedInPlace || reclaimedSameOwner) &&
               reconciled.executionMode === placement.executionMode &&
               reconciled.agentId === identity.agentId &&
               reconciled.sessionKey === identity.sessionKey
             ) {
               assertAdmissionCurrent();
-              recoveredStaleBuild = true;
+              recoveredAdmission = true;
               routablePlacement = reconciled;
               continue;
             }
-            if (canRecoverBuild && reconciled?.state === "reclaimed") {
+            if (canRecoverAdmission && reconciled?.state === "reclaimed") {
               throw error;
             }
             if (reconciled) {
