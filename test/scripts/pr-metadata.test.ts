@@ -1213,7 +1213,14 @@ describe("PR metadata through REST", () => {
         additions: 0,
         deletions: 0,
       };
-      const response = (pullRequest: unknown) => graphqlResponse({ pullRequest });
+      const response = (pullRequest: unknown) =>
+        graphqlResponse({
+          id: "R_base",
+          databaseId: 1,
+          nameWithOwner: "base-owner/base-repo",
+          url: "https://github.com/base-owner/base-repo",
+          pullRequest,
+        });
       const emptyPage = { totalCount: 0, nodes: [], pageInfo: { hasNextPage: false } };
       const result = readPrMetadata({
         cacheUntilRevalidated: true,

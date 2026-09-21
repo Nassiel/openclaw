@@ -372,15 +372,24 @@ elif common_git_dir=$(pr_git -C "$script_parent_dir" rev-parse --path-format=abs
         # already exited for any staged or unstaged edit to these paths, so
         # the working tree matches HEAD and this list matches what was rejected.
         differing_wrapper_components=()
-        for wrapper_component in "${pr_wrapper_components[@]}"; do
-          linked_component_revision=$(pr_git -C "$script_parent_dir" rev-parse "HEAD:$wrapper_component" 2>/dev/null || true)
-          anchor_component_revision=$(pr_git -C "$script_parent_dir" rev-parse "refs/remotes/origin/main:$wrapper_component" 2>/dev/null || true)
-          if [ -z "$linked_component_revision" ] ||
-            [ -z "$anchor_component_revision" ] ||
-            [ "$linked_component_revision" != "$anchor_component_revision" ]; then
-            differing_wrapper_components+=("$wrapper_component")
-          fi
-        done
+        anchor_ref_status=0
+        if [ -z "$anchor_commit" ]; then
+          pr_git -C "$script_parent_dir" show-ref --verify --quiet refs/remotes/origin/main 2>/dev/null || anchor_ref_status=$?
+        fi
+        if [ "$anchor_ref_status" -eq 1 ]; then
+          # An absent anchor differs at every path; avoid two Git processes per component.
+          differing_wrapper_components=("${pr_wrapper_components[@]}")
+        else
+          for wrapper_component in "${pr_wrapper_components[@]}"; do
+            linked_component_revision=$(pr_git -C "$script_parent_dir" rev-parse "HEAD:$wrapper_component" 2>/dev/null || true)
+            anchor_component_revision=$(pr_git -C "$script_parent_dir" rev-parse "refs/remotes/origin/main:$wrapper_component" 2>/dev/null || true)
+            if [ -z "$linked_component_revision" ] ||
+              [ -z "$anchor_component_revision" ] ||
+              [ "$linked_component_revision" != "$anchor_component_revision" ]; then
+              differing_wrapper_components+=("$wrapper_component")
+            fi
+          done
+        fi
         if [ "$linked_matches_anchor" = "1" ]; then
           echo "scripts/pr wrapper matches origin/main, but its linked checkout has no node_modules directory." >&2
         else

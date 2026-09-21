@@ -2458,7 +2458,8 @@ describePosix("scripts/pr per-PR operation lock", () => {
       const ownerOid = refOid(repoDir);
       expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(1);
       expect(await waitForProcessId(backgroundPidFile)).toBeGreaterThan(1);
-      expect(processGroupExists(operationPgid)).toBe(false);
+      assertFixtureProcessGroupStopped(operationPgid);
+      goneProcessGroups.add(operationPgid);
       expect(refOid(repoDir)).toBe(ownerOid);
       expect(result.stderr).toContain(
         `scripts/pr lock-recover 42 ${ownerOid} --confirmed-no-running-tools`,
@@ -2482,7 +2483,8 @@ describePosix("scripts/pr per-PR operation lock", () => {
       operationPgid = await waitForProcessId(operationPgidFile);
       const ownerOid = refOid(repoDir);
       expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(1);
-      expect(processGroupExists(operationPgid)).toBe(false);
+      assertFixtureProcessGroupStopped(operationPgid);
+      goneProcessGroups.add(operationPgid);
       expect(result.stderr).toContain("process group remained active after wrapper exit");
       expect(result.stderr).toContain(`surviving processes in group ${operationPgid}`);
       expect(result.stderr).toMatch(/^\s+\d+ \d+ sleep$/mu);

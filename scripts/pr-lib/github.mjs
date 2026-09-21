@@ -681,15 +681,16 @@ function readPr(repo, pr, fields, route, options = {}) {
       const variables = { ...repositoryVariables(repo), number: Number(pr) };
       // A top-level pr view can be projected back to REST by a relay. An explicit
       // GraphQL request both selects the independent quota and carries freshness.
-      const repository = scalarFields.length || needsBaseRepository
-        ? graphql(
-            repo,
-            `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){${needsBaseRepository ? "id databaseId nameWithOwner url " : ""}pullRequest(number:$number){${selection || "id"}}}}`,
-            variables,
-            route,
-            freshOptions,
-          ).repository
-        : null;
+      const repository =
+        scalarFields.length || needsBaseRepository
+          ? graphql(
+              repo,
+              `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){${needsBaseRepository ? "id databaseId nameWithOwner url " : ""}pullRequest(number:$number){${selection || "id"}}}}`,
+              variables,
+              route,
+              freshOptions,
+            ).repository
+          : null;
       const result = scalarFields.length || needsBaseRepository ? repository?.pullRequest : {};
       if (!result || typeof result !== "object" || Array.isArray(result)) {
         throw invalidMetadata("GitHub did not return one PR JSON object.");

@@ -176,7 +176,7 @@ describePosix("native merge with exhausted GraphQL quota", () => {
     f.save({
       ...f.state(),
       quotaAt: "observe",
-      quotaAfterObservations: 2,
+      quotaAfterObservations: 1,
       restReadFailure: "core",
       restReadFailuresRemaining: 1,
     });
@@ -185,7 +185,7 @@ describePosix("native merge with exhausted GraphQL quota", () => {
 
     expect(run.status, run.output).toBe(0);
     expect(f.record()).toMatchObject({ phase: "complete", transport: "rest", head: f.head });
-    expect(f.state().observationReads).toBe(2);
+    expect(f.state().observationReads).toBe(1);
     expect(f.state().mergeBody).toBe(`Fixture body\n\n${credit}\n`);
     expect(f.state().restMergePayload).toMatchObject({ sha: f.head, merge_method: "squash" });
     expect(f.state().mutations).toBe(1);
@@ -217,10 +217,11 @@ describePosix("native merge with exhausted GraphQL quota", () => {
     "rejects %s routing when GraphQL depletes only during final stability verification",
     (route) => {
       const f = restFixture();
+      const observationsBeforeFinal = route === "auto" ? 1 : 2;
       f.save({
         ...f.state(),
         quotaAt: "observe",
-        quotaAfterObservations: 2,
+        quotaAfterObservations: observationsBeforeFinal,
         admin: route === "admin",
         gates: route === "admin" ? "fail" : "pass",
         restObservation: { gates: "pass" },
@@ -240,7 +241,7 @@ describePosix("native merge with exhausted GraphQL quota", () => {
       );
 
       expect(run.status, run.output).toBe(1);
-      expect(f.state().observationReads).toBe(2);
+      expect(f.state().observationReads).toBe(observationsBeforeFinal);
       expect(f.state().mutations).toBe(0);
       expect(() => f.record()).toThrow();
     },
