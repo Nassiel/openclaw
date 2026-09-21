@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { openMeetingWithBrowser, recoverMeetingBrowserTab } from "./browser-controller.js";
 import { isMeetingBrowserTransientNavigationError } from "./browser-navigation-errors.js";
 
@@ -105,11 +105,16 @@ describe("meeting browser join readiness", () => {
 });
 
 describe("meeting browser recovery", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("retries status inspection when auto-join navigation destroys the page context", async () => {
+    vi.useFakeTimers();
     const adoptionAttempts: boolean[] = [];
     let evaluationAttempts = 0;
     const evaluationTimeouts: number[] = [];
-    const result = await recoverMeetingBrowserTab({
+    const pending = recoverMeetingBrowserTab({
       adapter: {
         browserLabel: "Test meeting",
         urls: {
@@ -177,6 +182,9 @@ describe("meeting browser recovery", () => {
       trackedMeetingUrl: "https://meet.test/meeting",
       trackedTargetId: "target-1",
     });
+
+    await vi.advanceTimersByTimeAsync(250);
+    const result = await pending;
 
     expect(evaluationAttempts).toBe(2);
     expect(adoptionAttempts).toEqual([true, false]);

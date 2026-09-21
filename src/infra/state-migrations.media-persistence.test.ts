@@ -523,9 +523,12 @@ describe("legacy media persistence doctor migration", () => {
           throw new Error("Same-schema media cleanup must not require versioned backup coverage");
         });
       }
-      const result = await scope
-        .run(() => migrateLegacyMediaPersistence({ env }))
-        .finally(() => scope.close());
+      let result: Awaited<ReturnType<typeof migrateLegacyMediaPersistence>>;
+      try {
+        result = await scope.run(() => migrateLegacyMediaPersistence({ env }));
+      } finally {
+        await scope.close();
+      }
       expect(result).toEqual({
         changes: [
           ...(schemaVersion < OPENCLAW_AGENT_SCHEMA_VERSION
