@@ -143,6 +143,7 @@ export async function resolveCronEditPayloadDeliveryPatch(
     }
     if (
       existingKind === "systemEvent" ||
+      existingKind === "proactiveCheckIn" ||
       isSystemOwnedCronPayloadKind(existingKind) ||
       isSystemMonitorDeclaration(existingJob.declarationKey)
     ) {

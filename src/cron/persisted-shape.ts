@@ -6,7 +6,50 @@ import {
 import { asRecord } from "@openclaw/normalization-core/record-coerce";
 import { compileSafeRegex } from "../security/safe-regex.js";
 import { parseAbsoluteTimeMs } from "./parse.js";
-import { isSystemOwnedCronPayloadKind, type CronJobState } from "./types.js";
+import {
+  isSystemOwnedCronPayloadKind,
+  type CronJobState,
+  type CronProactiveResolutionState,
+} from "./types.js";
+
+const CRON_PROACTIVE_RESOLUTION_STATES: readonly CronProactiveResolutionState[] = [
+  "pending",
+  "resolved",
+  "abandoned",
+];
+
+function isProactiveResolutionState(value: unknown): value is CronProactiveResolutionState {
+  return (
+    typeof value === "string" &&
+    (CRON_PROACTIVE_RESOLUTION_STATES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Validates the optional live proactive-check-in state block. Returns true when
+ * the block is absent (legacy rows before migration) or structurally sound.
+ * Quarantines a present-but-malformed block with the same "invalid-state"
+ * discipline used for the state timestamp fields. Timestamps are checked here
+ * because they are not part of the shared CRON_STATE_TIMESTAMP_FIELDS list.
+ */
+function isValidProactiveState(state: unknown): boolean {
+  const proactive = asRecord(state).proactive;
+  if (proactive === undefined) {
+    return true;
+  }
+  if (typeof proactive !== "object" || proactive === null || Array.isArray(proactive)) {
+    return false;
+  }
+  const record = proactive as Record<string, unknown>;
+  if (!isProactiveResolutionState(record.resolutionState)) {
+    return false;
+  }
+  if (asSafeIntegerInRange(record.unansweredCount, { min: 0 }) === undefined) {
+    return false;
+  }
+  const optionalTimestamps = [record.lastOpeningMessageAtMs, record.lastUserResponseAtMs];
+  return optionalTimestamps.every((value) => value === undefined || isValidStateTimestamp(value));
+}
 
 const CRON_STATE_TIMESTAMP_FIELDS = [
   "nextRunAtMs",
@@ -70,6 +113,9 @@ export function getInvalidPersistedCronJobReason(
     return "missing-id";
   }
   if (getInvalidCronJobStateTimestampField(candidate.state)) {
+    return "invalid-state";
+  }
+  if (!isValidProactiveState(candidate.state)) {
     return "invalid-state";
   }
   const schedule = candidate.schedule;
@@ -182,6 +228,7 @@ export function getInvalidPersistedCronJobReason(
     payloadKind !== "agentTurn" &&
     payloadKind !== "command" &&
     payloadKind !== "script" &&
+    payloadKind !== "proactiveCheckIn" &&
     !isSystemOwnedCronPayloadKind(payloadKind)
   ) {
     return "invalid-payload";
@@ -210,6 +257,16 @@ export function getInvalidPersistedCronJobReason(
       return "invalid-payload";
     }
     if (scheduleKind === "stream") {
+      return "invalid-payload";
+    }
+  }
+  if (payloadKind === "proactiveCheckIn") {
+    const nonBlankFields = [
+      payloadRecord.pendingTopicRef,
+      payloadRecord.targetUser,
+      payloadRecord.deliveryChannel,
+    ];
+    if (nonBlankFields.some((value) => typeof value !== "string" || !value.trim())) {
       return "invalid-payload";
     }
   }

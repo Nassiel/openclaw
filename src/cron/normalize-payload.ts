@@ -77,6 +77,11 @@ export function normalizeCronPayload(payload: UnknownRecord): UnknownRecord {
     next.kind = "command";
   } else if (kindRaw === "script") {
     next.kind = "script";
+  } else if (kindRaw === "proactivecheckin") {
+    // Preserve the camelCase kind so the persisted-shape validator and the
+    // scheduler's proactiveCheckIn owner recognize a restored/created row;
+    // the lowercase-fallback below would otherwise quarantine it.
+    next.kind = "proactiveCheckIn";
   } else if (kindRaw) {
     next.kind = kindRaw;
   }

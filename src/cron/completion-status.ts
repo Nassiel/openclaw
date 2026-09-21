@@ -1,4 +1,4 @@
-import type { NormalizeReplySkipReason } from "../auto-reply/reply/normalize-reply-skip-reason.js";
+import type { CronDeliverySuppressionReason } from "./types.js";
 
 type CronCompletionRunStatus = "ok" | "error" | "skipped";
 
@@ -19,7 +19,7 @@ export function resolveCronCompletionStatus(params: {
   status?: CronCompletionRunStatus;
   delivered?: boolean;
   deliveryStatus?: CronCompletionDeliveryStatus;
-  deliverySuppressionReason?: NormalizeReplySkipReason;
+  deliverySuppressionReason?: CronDeliverySuppressionReason;
   requiredDelivery?: boolean;
 }): CronCompletionStatus {
   if (params.status === "error" || params.status === "skipped") {
@@ -51,7 +51,7 @@ export function resolveAdmittedCronCompletionStatus(
   job: CronCompletionJob,
   status: CronCompletionRunStatus,
   deliveryStatus: CronCompletionDeliveryStatus,
-  deliverySuppressionReason?: NormalizeReplySkipReason,
+  deliverySuppressionReason?: CronDeliverySuppressionReason,
 ): CronCompletionStatus {
   return resolveCronCompletionStatus({
     status,

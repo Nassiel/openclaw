@@ -101,6 +101,19 @@ export type CronRunStatus = "ok" | "error" | "skipped";
 /** Delivery outcome for completion or failure-notification sends. */
 export type CronDeliveryStatus = "delivered" | "not-delivered" | "unknown" | "not-requested";
 
+/**
+ * Intentional non-delivery reasons recorded on a cron run. Extends the shared
+ * reply-normalization reasons with the proactive-check-in guardrail reasons so
+ * a guardrail withholding maps onto the existing deliverySuppressionReason
+ * mechanism (a present reason marks the run an intentional non-delivery, never a
+ * failure). The guardrail engine owns emitting the proactive reasons.
+ */
+export type CronDeliverySuppressionReason =
+  | NormalizeReplySkipReason
+  | "quiet_hours"
+  | "min_interval"
+  | "opted_out";
+
 /** Delivery target snapshot recorded for audit/debug output. */
 export type CronDeliveryTraceTarget = NonNullable<CronDeliveryTrace["intended"]>;
 
@@ -125,7 +138,7 @@ export type CronResolvedDeliveryState = {
   delivered?: boolean;
   status: CronDeliveryStatus;
   error?: string;
-  deliverySuppressionReason?: NormalizeReplySkipReason;
+  deliverySuppressionReason?: CronDeliverySuppressionReason;
   failureNotification: CronFailureNotificationDelivery;
 };
 
@@ -238,6 +251,10 @@ export type CronPayload =
   | (CronAgentTurnPayload & CronPayloadToolAllow)
   | (CronCommandPayload & CronPayloadToolAllow)
   | (CronScriptPayload & CronPayloadToolAllow)
+  // User-created proactive check-in: recalls a pending topic at trigger time and
+  // reaches out to the target user through a real delivery channel. Not
+  // system-owned (see isSystemOwnedCronPayloadKind); created via the cron tool.
+  | (CronProactiveCheckInPayload & CronPayloadToolAllow)
   // System-owned heartbeat monitor: execution requests an interval heartbeat
   // wake. Gateway-converged only; not accepted from client create/patch APIs.
   | ({ kind: "heartbeat" } & CronPayloadToolAllow);
@@ -248,6 +265,7 @@ export type CronPayloadPatch =
   | (CronAgentTurnPayloadPatch & CronPayloadToolAllowPatch)
   | (CronCommandPayloadPatch & CronPayloadToolAllowPatch)
   | (CronScriptPayloadPatch & CronPayloadToolAllowPatch)
+  | (CronProactiveCheckInPayloadPatch & CronPayloadToolAllowPatch)
   // Representable so the service can reject it with a typed boundary error;
   // transports and tools never accept it.
   | ({ kind: "heartbeat" } & CronPayloadToolAllowPatch);
@@ -338,6 +356,52 @@ type CronScriptPayloadPatch = {
 } & Partial<Omit<CronScriptPayloadFields, "timeoutSeconds">> & {
     timeoutSeconds?: number | null;
   };
+
+/** Resolution status of a proactive check-in's pending topic. */
+export type CronProactiveResolutionState = "pending" | "resolved" | "abandoned";
+
+/**
+ * Guardrail policy carried on a proactive check-in payload. Immutable policy;
+ * the live per-run counters that enforce it live on CronJobState.proactive.
+ */
+export type ProactiveGuardrailConfig = {
+  /** Operator/user quiet window; outreach deferred to the next occurrence outside it. */
+  quietHours?: {
+    /** Window start as minutes since local midnight in `tz`. */
+    startMinuteOfDay: number;
+    /** Window end as minutes since local midnight in `tz`. */
+    endMinuteOfDay: number;
+    /** IANA time zone the quiet window is expressed in. */
+    tz: string;
+  };
+  /** Minimum seconds between consecutive opening messages. Default 3600, range 900-86400. */
+  minIntervalSeconds: number;
+  /** Maximum consecutive unanswered opening messages before abandon. Default 3, range 1-10. */
+  maxUnanswered: number;
+};
+
+type CronProactiveCheckInPayloadFields = {
+  /** Reference to the recalled subject in Memory; resolved at trigger time. */
+  pendingTopicRef: string;
+  /** Target user the opening message reaches. */
+  targetUser: string;
+  /** Real, user-facing delivery channel id (never the internal "cron" channel). */
+  deliveryChannel: CronMessageChannel;
+  /** Initial resolution state; the authoritative live value is read from job state. */
+  resolutionState: CronProactiveResolutionState;
+  /** Immutable guardrail policy; live counters live on CronJobState.proactive. */
+  guardrails: ProactiveGuardrailConfig;
+};
+
+/** User-created proactive check-in payload variant. */
+export type CronProactiveCheckInPayload = {
+  kind: "proactiveCheckIn";
+} & CronProactiveCheckInPayloadFields;
+
+type CronProactiveCheckInPayloadPatch = {
+  kind: "proactiveCheckIn";
+} & Partial<CronProactiveCheckInPayloadFields>;
+
 /** Mutable runtime state persisted beside the immutable cron job spec. */
 // scheduleActivatedAtMs fences catch-up to slots belonging to the active schedule;
 // edits must not invent missed work. Without activation, every computed slot is real.
@@ -365,10 +429,27 @@ export type CronJobState = Omit<
   lastFailureNotificationId?: string;
   /** Number of consecutive schedule computation errors. Auto-disables job after threshold. */
   scheduleErrorCount?: number;
+  /**
+   * Live proactive-check-in runtime state. Authoritative over the payload's
+   * initial resolutionState: the scheduler reads this on each occurrence and
+   * after restart (Req 4.7), and the guardrail engine reads its counters to
+   * enforce min-interval and max-unanswered (Req 5.2, 5.3, 5.4, 5.6). Absent on
+   * non-proactive jobs and on legacy proactive rows before migration.
+   */
+  proactive?: {
+    /** Authoritative live resolution state; read on restart (Req 4.7). */
+    resolutionState: CronProactiveResolutionState;
+    /** Consecutive unanswered opening messages; reset to 0 on user response (Req 5.4-5.6). */
+    unansweredCount: number;
+    /** Timestamp of the last delivered opening message; enforces min-interval (Req 5.2-5.3). */
+    lastOpeningMessageAtMs?: number;
+    /** Last user response observed for this topic; drives unansweredCount reset (Req 5.6). */
+    lastUserResponseAtMs?: number;
+  };
   /** @deprecated Use lastRunStatus. */
   lastStatus?: "ok" | "error" | "skipped";
   /** Intentional non-delivery reason for the last run, when recorded by the dispatcher. */
-  deliverySuppressionReason?: NormalizeReplySkipReason;
+  deliverySuppressionReason?: CronDeliverySuppressionReason;
 };
 
 type CronTrigger = {

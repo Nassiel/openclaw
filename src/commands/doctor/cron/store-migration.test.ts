@@ -1060,3 +1060,83 @@ describe("normalizeStoredCronJobs", () => {
     expect("timeout" in expectDefined(job, "job test invariant")).toBe(false);
   });
 });
+
+describe("normalizeStoredCronJobs proactive state migration", () => {
+  function makeProactiveJob(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return makeLegacyJob({
+      id: "proactive-legacy",
+      name: "Proactive legacy",
+      wakeMode: "now",
+      schedule: { kind: "cron", expr: "0 9 * * *", tz: "UTC" },
+      payload: {
+        kind: "proactiveCheckIn",
+        pendingTopicRef: "topic-1",
+        targetUser: "user-1",
+        deliveryChannel: "telegram",
+      },
+      delivery: { mode: "announce", channel: "telegram", to: "12345" },
+      ...overrides,
+    });
+  }
+
+  it("seeds a missing proactive state block with pending / unansweredCount 0", () => {
+    const { job, result } = normalizeOneJob(makeProactiveJob());
+
+    expect(result.mutated).toBe(true);
+    expect(result.removedJobs).toEqual([]);
+    const state = expectDefined(job, "job test invariant").state as Record<string, unknown>;
+    expect(state.proactive).toEqual({ resolutionState: "pending", unansweredCount: 0 });
+  });
+
+  it("seeds the proactive resolution state from the payload when present", () => {
+    const { job: resolvedJob } = normalizeOneJob(
+      makeProactiveJob({
+        payload: {
+          kind: "proactiveCheckIn",
+          pendingTopicRef: "topic-1",
+          targetUser: "user-1",
+          deliveryChannel: "telegram",
+          resolutionState: "resolved",
+        },
+      }),
+    );
+    const resolvedState = expectDefined(resolvedJob, "job test invariant").state as Record<
+      string,
+      unknown
+    >;
+    expect(resolvedState.proactive).toEqual({ resolutionState: "resolved", unansweredCount: 0 });
+
+    const { job: abandonedJob } = normalizeOneJob(
+      makeProactiveJob({
+        payload: {
+          kind: "proactiveCheckIn",
+          pendingTopicRef: "topic-1",
+          targetUser: "user-1",
+          deliveryChannel: "telegram",
+          resolutionState: "abandoned",
+        },
+      }),
+    );
+    const abandonedState = expectDefined(abandonedJob, "job test invariant").state as Record<
+      string,
+      unknown
+    >;
+    expect(abandonedState.proactive).toEqual({ resolutionState: "abandoned", unansweredCount: 0 });
+  });
+
+  it("leaves an already-present proactive state block unchanged", () => {
+    const existingProactive = {
+      resolutionState: "pending",
+      unansweredCount: 2,
+      lastOpeningMessageAtMs: 1_700_000_000_000,
+    };
+    const { job } = normalizeOneJob(
+      makeProactiveJob({
+        state: { proactive: { ...existingProactive } },
+      }),
+    );
+
+    const state = expectDefined(job, "job test invariant").state as Record<string, unknown>;
+    expect(state.proactive).toEqual(existingProactive);
+  });
+});
