@@ -318,6 +318,75 @@ describe.runIf(browserMode)("Web Awesome dropdown lifecycle", () => {
     },
   );
 
+  it.each(["item", "submenu", "outside"] as const)(
+    "preserves newer %s focus across root opening completion",
+    async (target) => {
+      const { userEvent } = await import("vitest/browser");
+      const f = await fixture();
+      await duringAnimation(f, "show", async () => {
+        expect(document.activeElement).toBe(f.item);
+        await userEvent.keyboard("{ArrowDown}");
+        expect(document.activeElement).toBe(f.parent);
+        if (target === "submenu") {
+          await userEvent.keyboard("{ArrowRight}");
+          await expect.poll(() => document.activeElement).toBe(f.nested);
+        } else if (target === "outside") {
+          f.outside.focus();
+        }
+      });
+      await expect.poll(() => count(f, "wa-after-show")).toBe(1);
+      expect(document.activeElement).toBe(
+        target === "submenu" ? f.nested : target === "outside" ? f.outside : f.parent,
+      );
+      expect(f.parent.active).toBe(true);
+      await userEvent.keyboard("{Escape}");
+      await closed(f);
+    },
+  );
+
+  it.each(["close", "disconnect", "reconnect"] as const)(
+    "retires initial focus reentrancy on %s before starting an animation",
+    async (action) => {
+      const { userEvent } = await import("vitest/browser");
+      const f = await fixture();
+      f.item.addEventListener(
+        "focus",
+        () => {
+          if (action === "close") {
+            f.dropdown.open = false;
+          } else {
+            f.dropdown.remove();
+          }
+          f.outside.focus();
+          if (action === "reconnect") {
+            f.host.prepend(f.dropdown);
+          }
+        },
+        { once: true },
+      );
+      f.dropdown.open = true;
+      if (action === "close") {
+        await closed(f);
+        expect(count(f, "wa-after-show")).toBe(0);
+      } else if (action === "disconnect") {
+        await expect.poll(() => f.dropdown.isConnected).toBe(false);
+        expect(f.menu.getAnimations()).toHaveLength(0);
+        expect(count(f, "wa-after-show")).toBe(0);
+        await userEvent.keyboard("{ArrowDown}");
+        expect(document.activeElement).toBe(f.outside);
+        f.host.prepend(f.dropdown);
+        await expect.poll(() => count(f, "wa-after-show")).toBe(1);
+      } else {
+        await expect.poll(() => count(f, "wa-after-show")).toBe(1);
+      }
+      if (action !== "close") {
+        expect(document.activeElement).toBe(f.item);
+        await userEvent.keyboard("{Escape}");
+        await closed(f);
+      }
+    },
+  );
+
   it("settles a pending show canceled after its first animation sample", async () => {
     const f = await fixture();
     let starts = 0;

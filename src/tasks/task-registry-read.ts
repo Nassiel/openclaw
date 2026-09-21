@@ -129,9 +129,20 @@ function canReadResidentTaskMetadata(): boolean {
 export async function prepareTaskRegistryReadOwner(
   context = captureOpenClawStateWorkerContext(),
   store = getTaskRegistryStore(),
+  pendingMutations: readonly PendingTaskRegistryMutation[] = [],
 ): Promise<TaskRegistryReadOwner> {
   const fence = captureTaskRegistryReadFence(context.admission);
-  const settled = await Promise.allSettled([ensureTaskRegistryReadyAsync(context), fence]);
+  const mutations = pendingMutations.flatMap((pending) => {
+    const settlement = pending.readSettlement;
+    return settlement?.store === store && settlement.databaseKey === context.admission.identity.key
+      ? [settlement.promise]
+      : [];
+  });
+  const settled = await Promise.allSettled([
+    ensureTaskRegistryReadyAsync(context),
+    fence,
+    ...mutations,
+  ]);
   const errors = settled.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
   if (errors.length === 1) {
     throw errors[0];
@@ -142,6 +153,28 @@ export async function prepareTaskRegistryReadOwner(
   const assertCurrent = () => assertTaskRegistryOwnerCurrent(context, store);
   assertCurrent();
   return { context, store, assertCurrent };
+}
+
+/** Page requests join their initial mutation cohort and accepted events while retries refresh rows. */
+export function createTaskRegistryReadPreparation() {
+  let owner: TaskRegistryReadOwner | undefined;
+  return async (): Promise<TaskRegistryRead | undefined> => {
+    if (owner) {
+      const store = getTaskRegistryStore();
+      assertTaskRegistryOwnerCurrent(owner.context, store);
+      // A replacement store starts its own fence; an invalid database cannot be reopened here.
+      if (store !== owner.store) {
+        owner = undefined;
+      }
+    }
+    if (!owner) {
+      const context = captureOpenClawStateWorkerContext();
+      owner = await prepareTaskRegistryReadOwner(context, getTaskRegistryStore(), [
+        ...getTaskRegistryProcessState().projection.pending,
+      ]);
+    }
+    return prepareTaskRegistryRead(owner);
+  };
 }
 
 export async function prepareTaskRegistryRead(

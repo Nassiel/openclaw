@@ -10,6 +10,7 @@ import {
 import { readWorkspaceStateSnapshotForDirectoryInDatabase } from "../agents/workspace-state-store.kernel.js";
 import { ExecutionDecisionCursorError } from "../audit/execution-decision-receipts.js";
 import { inspectExecutionIdentityRunInDatabase } from "../audit/execution-identity-context.js";
+import { observeCronRunRecoveryInDatabase } from "../cron/store/run-recovery.read.js";
 import { getFleetCellInDatabase, listFleetCellsInDatabase } from "../fleet/registry.kernel.js";
 import { readWorkerSessionPlacementProjectionInDatabase } from "../gateway/worker-environments/placement-read-projection.js";
 import { readWorkerPlacementChangeSnapshotInDatabase } from "../gateway/worker-environments/placement-row-codec.js";
@@ -75,6 +76,16 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
         typeof input.command.conversation.conversationId === "string" &&
         (input.command.conversation.parentConversationId === undefined ||
           typeof input.command.conversation.parentConversationId === "string")) ||
+      (input.command.type === "cron.observeRunRecovery" &&
+        typeof input.command.storeKey === "string" &&
+        Array.isArray(input.command.proposals) &&
+        input.command.proposals.every(
+          (proposal: unknown) =>
+            isRecord(proposal) &&
+            typeof proposal.jobId === "string" &&
+            (proposal.queuedAtMs === undefined || typeof proposal.queuedAtMs === "number") &&
+            (proposal.runningAtMs === undefined || typeof proposal.runningAtMs === "number"),
+        )) ||
       input.command.type === "admit" ||
       input.command.type === "exec-approvals.read" ||
       ((input.command.type === "skills.library.descriptions" ||
@@ -192,12 +203,12 @@ serveOwnedWorkerTasks(
                     ),
                   };
                 }
-                if (command.type === "workerPlacements.changeSnapshot") {
+                if (command.type === "cron.observeRunRecovery") {
                   return {
                     ok: true,
                     type: command.type,
                     sourceAdmitted,
-                    placements: readWorkerPlacementChangeSnapshotInDatabase(db),
+                    observation: observeCronRunRecoveryInDatabase(db, command),
                   };
                 }
                 if (command.type === "pluginBlob.lookup") {
@@ -371,6 +382,14 @@ serveOwnedWorkerTasks(
                     type: command.type,
                     sourceAdmitted,
                     entries: readSandboxBrowserRegistryInDatabase(db),
+                  };
+                }
+                if (command.type === "workerPlacements.changeSnapshot") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    placements: readWorkerPlacementChangeSnapshotInDatabase(db),
                   };
                 }
                 if (command.type === "workers.placementProjection") {

@@ -532,6 +532,7 @@ src/infra/abort-signal.ts
 src/infra/acquire-with-wait.ts
 src/infra/approval-resolution-ref.ts
 src/infra/backoff.ts
+src/infra/backup-scratch.ts
 src/infra/boundary-file-read.ts
 src/infra/boundary-path.ts
 src/infra/bun-sqlite-library.ts
@@ -711,6 +712,7 @@ src/infra/sqlite-snapshot-staging-owner.ts
 src/infra/sqlite-snapshot-staging.ts
 src/infra/sqlite-snapshot-wal-prefix.ts
 src/infra/sqlite-source-handle.ts
+src/infra/sqlite-staging-token.ts
 src/infra/sqlite-store.worker.ts
 src/infra/sqlite-strict.ts
 src/infra/sqlite-terminal-open-latch.ts
