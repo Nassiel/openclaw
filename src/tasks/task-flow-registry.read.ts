@@ -44,8 +44,9 @@ export function createTaskFlowRegistryReaders(owner: {
     // Owner-key actions target live work before retained terminal history.
     return ownerFlows.find((flow) => !isTerminalTaskFlow(flow)) ?? ownerFlows[0];
   };
-  const prepareTaskFlowRegistryRead = async (): Promise<TaskFlowRegistryRead | undefined> => {
-    const context = captureOpenClawStateWorkerContext();
+  const prepareTaskFlowRegistryRead = async (
+    context = captureOpenClawStateWorkerContext(),
+  ): Promise<TaskFlowRegistryRead | undefined> => {
     const store = getTaskFlowRegistryStore();
     const accepted: Promise<void>[] = [];
     for (const pending of owner.pendingWrites.values()) {

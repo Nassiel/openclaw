@@ -1,7 +1,14 @@
 import { err } from "@openclaw/normalization-core/result";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
-import { trackSqliteStatementExecutions } from "../../test/helpers/sqlite-statement-execution-counter.js";
+import {
+  observeHostDataSql,
+  trackSqliteStatementExecutions,
+} from "../../test/helpers/sqlite-statement-execution-counter.js";
+import { subagentRuns } from "../agents/subagents/registry/subagent-registry-memory.js";
+import { clearSubagentRunsReadCacheForTest } from "../agents/subagents/registry/subagent-registry-state.js";
+import { saveSubagentRegistryToSqlite } from "../agents/subagents/registry/subagent-registry.store.sqlite.js";
+import type { SubagentRunRecord } from "../agents/subagents/registry/subagent-registry.types.js";
 import type { MessageSendResult } from "../infra/outbound/message.js";
 import { drainSystemEvents, resetSystemEventsForTest } from "../infra/system-events.js";
 import {
@@ -9,6 +16,7 @@ import {
   resetGatewayWorkAdmission,
 } from "../process/gateway-work-admission.js";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db-cache.js";
+import * as stateReads from "../state/openclaw-state-db-readonly.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import {
@@ -20,11 +28,16 @@ import {
   maybeDeliverTaskStateChangeUpdate,
   maybeDeliverTaskTerminalUpdate,
 } from "./task-registry-delivery.js";
-import { commitTaskDeliveryFixture } from "./task-registry-delivery.test-support.js";
+import {
+  commitTaskDeliveryFixture,
+  failTaskNotificationPreparationAfterConsume,
+} from "./task-registry-delivery.test-support.js";
 import { publishTaskRecordAfterAtomicStore } from "./task-registry-publication.js";
 import type { TaskRegistryDeliveryRuntime } from "./task-registry-runtime-loaders.js";
 import {
+  invalidateTaskRegistryProjection,
   reloadTaskRegistryFromStoreAsync,
+  resetTaskRegistryRestoreState,
   tasksWithPendingDelivery,
 } from "./task-registry-state.js";
 import { getTaskById } from "./task-registry.js";
@@ -70,9 +83,10 @@ function seedTerminal(
     requesterOrigin?: TaskDeliveryState["requesterOrigin"];
     childSessionKey?: string;
     terminalOutcome?: TaskRecord["terminalOutcome"];
+    status?: "succeeded" | "cancelled";
   } = {},
 ): TaskRecord {
-  const { runtime = "cli", terminalOutcome, ...overrides } = options;
+  const { runtime = "cli", terminalOutcome, status = "succeeded", ...overrides } = options;
   const startedAt = Date.now() - 2_000;
   const running = createTaskFixture(runtime, {
     ownerKey,
@@ -90,7 +104,7 @@ function seedTerminal(
   // This setter prepares a terminal row without launching its notification during fixture setup.
   const terminal = finishTaskFixture({
     taskId: running.taskId,
-    status: "succeeded",
+    status,
     endedAt: startedAt + 1_000,
     terminalSummary: "Synthetic terminal result",
     terminalOutcome,
@@ -179,6 +193,151 @@ afterEach(async () => {
 });
 
 describe("terminal task notification persistence", () => {
+  it.each(["subagent read", "link config"] as const)(
+    "does not send or queue after its claim retires during %s preparation",
+    async (phase) => {
+      vi.stubEnv("OPENCLAW_TEST_READ_SUBAGENT_RUNS_FROM_SQLITE", "1");
+      const task = seedTerminal({
+        runtime: "subagent",
+        status: "cancelled",
+        childSessionKey: "agent:main:subagent:retired-preparation",
+        requesterOrigin: phase === "subagent read" ? undefined : origin,
+      });
+      const selected = createDeferred();
+      const release = createDeferred();
+      const read = stateReads.executeExistingOpenClawStateRead;
+      vi.spyOn(stateReads, "executeExistingOpenClawStateRead").mockImplementation(
+        async (...args) => {
+          const result = await read(...args);
+          if (phase === "subagent read" && args[1].type === "subagents.forChildSession") {
+            selected.resolve();
+            await release.promise;
+          }
+          return result;
+        },
+      );
+      setTaskRegistryDeliveryRuntimeForTests({
+        sendMessage,
+        prepareTaskControlUiSessionUrl: async () => {
+          selected.resolve();
+          await release.promise;
+          return () => "https://dashboard.example/synthetic-cancelled-child";
+        },
+      });
+      const notification = maybeDeliverTaskTerminalUpdate(task.taskId);
+      const successor = Symbol("successor cancellation notification");
+      try {
+        await Promise.race([
+          selected.promise,
+          notification.then(() => {
+            throw new Error("Subagent notification settled before its prepared read");
+          }),
+        ]);
+        expect(tasksWithPendingDelivery.has(task.taskId)).toBe(true);
+        tasksWithPendingDelivery.set(task.taskId, successor);
+        release.resolve();
+        expect(await notification).toBeNull();
+        expect(tasksWithPendingDelivery.get(task.taskId)).toBe(successor);
+        expect(drainSystemEvents(ownerKey)).toEqual([]);
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(stored(task.taskId)?.deliveryStatus).toBe("pending");
+      } finally {
+        release.resolve();
+        await notification;
+        if (tasksWithPendingDelivery.get(task.taskId) === successor) {
+          tasksWithPendingDelivery.delete(task.taskId);
+        }
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+
+  it.each(["persisted pending", "live released", "live moved"] as const)(
+    "prepares subagent cancellation with %s state without host data SQL",
+    async (phase) => {
+      vi.stubEnv("OPENCLAW_TEST_READ_SUBAGENT_RUNS_FROM_SQLITE", "1");
+      clearSubagentRunsReadCacheForTest();
+      const childSessionKey = "agent:main:subagent:notification-preparation";
+      const task = seedTerminal({ runtime: "subagent", status: "cancelled", childSessionKey });
+      const retained: SubagentRunRecord = {
+        runId: task.runId!,
+        childSessionKey,
+        requesterSessionKey: task.ownerKey,
+        requesterDisplayKey: "main",
+        task: "Synthetic cancelled child",
+        cleanup: "keep",
+        createdAt: task.createdAt,
+        execution: { status: "running", startedAt: task.createdAt },
+        completion: { required: false },
+        delivery: { status: "not_required" },
+        requesterSettleWake: { status: "pending", attemptCount: 0 },
+      };
+      saveSubagentRegistryToSqlite(new Map([[retained.runId, retained]]));
+      if (phase === "live released") {
+        subagentRuns.set(retained.runId, { ...retained, requesterSettleWake: undefined });
+      } else if (phase === "live moved") {
+        subagentRuns.set(retained.runId, {
+          ...retained,
+          childSessionKey: "agent:main:subagent:other-child",
+        });
+      }
+      sendMessage.mockResolvedValue(sent);
+      const { prepareTaskControlUiSessionUrl } =
+        await import("./task-registry-delivery-runtime.js");
+      setTaskRegistryDeliveryRuntimeForTests({ sendMessage, prepareTaskControlUiSessionUrl });
+      const deliver = async () => {
+        const host = observeHostDataSql();
+        try {
+          const result = await maybeDeliverTaskTerminalUpdate(task.taskId);
+          expect(host.calls.map((call) => call.mock.calls.length)).toEqual(host.calls.map(() => 0));
+          return result;
+        } finally {
+          host.restore();
+        }
+      };
+      try {
+        const first = await deliver();
+        expect(first?.deliveryStatus).toBe(phase === "persisted pending" ? "pending" : "delivered");
+        expect(tasksWithPendingDelivery.has(task.taskId)).toBe(false);
+        if (phase === "persisted pending") {
+          expect(sendMessage).not.toHaveBeenCalled();
+          const released = { ...retained, requesterSettleWake: undefined };
+          saveSubagentRegistryToSqlite(new Map([[released.runId, released]]));
+          expect((await deliver())?.deliveryStatus).toBe("delivered");
+        }
+        expect(sendMessage).toHaveBeenCalledOnce();
+        expect(stored(task.taskId)?.deliveryStatus).toBe("delivered");
+      } finally {
+        subagentRuns.delete(retained.runId);
+        clearSubagentRunsReadCacheForTest();
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+
+  it.each(["dirty projection", "cold registry"] as const)(
+    "prepares and persists terminal delivery with no host data SQL from a %s",
+    async (preparation) => {
+      const task = seedTerminal();
+      if (preparation === "dirty projection") {
+        invalidateTaskRegistryProjection();
+      } else {
+        resetTaskRegistryRestoreState();
+      }
+      sendMessage.mockResolvedValue(sent);
+      const host = observeHostDataSql();
+      try {
+        const delivered = await maybeDeliverTaskTerminalUpdate(task.taskId);
+        expect(delivered?.deliveryStatus).toBe("delivered");
+        expect(sendMessage).toHaveBeenCalledTimes(1);
+        expect(host.calls.map((call) => call.mock.calls.length)).toEqual(host.calls.map(() => 0));
+      } finally {
+        host.restore();
+      }
+      expect(stored(task.taskId)?.deliveryStatus).toBe("delivered");
+    },
+  );
+
   it.each(["accepted blocked followup", "ambiguous send preparation"] as const)(
     "does not requeue %s when follow-up work fails before status persistence",
     async (failurePoint) => {
@@ -198,8 +357,8 @@ describe("terminal task notification persistence", () => {
           return enqueue(text, options);
         });
       } else {
-        const registry = await import("./task-registry-state.js");
-        vi.spyOn(registry, "withTaskRegistryMutation").mockImplementationOnce(() => {
+        const registry = await import("./task-registry-read.js");
+        vi.spyOn(registry, "prepareTaskRegistryReadOwner").mockImplementationOnce(() => {
           failed = true;
           throw followupFailure;
         });
@@ -484,18 +643,9 @@ describe("terminal task notification persistence", () => {
       const registry = await import("./task-registry-state.js");
       const events = await import("../infra/system-events.js");
       const queued = vi.spyOn(events, "enqueueSystemEvent");
-      const prepare = registry.withTaskRegistryMutation;
-      let failed = false;
-      vi.spyOn(registry, "withTaskRegistryMutation").mockImplementation(
-        <T>(operation: () => T, onAdmissionFailure?: (error: unknown) => T): T => {
-          const before = queued.mock.calls.length;
-          const result = prepare(operation, onAdmissionFailure);
-          if (!failed && queued.mock.calls.length > before) {
-            failed = true;
-            throw cleanupFailure;
-          }
-          return result;
-        },
+      failTaskNotificationPreparationAfterConsume(
+        () => queued.mock.calls.length > 0,
+        cleanupFailure,
       );
       const warnings = vi.spyOn(registry.taskRegistryLog, "warn");
       const store = getTaskRegistryStore();

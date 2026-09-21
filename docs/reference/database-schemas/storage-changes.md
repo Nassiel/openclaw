@@ -670,9 +670,27 @@ and missing-owner status writes use that same worker, rereading the selected tas
 run scope, notification policy, and current delivery metadata inside the write.
 Each terminal delivery retains its own pending claim; a retired delivery cannot
 release a successor's claim. After an accepted or ambiguous transport result, that invocation does not enqueue
-fallback because follow-up preparation or persistence failed. Native notification
-preparation retains its existing owner. Storage representation, schemas, retention,
-and update behavior are unchanged.
+fallback because follow-up preparation or persistence failed. Notification preparation
+joins its captured store's pending acknowledgements and accepted event prefix, then
+prepares task and flow projections asynchronously. Its synchronous consumer uses
+only those maps and rechecks the delivery claim and registry owners before effects.
+Full and scoped task snapshots use the existing shared-state read worker, retaining
+the original database admission without entering the writer queue. Storage
+representation, schemas, retention, and update behavior are unchanged.
+
+Terminal subagent cancellation prepares retained child-session rows in the same
+fixed read worker, retries after registry publication changes, and applies current
+live runs last. Each synchronous decision retains the original database admission.
+Failed best-effort publications remain authoritative through cache hydration:
+fresh reads overlay unpublished named changes or an explicitly failed full
+replacement. Exact successful commits release only their rows back to durable
+reads; full success and restore clear that intent. These overlays remain bound to
+their producing database, and returned persisted records cannot mutate them.
+The progress observer uses its existing live-run owner, matching the admission
+and generation checks that already require a live entry.
+Inspection links prepare their configuration through the existing asynchronous
+config reader. Delivery rechecks its claim after that wait, then resolves the link
+from the captured config during its synchronous send decision.
 
 Agent-event task progress uses the same shared-state worker and publication owner.
 Ingestion retains exact task, run, and backing identities without waiting for a native
@@ -687,6 +705,10 @@ in-flight count.
 Inside an enclosing native transaction, consumption defers delivery until commit and
 rechecks event ownership and the committed receipt. Rollback drops queued delivery;
 later row replacement, including ABA replacement, suppresses stale delivery.
+Committed notification dispatch follows the publishing event's completion, so an
+event cleanup failure remains visible to external readers without suppressing its
+notification. Delivery owns a separate Gateway continuation and cleanup lifetime;
+its accepted event prefix never joins the producer's cleanup drain.
 
 Registered Gateway task list, get, and history reads, artifact task-ID scope resolution, plus subagent list and wait
 preparation, asynchronously join the event batches accepted before their first

@@ -231,6 +231,7 @@ describe("registered async managed child linkage", () => {
       goal: "Independent child links",
     });
     const commands = new Map<string, number>();
+    const snapshots = vi.spyOn(getTaskRegistryStore(), "loadMutationSnapshotAsync");
     const original = workerStore.runSqliteWorkerStoreOperation;
     vi.spyOn(workerStore, "runSqliteWorkerStoreOperation").mockImplementation(
       <Operations extends SqliteWorkerOperations, T>(
@@ -272,7 +273,7 @@ describe("registered async managed child linkage", () => {
     expect(listTasksForFlowId(flow.flowId)).toHaveLength(count);
     console.log("Managed link worker commands", { count, commands: Object.fromEntries(commands) });
     expect(commands.get("flows.runTask")).toBe(count);
-    expect(commands.get("tasks.mutationSnapshot")).toBeLessThanOrEqual(count * 2);
+    expect(snapshots.mock.calls.length).toBeLessThanOrEqual(count * 2);
   });
 
   it("persists an unbacked link without warmed main-thread SQLite and reopens it", async () => {
