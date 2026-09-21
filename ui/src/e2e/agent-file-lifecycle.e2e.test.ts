@@ -112,7 +112,10 @@ suite.define(() => {
         const panel = modal.locator(".md-preview-dialog__panel");
         const reader = modal.locator(".md-preview-dialog__reader");
         const expand = modal.locator(".md-preview-expand-btn");
-        const tooltip = modal.locator("openclaw-tooltip:has(.md-preview-expand-btn) wa-tooltip");
+        const tooltipHost = modal.locator("openclaw-tooltip:has(.md-preview-expand-btn)");
+        // Hover-intent timing is covered by the tooltip owner's fake-clock tests.
+        await tooltipHost.evaluate((element) => element.setAttribute("delay", "0"));
+        const tooltip = tooltipHost.locator("wa-tooltip");
         const body = tooltip.locator('[part="body"]');
         const popup = tooltip.locator('wa-popup [part="popup"]');
         const hint = tooltip.locator(".tooltip-content");
