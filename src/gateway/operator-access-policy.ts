@@ -1,6 +1,9 @@
 import { GATEWAY_OWNER_PROFILE_ID } from "../../packages/gateway-protocol/src/schema/users.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import type { PluginGatewayAccessAuthority } from "../plugins/gateway-access-policy.types.js";
+import type {
+  GatewayAccessGrantRef,
+  PluginGatewayAccessAuthority,
+} from "../plugins/gateway-access-policy.types.js";
 import { getPluginRegistryState } from "../plugins/runtime-state.js";
 import { onUserProfilesChanged, readUserProfileVersion } from "../state/user-profile-events.js";
 import { getUserProfileListItem } from "../state/user-profiles.js";
@@ -15,6 +18,17 @@ export class GatewayOperatorAccessDeniedError extends Error {
     this.name = "GatewayOperatorAccessDeniedError";
   }
 }
+
+export class GatewayOperatorAccessUnavailableError extends Error {
+  constructor() {
+    super("Gateway access policy is unavailable; retry after its plugin is ready.");
+    this.name = "GatewayOperatorAccessUnavailableError";
+  }
+}
+
+export type GatewayOperatorAccessAuthority = PluginGatewayAccessAuthority & {
+  readonly gatewayAccessGrant?: GatewayAccessGrantRef;
+};
 
 // A retained signal keeps its identity check alive without pinning abandoned HTTP captures.
 // An abort listener on AbortSignal.any would itself keep the composite signal alive in Node.
@@ -64,13 +78,13 @@ export function hasGatewayOperatorAccessPolicies(config: OpenClawConfig): boolea
 export function resolveGatewayOperatorAccessAuthority(
   profileId: string,
   config: OpenClawConfig,
-): PluginGatewayAccessAuthority | undefined {
+): GatewayOperatorAccessAuthority | null {
   if (profileId === GATEWAY_OWNER_PROFILE_ID) {
-    return undefined;
+    return null;
   }
   const policies = currentAccessPolicies();
   if (policies.length === 0 && !hasGatewayOperatorAccessPolicies(config)) {
-    return undefined;
+    return null;
   }
   const profile = getUserProfileListItem(profileId);
   const emails = [...profile.emails];
@@ -129,20 +143,23 @@ export function resolveGatewayOperatorAccessAuthority(
       if (authority && pluginId === requiredPlugin) {
         requiredPolicyConfirmed = true;
       }
-      return authority ? [authority] : [];
+      return authority ? [{ pluginId, authority }] : [];
     });
     if (!requiredPolicyConfirmed) {
       throw new GatewayOperatorAccessDeniedError();
     }
     if (authorities.length === 0) {
       releaseProfiles();
-      return undefined;
+      return null;
     }
-    signal = AbortSignal.any([invalidated.signal, ...authorities.map((entry) => entry.signal)]);
+    signal = AbortSignal.any([
+      invalidated.signal,
+      ...authorities.map(({ authority }) => authority.signal),
+    ]);
     const assertCurrent = () => {
       try {
         assertProfileCurrent();
-        for (const authority of authorities) {
+        for (const { authority } of authorities) {
           authority.assertCurrent();
         }
       } catch {
@@ -153,7 +170,14 @@ export function resolveGatewayOperatorAccessAuthority(
     // Retaining only the composed signal must also retain its policy sources.
     profileAccessChecks.set(signal, assertCurrent);
     assertCurrent();
-    return { assertCurrent, signal };
+    const original = authorities.length === 1 ? authorities[0] : undefined;
+    return {
+      assertCurrent,
+      signal,
+      gatewayAccessGrant: original?.authority.grantId
+        ? Object.freeze({ pluginId: original.pluginId, grantId: original.authority.grantId })
+        : undefined,
+    };
   } catch {
     releaseProfiles();
     // Policy errors can contain private configuration; only the generic denial crosses ingress.
@@ -161,8 +185,75 @@ export function resolveGatewayOperatorAccessAuthority(
   }
 }
 
+/** Revalidate the recorded basis without adopting a new invitation or a role exemption. */
+export function resumeGatewayOperatorAccessGrant(
+  profileId: string,
+  config: OpenClawConfig,
+  grant: GatewayAccessGrantRef | null,
+): void {
+  const policies = currentAccessPolicies();
+  const profile = getUserProfileListItem(profileId);
+  if (profile.id !== profileId) {
+    throw new GatewayOperatorAccessDeniedError();
+  }
+  const requiredPlugin = resolveOperatorRolePolicyForAssignment(
+    profile.id,
+    profile.role ?? null,
+    config,
+  )?.accessPolicyPlugin;
+  if (requiredPlugin && requiredPlugin !== grant?.pluginId) {
+    // A newly required policy cannot replace the original request's recorded basis.
+    throw new GatewayOperatorAccessDeniedError();
+  }
+  const context = {
+    config,
+    profile: {
+      profileId,
+      emails: profile.emails,
+      assignedRole: profile.role ?? null,
+    },
+  };
+  if (grant) {
+    const policy = policies.find(({ pluginId }) => pluginId === grant.pluginId)?.policy;
+    if (!policy?.resume) {
+      throw new GatewayOperatorAccessUnavailableError();
+    }
+    let authority: PluginGatewayAccessAuthority | undefined;
+    try {
+      authority = policy.resume({
+        ...context,
+        grantId: grant.grantId,
+        requiredByRole: requiredPlugin === grant.pluginId,
+      });
+      authority?.signal.throwIfAborted();
+      authority?.assertCurrent();
+    } catch {
+      // Startup and unavailable observations are not evidence that a grant ended.
+      throw new GatewayOperatorAccessUnavailableError();
+    }
+    if (!authority || authority.grantId !== grant.grantId) {
+      throw new GatewayOperatorAccessDeniedError();
+    }
+  }
+  for (const { pluginId, policy } of policies) {
+    if (pluginId === grant?.pluginId) {
+      continue;
+    }
+    let authority: PluginGatewayAccessAuthority | undefined;
+    try {
+      authority = policy.authorize({ ...context, requiredByRole: requiredPlugin === pluginId });
+    } catch {
+      throw new GatewayOperatorAccessUnavailableError();
+    }
+    if (authority) {
+      // A newly applicable policy needs a fresh request bound to that dependency.
+      throw new GatewayOperatorAccessDeniedError();
+    }
+  }
+}
+
 export function hasCurrentGatewayOperatorAccess(
-  authority: PluginGatewayAccessAuthority | undefined,
+  authority: PluginGatewayAccessAuthority | null | undefined,
 ): boolean {
   try {
     authority?.signal.throwIfAborted();

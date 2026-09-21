@@ -6,9 +6,18 @@ import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
+  iterateSqliteQuerySync,
 } from "../infra/kysely-sync.js";
 import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
-import { insertGitHubPublicationSessionLifecycle } from "../state/github-publication-session-lifecycles.js";
+import {
+  decodeGitHubPublicationRequester,
+  encodeGitHubPublicationRequester,
+  type GitHubPublicationRequesterSnapshot,
+} from "../state/github-publication-requester.js";
+import {
+  insertGitHubPublicationSessionLifecycle,
+  readGitHubPublicationSessionLifecycle,
+} from "../state/github-publication-session-lifecycles.js";
 import { withExistingOpenClawStateDatabaseArtifactPreservingReadOnly } from "../state/openclaw-state-db-readonly.js";
 import { ensureGitHubPublicationSchema } from "../state/openclaw-state-db-schema-additive.js";
 import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
@@ -80,6 +89,33 @@ export function readGitHubPublicationRequest(
           .where("session_id", "=", request.sessionId)
           .where("idempotency_key", "=", request.idempotencyKey),
   );
+}
+
+/** Retained publisher/target receipts identify reused PRs whose body keeps an older marker. */
+export function readKnownGitHubPublicationPullRequestUrls(
+  row: GitHubPublicationExecutionRow,
+): string[] {
+  const db = openOpenClawStateDatabase().db;
+  const known = new Set(row.pull_request_url ? [row.pull_request_url] : []);
+  for (const receipt of iterateSqliteQuerySync(
+    db,
+    githubPublicationDatabase(db)
+      .selectFrom("github_publication_requests")
+      .selectAll()
+      .where("worktree_id", "=", row.worktree_id)
+      .where("repository_fingerprint", "=", row.repository_fingerprint)
+      .where("repository", "=", row.repository)
+      .where("branch", "=", row.branch)
+      .where("base_branch", "=", row.base_branch)
+      .where("identity_account_id", "=", row.identity_account_id)
+      .where("status", "=", "published"),
+  )) {
+    checkSharedWorktreeReceipt(receipt);
+    if (receipt.pull_request_url) {
+      known.add(receipt.pull_request_url);
+    }
+  }
+  return [...known];
 }
 
 /** Shared observation never initializes schema, prepares identity, or resumes publication. */
@@ -322,6 +358,8 @@ export function insertGitHubPublicationRequest(
     requestDigest: string;
     sessionId: string;
     lifecycleRevision: string | null;
+    requester: GitHubPublicationRequesterSnapshot;
+    assertCurrent: () => void;
     now: number;
     worktree: { id: string; repoFingerprint: string; branch: string };
     identity: Pick<PreparedGitHubPublicationIdentity, "source" | "profileId" | "account">;
@@ -329,6 +367,7 @@ export function insertGitHubPublicationRequest(
     snapshot?: { sourceHeadCommit: string; sourceIndexTree: string; workspaceTree: string };
   },
 ): GitHubPublicationRow {
+  input.assertCurrent();
   const { request, identity, worktree, claim, snapshot } = input;
   const query = githubPublicationDatabase(db);
   const inserted = executeSqliteQuerySync(
@@ -378,6 +417,7 @@ export function insertGitHubPublicationRequest(
       publicationKind: "shared",
       requestId: input.requestId,
       lifecycleRevision: input.lifecycleRevision,
+      requester: input.requester,
     });
   }
   const stored = readGitHubPublicationRequest(db, {
@@ -394,6 +434,22 @@ export function insertGitHubPublicationRequest(
   ) {
     throw new Error("GitHub publication idempotency key was reused.");
   }
+  if (stored.status !== "published" && stored.status !== "failed") {
+    const requester = decodeGitHubPublicationRequester(
+      readGitHubPublicationSessionLifecycle(
+        { publicationKind: "shared", requestId: stored.request_id },
+        db,
+      )?.requester_authority_json,
+    );
+    if (
+      !requester ||
+      encodeGitHubPublicationRequester(requester) !==
+        encodeGitHubPublicationRequester(input.requester)
+    ) {
+      throw new Error("GitHub publication requester changed; use a new idempotency key.");
+    }
+  }
+  input.assertCurrent();
   if (inserted.numAffectedRows === 1n) {
     deferSharedGitHubPublicationChanged(db, stored);
   }

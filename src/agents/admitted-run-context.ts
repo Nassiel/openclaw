@@ -16,6 +16,7 @@ import {
   validateAgentRunDelegatedAuthority,
   type AgentRunDelegatedAuthority,
 } from "../infra/agent-run-registry.js";
+import type { GatewayAccessGrantRef } from "../plugins/gateway-access-policy.types.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 
 /** Operational lifecycle correlation. This is never identity or authorization evidence. */
@@ -33,6 +34,8 @@ export type AdmittedRunContext = Readonly<{
 export type AdmittedRunOperatorAuthority = Readonly<{
   profileId: string;
   scopes: readonly string[];
+  /** Original access dependency; null is proven independent, undefined is unclassified. */
+  gatewayAccessGrant?: GatewayAccessGrantRef | null;
   assertCurrent: () => void;
   signal?: AbortSignal;
   /** Opaque original source identity used only to compare compatible queued input. */
@@ -56,6 +59,9 @@ export function createAdmittedRunOperatorAuthority(
   const authority = Object.freeze({
     profileId: source.profileId,
     scopes: Object.freeze([...source.scopes]),
+    gatewayAccessGrant: source.gatewayAccessGrant
+      ? Object.freeze({ ...source.gatewayAccessGrant })
+      : source.gatewayAccessGrant,
     source: source.source ?? Object.freeze({}),
     signal,
     retain: source.retain,

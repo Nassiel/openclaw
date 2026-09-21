@@ -372,7 +372,10 @@ describe("shared repository receipt observation", () => {
       repositoryReceipt(workspace.workspaceId),
       () => {},
     );
-    const execution = claimRepositoryGitHubPublication(row, "old-instance", () => {});
+    const execution = claimRepositoryGitHubPublication(row, "old-instance", {
+      assertCustody: () => {},
+      assertCurrent: () => {},
+    });
     execution.recordEffect("push", { headCommit: OLD_HEAD });
     const coordinator = sharedPublicationCoordinator();
     const before = readRepositoryGitHubPublication(row.request_id);
@@ -425,7 +428,10 @@ describe("shared repository receipt observation", () => {
         () => {},
       );
     }
-    const execution = claimRepositoryGitHubPublication(older, "instance", () => {});
+    const execution = claimRepositoryGitHubPublication(older, "instance", {
+      assertCustody: () => {},
+      assertCurrent: () => {},
+    });
     execution.complete({
       requestId: older.request_id,
       status: "published",

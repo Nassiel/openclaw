@@ -30,7 +30,9 @@ export function createGitHubPublicationExecutionEffects<Row>(params: {
             error_code: null,
             next_action: null,
           },
-          true,
+          // An accepted PR settles this execution even if its requester closed
+          // while GitHub was responding. The write owner still fences custody.
+          false,
         );
       }
       if (result.status !== "failed") {
@@ -38,9 +40,9 @@ export function createGitHubPublicationExecutionEffects<Row>(params: {
       }
       return write(
         { status: "failed", error_code: result.code, next_action: result.nextAction },
-        // Closing the session stops actions, but its exact execution still records
+        // Closing the source or session stops actions, but its exact execution still records
         // the terminal non-outcome after an already-dispatched effect is observed.
-        result.code !== "session_changed",
+        result.code !== "session_changed" && result.code !== "identity_changed",
       );
     },
     recordEffect(

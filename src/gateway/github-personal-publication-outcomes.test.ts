@@ -49,6 +49,36 @@ describe("personal publication definitive outcomes", () => {
       { sessionKey: SESSION_KEY, sessionId: SESSION_ID, agentId: "main" },
       requestId,
     );
+  it("retains an accepted open PR response after the requesting connection closes", async () => {
+    const workspace = await createRealPublicationWorkspace();
+    const transport = mocks.runCommand.getMockImplementation()!;
+    mocks.runCommand.mockImplementation(async (argv: string[], options?: { input?: string }) => {
+      const response = await transport(argv, options);
+      if (argv.includes("POST") && argv.includes("repos/openclaw/openclaw/pulls")) {
+        fixture.runtime.live = false;
+      }
+      return response;
+    });
+
+    const published = await fixture.coordinator.requestPersonalForSession(
+      request(),
+      fixture.action,
+    );
+
+    expect(published).toMatchObject({
+      status: "published",
+      url: "https://github.com/openclaw/openclaw/pull/125200",
+    });
+    expect(
+      readPersonalGitHubPublication(fixture.owner, { requestId: published.requestId }),
+    ).toMatchObject({
+      status: "published",
+      pull_request_url: "https://github.com/openclaw/openclaw/pull/125200",
+    });
+    await fixture.coordinator.resumeSessionRequests();
+    expect(workspace.effects).toEqual(["push", "pull_request"]);
+  });
+
   it.each([
     "closed",
     "closed-before-unavailable",

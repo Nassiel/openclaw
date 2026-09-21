@@ -520,7 +520,7 @@ describe("repository checkpoint GitHub publication", () => {
       const retained = claimRepositoryGitHubPublication(
         readRepositoryGitHubPublication(first.requestId)!,
         "retained-execution",
-        () => {},
+        { assertCustody: () => {}, assertCurrent: () => {} },
       );
       await stale.closeSession(kind);
       if (kind === "reset") {
@@ -917,7 +917,10 @@ describe("repository checkpoint GitHub publication", () => {
         ).requestId;
       }
       const row = readRepositoryGitHubPublication(requestId)!;
-      const execution = claimRepositoryGitHubPublication(row, "current-instance", () => {});
+      const execution = claimRepositoryGitHubPublication(row, "current-instance", {
+        assertCustody: () => {},
+        assertCurrent: () => {},
+      });
       deletePersonalGitHubSessionReceipts({ agentId: "main", sessionKeys: [SESSION_KEY] });
       expect(execution.ownsExecution()).toBe(false);
       expect(() => execution.recordEffect("push")).toThrow();

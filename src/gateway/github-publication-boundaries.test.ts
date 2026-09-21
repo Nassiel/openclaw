@@ -58,7 +58,10 @@ describe("Gateway GitHub publication boundaries", () => {
       expect(accepted.status).toBe("requested");
       const binding = { publicationKind: "shared" as const, requestId: accepted.requestId };
       const originalLifecycle = readGitHubPublicationSessionLifecycle(binding);
-      expect(originalLifecycle).toEqual({ lifecycle_revision: session.read().lifecycleRevision });
+      expect(originalLifecycle).toEqual({
+        lifecycle_revision: session.read().lifecycleRevision,
+        requester_authority_json: expect.any(String),
+      });
       if (bindingState === "missing") {
         openOpenClawStateDatabase()
           .db.prepare(

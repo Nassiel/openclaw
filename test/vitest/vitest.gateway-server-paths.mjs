@@ -31,6 +31,8 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/github-publication-history.test.ts",
   "src/gateway/github-publication-legacy-options.test.ts",
   "src/gateway/github-publication-personal-pending.test.ts",
+  "src/gateway/github-publication-reconciliation.test.ts",
+  "src/gateway/github-publication-requester.test.ts",
   "src/gateway/github-publication.test.ts",
   "src/gateway/github-repository-publication-restart.test.ts",
   "src/gateway/github-repository-publication.test.ts",
