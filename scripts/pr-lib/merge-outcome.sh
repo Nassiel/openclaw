@@ -161,7 +161,9 @@ merge_outcome_load_local() {
           type == "object" and
           ((keys == ["actor","attempt","outcome","reason"]) or
            (keys == ["actor","attempt","outcome","reason","replacementHead"] and
-            (.replacementHead | oid) and .replacementHead == $record.head)) and
+            (.replacementHead | oid) and .replacementHead == $record.head) or
+           (keys == ["actor","attempt","localRefusal","outcome","reason"] and
+            (.localRefusal | type == "object") and $record.method == "squash" and $record.route == "immediate")) and
           (.outcome | oid) and (.attempt | attempt) and
           (.actor | type == "string" and length > 0) and .reason == "explicit-operator-recovery"
         else true end;
@@ -213,11 +215,18 @@ merge_outcome_load_local() {
     fi
     if printf '%s\n' "$MERGE_OUTCOME_RECORD" | jq -e 'has("recovery")' >/dev/null; then
       retained=$(printf '%s\n' "$MERGE_OUTCOME_RECORD" | jq -r .recovery.outcome)
+      if printf '%s\n' "$MERGE_OUTCOME_RECORD" | jq -e '.recovery.localRefusal != null' >/dev/null; then
+        local refusal_tree
+        refusal_tree=$(GIT_NO_LAZY_FETCH=1 pr_git rev-parse "$MERGE_OUTCOME_OID:local-refusal") || return 1
+        merge_outcome_validate_local_refusal "$MERGE_OUTCOME_RECORD" "$refusal_tree" || return 1
+      fi
       if ! GIT_NO_LAZY_FETCH=1 pr_git merge-base --is-ancestor "$retained" "$MERGE_OUTCOME_OID" ||
         ! GIT_NO_LAZY_FETCH=1 pr_git show "$retained:outcome.json" | jq -e --argjson next "$MERGE_OUTCOME_RECORD" '
           .phase == "intent" and
           ((.accepted == false and .route == "immediate") or
-           (.accepted == true and .route == "auto" and .cancellation.state == "confirmed")) and
+           (.accepted == true and .route == "auto" and .cancellation.state == "confirmed") or
+           (.accepted == false and .route == "auto" and .method == "squash" and
+            $next.recovery.localRefusal != null and .head == $next.head)) and
           .repo == $next.repo and .pr == $next.pr and .prId == $next.prId and
           .base == $next.base and .method == $next.method and .attempt == $next.recovery.attempt and
           $next.route == "immediate" and (.head == $next.head or $next.recovery.replacementHead == $next.head)
@@ -243,6 +252,16 @@ merge_outcome_load_local() {
   fi
 }
 
+merge_outcome_validate_local_refusal() {
+  local record="$1" tree="$2" original proof
+  original=$(printf '%s\n' "$record" | jq -er .recovery.outcome) || return 1
+  proof=$(node "$script_parent_dir/pr-lib/merge-legacy-refusal.mjs" --local-auto-tree "$tree" "$original") || return 1
+  printf '%s\n' "$record" | jq -e --argjson proof "$proof" '.recovery.localRefusal == $proof' >/dev/null || {
+    merge_outcome_stop "local refusal evidence differs from retained recovery provenance"
+    return 1
+  }
+}
+
 merge_outcome_write() {
   local record="$1" blob tree next parent entries capture
   shift
@@ -264,6 +283,10 @@ merge_outcome_write() {
       [ "$blob" != "$(printf '%s\n' "$record" | jq -r --arg name "${capture##*/}" '.legacyRefusal.files[$name]')" ]; then
       merge_outcome_stop "legacy evidence changed before retention"; return 1
     fi
+    if printf '%s\n' "$record" | jq -e '.recovery.localRefusal != null' >/dev/null &&
+      [ "$blob" != "$(printf '%s\n' "$record" | jq -r --arg name "${capture##*/}" '.recovery.localRefusal.files[$name]')" ]; then
+      merge_outcome_stop "local refusal evidence changed before retention"; return 1
+    fi
     capture_entries+="$(printf '100644 blob %s\t%s' "$blob" "${capture##*/}")"$'\n'
   done
   if printf '%s\n' "$record" | jq -e 'has("legacyRefusal")' >/dev/null; then
@@ -273,6 +296,21 @@ merge_outcome_write() {
       legacy_tree=$(printf '%s' "$capture_entries" | pr_git mktree) || return 1
     fi
     entries+=$'\n'"$(printf '040000 tree %s\tlegacy-refusal' "$legacy_tree")"
+  elif printf '%s\n' "$record" | jq -e '.recovery.localRefusal != null' >/dev/null; then
+    local refusal_tree
+    if [ -n "$capture_entries" ]; then
+      refusal_tree=$(printf '%s' "$capture_entries" | pr_git mktree) || return 1
+      merge_outcome_validate_local_refusal "$record" "$refusal_tree" || return 1
+    else
+      # Phase updates reuse the immutable proof already validated by this owner.
+      printf '%s\n' "$record" | jq -e --argjson previous "$MERGE_OUTCOME_RECORD" \
+        '.recovery == $previous.recovery' >/dev/null || {
+        merge_outcome_stop "local refusal provenance changed without a new evidence snapshot"
+        return 1
+      }
+      refusal_tree=$(GIT_NO_LAZY_FETCH=1 pr_git rev-parse "$MERGE_OUTCOME_OID:local-refusal") || return 1
+    fi
+    entries+=$'\n'"$(printf '040000 tree %s\tlocal-refusal' "$refusal_tree")"
   elif [ -n "$capture_entries" ]; then
     entries+=$'\n'"${capture_entries%$'\n'}"
   fi

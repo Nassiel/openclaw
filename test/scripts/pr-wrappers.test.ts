@@ -635,23 +635,43 @@ describe("scripts/pr wrappers", () => {
     }
   });
 
-  itPosix("resolves an explicit merge body from the caller before supervisor cwd changes", () => {
+  itPosix("resolves merge body and refusal paths before supervisor cwd changes", () => {
     const fixture = makeMismatchedWrapperRepo();
+    writeFileSync(
+      join(fixture.bin, "gh"),
+      `#!/bin/sh\nif [ "$1" = "browse" ]; then printf 'https://github.com/fixture/repo\\n'; else printf '{"base":{"ref":"main"}}\\n'; fi\n`,
+    );
     const caller = join(fixture.canonical, "nested");
     mkdirSync(caller);
     writeFileSync(
       join(fixture.canonical, "scripts/pr-lib/merge.sh"),
       `merge_run() { printf '<%s>\\n' "$@"; }\n`,
     );
-    const result = spawnSync(
-      join(fixture.canonical, "scripts/pr"),
-      ["merge-run", "123", "--body-file", "operator body.md"],
-      { cwd: caller, encoding: "utf8", env: fixture.env },
-    );
-    expect(result.status, result.stdout + result.stderr).toBe(0);
-    expect(result.stdout).toBe(
-      `<123>\n<false>\n<>\n<>\n<${join(caller, "operator body.md")}>\n<>\n<false>\n`,
-    );
+    for (const { args, expected } of [
+      {
+        args: ["merge-run", "123", "--body-file", "operator body.md"],
+        expected: `<123>\n<false>\n<>\n<>\n<${join(caller, "operator body.md")}>\n<>\n<false>\n<>\n`,
+      },
+      {
+        args: [
+          "merge-recover",
+          "123",
+          "a".repeat(40),
+          "--confirmed-operator-recovery",
+          "--local-refusal",
+          "operator evidence",
+        ],
+        expected: `<123>\n<false>\n<${"a".repeat(40)}>\n<>\n<>\n<>\n<false>\n<${join(caller, "operator evidence")}>\n`,
+      },
+    ]) {
+      const result = spawnSync(join(fixture.canonical, "scripts/pr"), args, {
+        cwd: caller,
+        encoding: "utf8",
+        env: fixture.env,
+      });
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(result.stdout).toBe(expected);
+    }
   });
 
   itPosix(
@@ -692,7 +712,7 @@ describe("scripts/pr wrappers", () => {
     },
   );
 
-  itPosix("rejects ambiguous body flags and keeps recovery confirmation mandatory", () => {
+  itPosix("rejects ambiguous merge inputs and keeps recovery confirmation mandatory", () => {
     const fixture = makeMismatchedWrapperRepo();
     for (const args of [
       ["merge-run", "123", "--body-file"],
@@ -701,6 +721,26 @@ describe("scripts/pr wrappers", () => {
       ["merge-run", "123", "--auto-merge", "--auto-merge"],
       ["merge-recover", "123", "a".repeat(40), "--body-file", "one"],
       ["merge-recover", "123", "a".repeat(40), "--confirmed-operator-recovery", "--auto-merge"],
+      ["merge-run", "123", "--local-refusal", "proof"],
+      ["merge-recover", "123", "a".repeat(40), "--local-refusal", "proof"],
+      ...[
+        [],
+        [""],
+        ["--cancel-auto"],
+        ["proof", "--local-refusal", "other"],
+        ["proof", "--replacement-head", "b".repeat(40)],
+        ["proof", "--legacy-refusal", "legacy", "--replacement-head", "b".repeat(40)],
+        ["proof", "--cancel-auto"],
+        ["proof", "--auto-merge"],
+      ].map((suffix) =>
+        [
+          "merge-recover",
+          "123",
+          "a".repeat(40),
+          "--confirmed-operator-recovery",
+          "--local-refusal",
+        ].concat(suffix),
+      ),
     ]) {
       const result = spawnSync(join(fixture.canonical, "scripts/pr"), args, {
         cwd: fixture.canonical,
@@ -712,7 +752,7 @@ describe("scripts/pr wrappers", () => {
     }
   });
 
-  itPosix("dispatches explicit replacement arguments through the same merge owner", () => {
+  itPosix("dispatches explicit recovery arguments through the same merge owner", () => {
     const fixture = makeMismatchedWrapperRepo();
     writeFileSync(
       join(fixture.bin, "gh"),
@@ -722,9 +762,16 @@ describe("scripts/pr wrappers", () => {
       join(fixture.canonical, "scripts/pr-lib/merge.sh"),
       `merge_run() { printf '<%s>\\n' "$@"; }\n`,
     );
-    for (const replacement of [[], ["--replacement-head", "b".repeat(40)], ["--cancel-auto"]]) {
+    for (const recovery of [
+      [],
+      ["--replacement-head", "b".repeat(40)],
+      ["--cancel-auto"],
+      ["--local-refusal", "proof"],
+    ]) {
       for (const body of [[], ["--body-file", "message.md"]]) {
-        const cancel = replacement[0] === "--cancel-auto";
+        const cancel = recovery[0] === "--cancel-auto";
+        const replacement = recovery[0] === "--replacement-head" ? recovery[1] : "";
+        const refusal = recovery[0] === "--local-refusal" ? join(fixture.canonical, "proof") : "";
         if (cancel && body.length) {
           continue;
         }
@@ -736,13 +783,13 @@ describe("scripts/pr wrappers", () => {
             "a".repeat(40),
             "--confirmed-operator-recovery",
             ...body,
-            ...replacement,
+            ...recovery,
           ],
           { cwd: fixture.canonical, encoding: "utf8", env: fixture.env },
         );
         expect(result.status, result.stdout + result.stderr).toBe(0);
         expect(result.stdout).toBe(
-          `<123>\n<false>\n<${"a".repeat(40)}>\n<${replacement[1] ?? ""}>\n<${body.length ? join(fixture.canonical, "message.md") : ""}>\n<>\n<${cancel}>\n`,
+          `<123>\n<false>\n<${"a".repeat(40)}>\n<${replacement}>\n<${body.length ? join(fixture.canonical, "message.md") : ""}>\n<>\n<${cancel}>\n<${refusal}>\n`,
         );
       }
     }
@@ -781,7 +828,7 @@ describe("scripts/pr wrappers", () => {
     );
     expect(result.status, result.stdout + result.stderr).toBe(0);
     expect(result.stdout).toBe(
-      `<123>\n<false>\n<${"a".repeat(40)}>\n<${"b".repeat(40)}>\n<>\n<${join(caller, "proof")}>\n<false>\n`,
+      `<123>\n<false>\n<${"a".repeat(40)}>\n<${"b".repeat(40)}>\n<>\n<${join(caller, "proof")}>\n<false>\n<>\n`,
     );
   });
 

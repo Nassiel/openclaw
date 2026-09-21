@@ -510,6 +510,10 @@ else if(args[0]==="pr"&&args[1]==="view") {
   if(args.includes("--jq")) {const q=args[args.indexOf("--jq")+1];out(q===".state"?pr.state:q===".mergeCommit.oid"?pr.mergeCommit?.oid??"null":pr.url);}
   else out(pr);
 } else if((args[0]==="pr"&&args[1]==="merge")||restMerge) {
+  if(s.mode==="local-auto-refusal") {
+    if(!args.includes("--auto")) fail("expected local auto-merge refusal");
+    fail("error: string rewrite protection blocked unsafe input");
+  }
   s.mutations++;
   if(s.quotaAt==="mutation") {s.quotaAt="observe";quota();}
   if(restMerge) {
@@ -678,7 +682,7 @@ begin_pr_operation_validation_phase
 if [ -n "\${5:-}" ]; then
   merge_complete 123 "$5"
 else
-  merge_run 123 "\${1:-false}" "\${2:-}" "\${3:-}" "\${4:-}" "\${6:-}" "\${7:-false}"
+  merge_run 123 "\${1:-false}" "\${2:-}" "\${3:-}" "\${4:-}" "\${6:-}" "\${7:-false}" "\${8:-}"
 fi
 `,
   );
@@ -713,6 +717,7 @@ fi
     completionOid = "",
     legacyDirectory = "",
     cancelAuto = false,
+    localRefusalDirectory = "",
   ) => {
     const result = spawnSync(
       nodeExecutable,
@@ -727,6 +732,7 @@ fi
         completionOid,
         legacyDirectory,
         String(cancelAuto),
+        localRefusalDirectory,
       ],
       {
         cwd,
@@ -891,6 +897,30 @@ Run the following to resolve the merge conflicts locally:
     files,
     oid: f.git(["hash-object", "--no-filters", join(directory, "merge-output.log")]),
   };
+}
+
+function createLocalAutoRefusal(f: ReturnType<typeof fixture>, outcome: string) {
+  const directory = join(f.root, "local-refusal-evidence");
+  mkdirSync(directory);
+  const capture = f.captures()[0]!;
+  const manifest = {
+    kind: "octopool-auto-pre-dispatch-refusal",
+    client: { version: "0.6.10", revision: "00c442d8084ad26eb5a5003f7372170e75a20c8a" },
+    outcome,
+    argv: f
+      .state()
+      .calls.findLast((call) => call[1] === "pr" && call[2] === "merge")!
+      .slice(1),
+    capture: {
+      name: capture[0],
+      oid: f.git(["hash-object", "--no-filters", "--stdin"], capture[1]),
+    },
+  };
+  const files = { "refusal.json": JSON.stringify(manifest), [capture[0]]: capture[1] };
+  for (const [name, contents] of Object.entries(files)) {
+    writeFileSync(join(directory, name), contents);
+  }
+  return { directory, manifest, files };
 }
 
 function reconciledMergeAfterCleanup(admin = false) {
@@ -2324,6 +2354,196 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
     expect(f.state().posts).toBe(0);
     expect(existsSync(capture)).toBe(true);
     expect(() => f.git(["rev-parse", "--verify", outcomeRef])).toThrow();
+  });
+
+  it("rejects unqualified local auto evidence and incomplete same-head gates", () => {
+    const f = fixture();
+    f.save({
+      ...f.state(),
+      mode: "local-auto-refusal",
+      pr: { ...f.state().pr, mergeStateStatus: "BEHIND" },
+    });
+    const refused = f.run(true);
+    expect(refused.status, refused.output).toBe(1);
+    const previous = f.git(["rev-parse", outcomeRef]);
+    const evidence = createLocalAutoRefusal(f, previous);
+    const originalCapture = join(f.worktree, ".local", evidence.manifest.capture.name);
+    const evidenceCapture = join(evidence.directory, evidence.manifest.capture.name);
+    const manifestPath = join(evidence.directory, "refusal.json");
+    const extraCapture = join(f.worktree, ".local/merge-output.other.log");
+    const calls = f.state().calls;
+    for (const fault of [
+      "missing-manifest",
+      "version",
+      "revision",
+      "outcome",
+      "head",
+      "repository",
+      "admin",
+      "unknown-network-failure",
+      "different-original",
+      "symlink",
+      "other-attempt",
+    ]) {
+      const manifest = structuredClone(evidence.manifest);
+      rmSync(evidenceCapture, { force: true });
+      rmSync(extraCapture, { force: true });
+      for (const [name, contents] of Object.entries(evidence.files)) {
+        writeFileSync(join(evidence.directory, name), contents);
+      }
+      writeFileSync(originalCapture, evidence.files[manifest.capture.name]!);
+      if (fault === "version") {
+        manifest.client.version = "0.6.11";
+      }
+      if (fault === "revision") {
+        manifest.client.revision = f.head;
+      }
+      if (fault === "outcome") {
+        manifest.outcome = f.base;
+      }
+      if (fault === "head") {
+        manifest.argv[8] = f.base;
+      }
+      if (fault === "repository") {
+        manifest.argv[4] = "https://github.com/fixture/other";
+      }
+      if (fault === "admin") {
+        manifest.argv.splice(6, 0, "--admin");
+      }
+      if (fault === "unknown-network-failure") {
+        const capture = "HTTP 502: request outcome unknown\n";
+        writeFileSync(evidenceCapture, capture);
+        writeFileSync(originalCapture, capture);
+        manifest.capture.oid = f.git(["hash-object", "--no-filters", "--stdin"], capture);
+      }
+      if (fault === "different-original") {
+        writeFileSync(originalCapture, "different attempt\n");
+      }
+      if (fault === "symlink") {
+        rmSync(evidenceCapture);
+        symlinkSync(originalCapture, evidenceCapture);
+      }
+      if (fault === "other-attempt") {
+        writeFileSync(extraCapture, "uncertain\n");
+      }
+      writeFileSync(manifestPath, JSON.stringify(manifest));
+      if (fault === "missing-manifest") {
+        rmSync(manifestPath);
+      }
+      const checked = spawnSync(
+        nodeExecutable,
+        [
+          join(scripts, "pr-lib/merge-legacy-refusal.mjs"),
+          "--local-auto",
+          evidence.directory,
+          previous,
+        ],
+        { cwd: f.worktree, env: gitEnv, encoding: "utf8" },
+      );
+      expect(checked.status, `${fault}: ${checked.stdout}${checked.stderr}`).toBe(1);
+    }
+    expect(f.state().calls).toEqual(calls);
+    rmSync(extraCapture);
+    for (const [name, contents] of Object.entries(evidence.files)) {
+      writeFileSync(join(evidence.directory, name), contents);
+    }
+    writeFileSync(originalCapture, evidence.files[evidence.manifest.capture.name]!);
+    f.recover();
+    f.save({ ...f.state(), mode: "success", pr: { ...f.state().pr, mergeStateStatus: "CLEAN" } });
+    writeFileSync(
+      join(f.worktree, ".local/gates.env"),
+      `PR_NUMBER=123\nGATES_MODE=github_pending\nLAST_VERIFIED_HEAD_SHA=${f.head}\n`,
+    );
+    const recovered = f.run(
+      false,
+      f.repo,
+      "squash",
+      previous,
+      "",
+      "",
+      "",
+      "",
+      false,
+      evidence.directory,
+    );
+    expect(recovered.status, recovered.output).toBe(1);
+    expect(recovered.output).toContain("completed gate stamps");
+    expect(f.state()).toMatchObject({ mutations: 0, posts: 0, cancellations: 0 });
+    expect(f.git(["rev-parse", outcomeRef])).toBe(previous);
+  });
+
+  it("recovers one source-qualified local auto refusal and retains its original evidence", () => {
+    const f = fixture();
+    f.save({
+      ...f.state(),
+      mode: "local-auto-refusal",
+      pr: { ...f.state().pr, mergeStateStatus: "BEHIND" },
+    });
+    const refused = f.run(true);
+    expect(refused.status, refused.output).toBe(1);
+    expect(f.state().mutations).toBe(0);
+    const previous = f.git(["rev-parse", outcomeRef]);
+    const original = f.record();
+    expect(original).toMatchObject({ phase: "intent", route: "auto", accepted: false });
+    const evidence = createLocalAutoRefusal(f, previous);
+    f.recover();
+    f.save({ ...f.state(), mode: "success", pr: { ...f.state().pr, mergeStateStatus: "CLEAN" } });
+
+    const recovered = f.run(
+      false,
+      f.repo,
+      "squash",
+      previous,
+      "",
+      "",
+      "",
+      "",
+      false,
+      evidence.directory,
+    );
+    expect(recovered.status, recovered.output).toBe(0);
+    expect(f.state()).toMatchObject({ mutations: 1, posts: 1, cancellations: 0 });
+    expect(f.record()).toMatchObject({
+      phase: "complete",
+      route: "immediate",
+      head: f.head,
+      recovery: {
+        outcome: previous,
+        attempt: original.attempt,
+        actor: "fixture-operator",
+        localRefusal: {
+          kind: "octopool-auto-pre-dispatch-refusal",
+          client: evidence.manifest.client,
+        },
+      },
+    });
+    const dispatch = f.state().calls.findLast((call) => call[1] === "pr" && call[2] === "merge")!;
+    expect(dispatch).not.toContain("--auto");
+    expect(dispatch[dispatch.indexOf("--match-head-commit") + 1]).toBe(f.head);
+    expect(JSON.parse(f.git(["show", `${previous}:outcome.json`]))).toEqual(original);
+    f.git(["merge-base", "--is-ancestor", previous, outcomeRef]);
+    rmSync(evidence.directory, { recursive: true });
+    f.git(["reflog", "expire", "--expire=now", "--all"]);
+    f.git(["gc", "--prune=now"]);
+    for (const [name, contents] of Object.entries(evidence.files)) {
+      expect(f.git(["rev-parse", `${outcomeRef}:local-refusal/${name}`])).toBe(
+        f.git(["hash-object", "--no-filters", "--stdin"], contents),
+      );
+    }
+    const replay = f.run(
+      false,
+      f.repo,
+      "squash",
+      previous,
+      "",
+      "",
+      "",
+      "",
+      false,
+      evidence.directory,
+    );
+    expect(replay.status, replay.output).toBe(1);
+    expect(f.state().mutations).toBe(1);
   });
 
   it.each([

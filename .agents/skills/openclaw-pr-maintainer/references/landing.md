@@ -104,6 +104,19 @@ The merge workflow still owns later main-drift policy. For explicitly
 owner-approved reviewed fork code without hosted Testbox, use the documented
 `OPENCLAW_PR_GATES_REMOTE=testbox` path.
 
+When protected Octopool does not support auto-merge, use completed hosted proof
+for future PRs. Clear both ambient selectors for each command so pending gates
+and implicit auto mode cannot carry into this scoped fallback:
+
+```bash
+env -u OPENCLAW_PR_GATES_REMOTE -u OPENCLAW_PR_AUTO_MERGE OPENCLAW_TESTBOX=1 scripts/pr prepare-run <pr>
+env -u OPENCLAW_PR_GATES_REMOTE -u OPENCLAW_PR_AUTO_MERGE scripts/pr merge-run <pr>
+```
+
+Run preparation after CI is green and require completed hosted proof before
+ordinary merge. Keep guarded `gh` enabled and omit `--auto-merge`. An existing
+retained attempt still requires the recovery procedure below.
+
 For a requested diagnosis or the completed-evidence path, watch one exact head
 with `node scripts/watch-pr-ci.mjs <pr> <head-sha>`; use narrow JSON check/run reads
 and fetch failed logs once. Address substantive human/bot findings and resolve
@@ -141,6 +154,68 @@ Replacement recovery requires completed ordinary gates, not `github_pending`.
 Use the completed-evidence preparation path above. Neither command deletes the
 prior outcome or bypasses review and merge admission. Queue cancellation is not
 supported by this path.
+
+For a source-qualified local Octopool refusal of an unaccepted auto intent,
+preserve the original capture and supply a descriptor attesting to the inspected
+historical client and argv. This is an explicit operator attestation; matching
+error text or an inferred network result does not qualify the attempt. Recovery
+requires completed-evidence preparation at the same prepared head.
+
+The evidence directory contains `refusal.json` and a byte-for-byte copy of the
+original `merge-output.<ATTEMPT_UUID>.log`; preserve the original in `.local` too.
+Use this manifest shape, replacing placeholders with the inspected historical
+facts. The client version and revision below are the supported source
+qualification, not values inferred from the error or today's installed binary.
+
+```json
+{
+  "kind": "octopool-auto-pre-dispatch-refusal",
+  "client": {
+    "version": "0.6.10",
+    "revision": "00c442d8084ad26eb5a5003f7372170e75a20c8a"
+  },
+  "outcome": "<OUTCOME_OID>",
+  "argv": [
+    "pr",
+    "merge",
+    "<PR>",
+    "--repo",
+    "https://github.com/openclaw/openclaw",
+    "--squash",
+    "--auto",
+    "--match-head-commit",
+    "<HEAD_SHA>",
+    "--body-file",
+    ".local/merge-body.<SIX_CHARACTER_SUFFIX>"
+  ],
+  "capture": {
+    "name": "merge-output.<ATTEMPT_UUID>.log",
+    "oid": "<CAPTURE_BLOB_OID>"
+  }
+}
+```
+
+Use full lowercase 40-character Git OIDs for the outcome, head, and capture.
+The capture OID comes from `git hash-object --no-filters -- <original-capture>`.
+The PR, repository URL, head, attempt UUID, argument order, and six-character
+alphanumeric body suffix must match that original invocation. The verifier
+requires the sole unchanged original capture containing exactly
+`error: string rewrite protection blocked unsafe input` and its terminating newline.
+Supplying this evidence and the confirmation flag records the operator's
+inspection and recovery decision; it does not turn error text into network proof.
+
+```bash
+env -u OPENCLAW_PR_GATES_REMOTE -u OPENCLAW_PR_AUTO_MERGE scripts/pr merge-recover <PR> <OUTCOME_OID> --confirmed-operator-recovery --local-refusal <directory>
+```
+
+`--local-refusal` is exclusive to `merge-recover` and cannot combine with
+`--replacement-head`, `--legacy-refusal`, `--cancel-auto`, or `--auto-merge`.
+Recovery requires the exact unaccepted auto intent, fresh repository/PR
+authority, completed gates, and a CLEAN supported immediate squash with no active
+auto request, queue, or admin route. The successor consumes the exact outcome OID
+by compare-and-swap, retains the original intent as ancestry, and preserves the
+capture and descriptor bytes. Missing or changed evidence and unknown network
+outcomes remain blocked; keep guarded `gh` enabled throughout.
 
 A failed operation can retain a lock. Verify no owned child tools remain, then
 recover only with the exact token and command the wrapper printed. Never remove

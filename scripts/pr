@@ -412,17 +412,20 @@ is_supervised_pr_process() {
     [ "${OPENCLAW_PR_LOCK_SUPERVISOR_PID:-}" = "$PPID" ]
 }
 
-# The supervisor changes cwd to the canonical repo. Resolve an explicit body
-# relative to the operator's caller before crossing that boundary; do not read it.
+# The supervisor changes cwd to the canonical repo. Resolve explicit body/evidence
+# paths relative to the operator's caller before crossing that boundary; do not read them.
 if [ "${1-}" = merge-run ] || [ "${1-}" = merge-recover ]; then
-  merge_cli_args=() merge_cli_body_next=false
+  merge_cli_args=() merge_cli_path_next=""
   for merge_cli_arg in "$@"; do
-    if [ "$merge_cli_body_next" = true ] && [ -n "$merge_cli_arg" ]; then
+    if [ -n "$merge_cli_path_next" ] && [ -n "$merge_cli_arg" ] &&
+      { [ "$merge_cli_path_next" != --local-refusal ] || [[ "$merge_cli_arg" != -* ]]; }; then
       merge_cli_arg=$(node -e 'process.stdout.write(require("node:path").resolve(process.argv[1]))' -- "$merge_cli_arg") || exit 1
     fi
     merge_cli_args+=("$merge_cli_arg")
-    merge_cli_body_next=false
-    if [ "$merge_cli_arg" = --body-file ] || [ "$merge_cli_arg" = --legacy-refusal ]; then merge_cli_body_next=true; fi
+    merge_cli_path_next=""
+    case "$merge_cli_arg" in
+      --body-file | --legacy-refusal | --local-refusal) merge_cli_path_next="$merge_cli_arg" ;;
+    esac
   done
   set -- "${merge_cli_args[@]}"
 fi
@@ -475,11 +478,13 @@ Usage:
     --body-file snapshots a regular UTF-8 file relative to the caller, replacing squash prose.
     Empty files are valid. Explicit/source co-authors and preview credit backed by tree-changing PR commits or PR authorship are retained; known machine credit is excluded. Queue merges reject it.
     Repeated merge-run reconciles retained outcomes; it never retries an uncertain dispatch.
-  scripts/pr merge-recover <PR> <OUTCOME_OID> --confirmed-operator-recovery [--replacement-head <SHA>] [--body-file <path>] [--legacy-refusal <evidence-directory>]
+  scripts/pr merge-recover <PR> <OUTCOME_OID> --confirmed-operator-recovery [--replacement-head <SHA>] [--body-file <path>] [--legacy-refusal <evidence-directory>] [--local-refusal <evidence-directory>]
     Explicitly authorize one new attempt after inspecting the retained outcome and remote history.
     Defaults to the retained head; replacement requires an explicitly approved full lowercase 40-character SHA,
     freshly authored exact-head review/preparation and completed CI proof. Never rebases automatically.
     Keeps prior evidence and reruns admission; requires the same method and no auto/queue/admin route.
+    --local-refusal qualifies inspected local CLI refusal evidence for the same unaccepted auto head.
+    It cannot combine with replacement, legacy refusal, cancellation, or auto-merge options.
     --cancel-auto instead retires the exact accepted non-queue auto request before any head repair.
     Repeated cancellation reconciles only. Use its current outcome OID for later reviewed/prepared recovery.
   scripts/pr merge-complete <PR> <OUTCOME_OID> --confirmed-operator-completion
@@ -580,7 +585,7 @@ main() {
         [[ "$2" =~ ^[0-9a-f]{40}$ ]] && [ "$3" = --confirmed-operator-completion ] || { usage; exit 2; }
       ;;
     merge-run | merge-recover)
-      local merge_pr="${1-}" auto_merge=false recovery_oid="" replacement_head="" body_path="" legacy_directory="" cancel_auto=false
+      local merge_pr="${1-}" auto_merge=false recovery_oid="" replacement_head="" body_path="" legacy_directory="" cancel_auto=false local_refusal_directory=""
       [ -n "$merge_pr" ] || { usage; exit 2; }
       shift
       if [ "$cmd" = merge-recover ]; then
@@ -611,6 +616,12 @@ main() {
             legacy_directory="$2"
             shift 2
             ;;
+          --local-refusal)
+            [ "$cmd" = merge-recover ] && [ "$#" -ge 2 ] && [ -n "$2" ] &&
+              [[ "$2" != -* ]] && [ -z "$local_refusal_directory" ] || { usage; exit 2; }
+            local_refusal_directory="$2"
+            shift 2
+            ;;
           --replacement-head)
             [ "$cmd" = merge-recover ] && [ "$#" -ge 2 ] &&
               [[ "$2" =~ ^[0-9a-f]{40}$ ]] && [ -z "$replacement_head" ] || { usage; exit 2; }
@@ -624,7 +635,9 @@ main() {
         auto_merge=true
       fi
       [ -z "$legacy_directory" ] || [ -n "$replacement_head" ] || { usage; exit 2; }
-      [ "$cancel_auto" = false ] || [ -z "$replacement_head$body_path$legacy_directory" ] || { usage; exit 2; }
+      [ "$cancel_auto" = false ] || [ -z "$replacement_head$body_path$legacy_directory$local_refusal_directory" ] || { usage; exit 2; }
+      [ -z "$local_refusal_directory" ] ||
+        { [ -z "$replacement_head$legacy_directory" ] && [ "$cancel_auto" = false ] && [ "$auto_merge" = false ]; } || { usage; exit 2; }
       set -- "$merge_pr"
       ;;
     review-init | review-checkout-main | review-checkout-pr | review-claim | review-guard | review-artifacts-init | review-validate-artifacts | prepare-init | prepare-validate-commit | prepare-gates | prepare-push | prepare-sync-head | prepare-run | ci-dispatch | merge-verify)
@@ -754,7 +767,7 @@ main() {
       merge_verify "$pr"
       ;;
     merge-run | merge-recover)
-      merge_run "$merge_pr" "$auto_merge" "$recovery_oid" "$replacement_head" "$body_path" "$legacy_directory" "$cancel_auto"
+      merge_run "$merge_pr" "$auto_merge" "$recovery_oid" "$replacement_head" "$body_path" "$legacy_directory" "$cancel_auto" "$local_refusal_directory"
       ;;
     merge-complete)
       merge_complete "$1" "$2"

@@ -451,9 +451,9 @@ prepare_squash_merge_body() {
   printf '%s\n' "$body_file"
 }
 
-# Replacement approval names a reviewed head, not permission to reuse another
-# head's artifacts. Subshell isolation prevents sourced stamps from changing admission.
-verify_merge_replacement_artifacts() (
+# Recovery approval never permits stale head artifacts. Subshell isolation
+# prevents sourced stamps from changing admission.
+verify_merge_recovery_artifacts() (
   local pr="$1" head="$2"
   local PR_NUMBER="" PR_HEAD_SHA="" PR_HEAD_SHA_BEFORE=""
   local PREP_HEAD_SHA="" LOCAL_PREP_HEAD_SHA="" LAST_VERIFIED_HEAD_SHA="" GATES_MODE=""
@@ -480,10 +480,19 @@ merge_run() {
   local pr="$1"
   local auto_merge_requested="${2:-false}"
   local recovery_oid="${3:-}" recovery_record="" recovery_actor=""
-  local replacement_head="${4:-}" replacement_artifacts="" recovery_captures=()
+  local replacement_head="${4:-}" recovery_artifacts="" recovery_captures=()
   local body_path="${5:-}" captured_body="" merge_body_snapshot=""
   local legacy_directory="${6:-}" legacy_refusal="" legacy_captures=()
   local cancel_auto="${7:-false}"
+  local local_refusal_directory="${8:-}" local_refusal="" local_refusal_requested=false
+  if [ -n "$local_refusal_directory" ]; then
+    if [ -z "$recovery_oid" ] || [ -n "$replacement_head$legacy_directory" ] ||
+      [ "$cancel_auto" = true ] || [ "$auto_merge_requested" = true ]; then
+      echo "Local refusal evidence requires confirmed same-head immediate recovery." >&2
+      return 2
+    fi
+    local_refusal_requested=true
+  fi
   [ -z "$body_path" ] || body_path=$(node -e 'process.stdout.write(require("node:path").resolve(process.argv[1]))' -- "$body_path") || return 1
   if [ -n "$replacement_head" ] &&
     { [ -z "$recovery_oid" ] || ! [[ "$replacement_head" =~ ^[0-9a-f]{40}$ ]]; }; then
@@ -504,10 +513,11 @@ merge_run() {
     }
   elif [ -n "$recovery_oid" ]; then
     if [ "$recovery_oid" != "$MERGE_OUTCOME_OID" ] ||
-      ! printf '%s\n' "$MERGE_OUTCOME_RECORD" | jq -e '
+      ! printf '%s\n' "$MERGE_OUTCOME_RECORD" | jq -e --argjson localRefusal "$local_refusal_requested" '
         .phase == "intent" and
-        ((.accepted == false and .route == "immediate") or
-         (.accepted == true and .route == "auto" and .cancellation.state == "confirmed"))
+        (if $localRefusal then .accepted == false and .route == "auto" and .method == "squash"
+         else (.accepted == false and .route == "immediate") or
+          (.accepted == true and .route == "auto" and .cancellation.state == "confirmed") end)
       ' >/dev/null; then
       merge_outcome_stop "operator recovery requires the exact unaccepted immediate intent or confirmed auto cancellation; no attempt was authorized"
       return 1
@@ -545,11 +555,21 @@ merge_run() {
     .local/prep.md
     .local/prep.env
   )
-  [ -z "$replacement_head" ] || required_artifacts+=(.local/prep-context.env .local/gates.env)
+  if [ -n "$replacement_head$local_refusal_directory" ]; then
+    required_artifacts+=(.local/prep-context.env .local/gates.env)
+  fi
   for required in "${required_artifacts[@]}"; do
     require_artifact "$required" || return 1
   done
 
+  if [ -n "$local_refusal_directory" ]; then
+    local_refusal=$(node "$script_parent_dir/pr-lib/merge-legacy-refusal.mjs" --local-auto \
+      "$local_refusal_directory" "$recovery_oid") || return 1
+    local evidence_file
+    while IFS= read -r evidence_file; do
+      recovery_captures+=("$local_refusal_directory/$evidence_file")
+    done < <(printf '%s\n' "$local_refusal" | jq -r '.files | keys[]')
+  fi
   if [ -n "$replacement_head" ]; then
     local capture
     for capture in .local/merge-output.log .local/merge-output.*.log; do
@@ -558,9 +578,13 @@ merge_run() {
       recovery_captures+=("$capture")
       required_artifacts+=("$capture")
     done
-    replacement_artifacts=$(pr_git hash-object --no-filters -- "${required_artifacts[@]}") || return 1
-    if ! verify_merge_replacement_artifacts "$pr" "$replacement_head"; then
-      merge_outcome_stop "replacement head requires matching PR, freshly reviewed prepare context, prepared tree, and completed gate stamps; re-run review and prepare"
+  fi
+  if [ -n "$replacement_head$local_refusal_directory" ]; then
+    recovery_artifacts=$(pr_git hash-object --no-filters -- "${required_artifacts[@]}") || return 1
+    local recovery_head="$replacement_head"
+    [ -n "$recovery_head" ] || recovery_head=$(printf '%s\n' "$recovery_record" | jq -r .head)
+    if ! verify_merge_recovery_artifacts "$pr" "$recovery_head"; then
+      merge_outcome_stop "recovery requires matching PR, freshly reviewed prepare context, prepared tree, and completed gate stamps; re-run review and prepare"
       return 1
     fi
   fi
@@ -750,6 +774,12 @@ merge_run() {
     merge_outcome_stop "operator recovery requires current immediate admission without admin, auto, or queue routing"
     return 1
   fi
+  if [ -n "$local_refusal_directory" ] && ! printf '%s\n' "$MERGE_OBSERVATION" | jq -e '
+    .pr.mergeable == "MERGEABLE" and .pr.mergeStateStatus == "CLEAN"
+  ' >/dev/null; then
+    merge_outcome_stop "qualified local refusal recovery requires CLEAN immediate admission"
+    return 1
+  fi
   # gh skips local status refusals for queue-enabled PRs; admin bypasses BLOCKED/BEHIND.
   # Reject known client-side refusals before recording non-retryable intent.
   if printf '%s\n' "$MERGE_OBSERVATION" | jq -e --arg route "$route" '
@@ -791,12 +821,17 @@ merge_run() {
     return 1
   fi
   validate_clawsweeper_review_comments "$pr" "$PREP_HEAD_SHA" || return 1
-  if [ -n "$replacement_head" ]; then
-    if [ "$replacement_artifacts" != "$(pr_git hash-object --no-filters -- "${required_artifacts[@]}")" ]; then
-      merge_outcome_stop "replacement artifacts changed during admission"
+  if [ -n "$replacement_head$local_refusal_directory" ]; then
+    if [ "$recovery_artifacts" != "$(pr_git hash-object --no-filters -- "${required_artifacts[@]}")" ]; then
+      merge_outcome_stop "recovery artifacts changed during admission"
       return 1
     fi
     verify_prep_branch_matches_prepared_head "$pr" "$LOCAL_PREP_HEAD_SHA" || return 1
+  fi
+  if [ -n "$local_refusal_directory" ] &&
+    [ "$local_refusal" != "$(node "$script_parent_dir/pr-lib/merge-legacy-refusal.mjs" --local-auto "$local_refusal_directory" "$recovery_oid")" ]; then
+    merge_outcome_stop "local refusal evidence changed during admission"
+    return 1
   fi
   if [ -n "$merge_body_snapshot" ] &&
     [ "$merge_body_snapshot" != "$(snapshot_merge_body "$merge_body_file")" ]; then
@@ -843,8 +878,10 @@ merge_run() {
     # The outcome CAS consumes that exact decision and retains the old intent as a parent.
     intent=$(printf '%s\n' "$intent" | jq -c --arg outcome "$recovery_oid" \
       --argjson previous "$recovery_record" --arg actor "$recovery_actor" --arg replacement "$replacement_head" \
+      --argjson localRefusal "${local_refusal:-null}" \
       '.recovery=({outcome:$outcome,attempt:$previous.attempt,actor:$actor,reason:"explicit-operator-recovery"} +
-        if $replacement == "" then {} else {replacementHead:$replacement} end)') || return 1
+        (if $replacement == "" then {} else {replacementHead:$replacement} end) +
+        (if $localRefusal == null then {} else {localRefusal:$localRefusal} end))') || return 1
   fi
   mark_pr_operation_side_effects_started
   MERGE_ADMISSION_ACTIVE=false
