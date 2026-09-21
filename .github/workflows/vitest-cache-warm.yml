@@ -43,7 +43,6 @@ jobs:
           dependency-cache: ${{ matrix.platform == 'linux' && 'true' || 'false' }}
           install-bun: "false"
           node-compile-cache: ${{ matrix.platform == 'linux' && 'true' || 'false' }}
-          node-compile-cache-scope: "test"
           vitest-fs-cache: ${{ matrix.platform == 'linux' && 'true' || 'false' }}
           vitest-worker-cache: ${{ matrix.platform == 'linux' && 'true' || 'false' }}
 

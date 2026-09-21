@@ -8,6 +8,7 @@ import {
   retireQueuedChatTurnCancellation,
   type QueuedChatTurnMap,
 } from "../chat-queued-turns.js";
+import { buildAbortedChatSendPayload } from "./chat-abort-authorization.js";
 import type { WebchatReplyMediaRequesterContext } from "./chat-reply-media.js";
 import { createChatSendLateFollowupDisposition } from "./chat-send-late-followup.js";
 import type { PreparedChatSendSession } from "./chat-send-session.js";
@@ -50,6 +51,25 @@ export function createChatSendTurnAdoptionLifecycle(params: {
   let terminalKnown = false;
   let completed = false;
   let releaseWorkAdmission: (() => void) | undefined;
+  const recordRefreshTerminal = (status: "completed" | "aborted") => {
+    if (!params.suppressReplies) {
+      return;
+    }
+    const now = Date.now();
+    setGatewayDedupeEntry({
+      dedupe: params.context.dedupe,
+      key: `chat:${params.runId}`,
+      session: captureAgentJobSession(params.sessionBinding),
+      entry: {
+        ts: now,
+        ok: true,
+        payload:
+          status === "aborted"
+            ? buildAbortedChatSendPayload({ runId: params.runId, endedAt: now })
+            : { runId: params.runId, status },
+      },
+    });
+  };
   const lateFollowup = createChatSendLateFollowupDisposition({
     runId: params.runId,
     originatingChannel: params.originatingChannel,
@@ -89,6 +109,7 @@ export function createChatSendTurnAdoptionLifecycle(params: {
         agentId: params.agentId,
         ownerConnId: normalizeOptionalChatText(params.ownerConnId),
         ownerDeviceId: normalizeOptionalChatText(params.ownerDeviceId),
+        onAborted: () => recordRefreshTerminal("aborted"),
       });
       if (enqueued && !releaseWorkAdmission) {
         // Retain the session fence until this detached queued ownership ends.
@@ -115,17 +136,8 @@ export function createChatSendTurnAdoptionLifecycle(params: {
       // the exact queued owner can retire an executed or abandoned refresh.
       completed = ownsCompletion && terminalKnown;
       try {
-        if (params.suppressReplies && completed) {
-          setGatewayDedupeEntry({
-            dedupe: params.context.dedupe,
-            key: `chat:${params.runId}`,
-            session: captureAgentJobSession(params.sessionBinding),
-            entry: {
-              ts: Date.now(),
-              ok: true,
-              payload: { runId: params.runId, status: "completed" },
-            },
-          });
+        if (completed) {
+          recordRefreshTerminal("completed");
         }
       } finally {
         releaseWorkAdmission?.();

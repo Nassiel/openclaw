@@ -58,6 +58,12 @@ for the backup, retention, and re-upgrade contract.
 
 Cloud Worker Desktop lets an administrator watch or control a capable worker from the Control UI without exposing its cloud node as an ordinary paired node. Enable the **Cloud Worker Desktop** lab, then set `settings.desktop: true` on a Linux, prepared macOS, or native Windows Crabbox profile. Select `windows/normal` for Windows; WSL2 desktops are unsupported. Desktop capability is fixed at warm time: changing the setting affects newly provisioned workers, while an existing non-desktop lease must be stopped and reprovisioned. Warm-image capture remains Linux only. Native desktops provision cold even when the shared profile enables warm images.
 
+The lab switch applies without restarting the Gateway. Connected Control UI
+pages update desktop availability automatically. Disabling it closes worker
+desktop observations; the workers and their applications keep running.
+Re-enabling it restores access to workers that already have desktop capability.
+Changing the lab does not provision or replace workers.
+
 The bundled Crabbox plugin supports direct AWS and Azure profiles. Coordinator-backed AWS, Azure, and Hetzner profiles are supported when the selected coordinator supports that target's desktop. OpenClaw keeps worker execution node-only: `openclaw worker`, workspace transfer, desktop observation, and app launch all use the authenticated outbound node connection. It does not restore SSH execution, a reverse tunnel, or rsync. Direct Hetzner rejects OpenClaw's fixed lease ID, so desktop profiles fail before allocation unless Hetzner uses a capable managed coordinator.
 
 Each node connects to its desktop's authenticated RFB server through `127.0.0.1:5900`. The desktop also has a browser with loopback CDP on port `9222` and provider-owned Browser and Terminal launchers. OpenClaw installs a worker wallpaper so the disposable desktop is easy to identify. Setup is idempotent and completes before the cloud desktop becomes available, including on provisioning replay. Project image preparation keeps desktop setup before project setup and capture.

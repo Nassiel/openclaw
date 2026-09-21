@@ -41,15 +41,8 @@ import {
 } from "../gateway/managed-image-record-store.kernel.js";
 import { registerSessionGroupInDatabase } from "../gateway/session-group-registration.kernel.js";
 import { readDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
-import {
-  countFailedDeliveryQueueEntriesInDatabase,
-  pruneExpiredDeliveryQueueTombstonesInDatabase,
-} from "../infra/delivery-queue-sqlite.kernel.js";
+import * as deliveryQueue from "../infra/delivery-queue.worker.js";
 import * as deviceAuth from "../infra/device-auth-store.kernel.js";
-import { executeDeliveryQueueAck } from "../infra/outbound/delivery-queue-ack.worker.js";
-import { executeDeliveryQueueEnqueue } from "../infra/outbound/delivery-queue-enqueue.worker.js";
-import { loadDeliveryQueueMediaRetentionSnapshotInDatabase } from "../infra/outbound/delivery-queue-media-staging.kernel.js";
-import { executePendingDeliveryFailure } from "../infra/outbound/delivery-queue-pending-failure.worker.js";
 import { executePromotionCommand } from "../infra/promotions-feed.worker.js";
 import {
   readApnsRegistrationFromDatabase,
@@ -75,6 +68,8 @@ import {
 } from "../infra/telemetry-store.kernel.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { readRemoteModelCatalog } from "../model-catalog/remote-store.js";
+import { executePluginBlobCommand } from "../plugin-state/plugin-blob-store.worker.js";
+import { isPluginBlobWorkerCommand } from "../plugin-state/plugin-blob-worker-contract.js";
 import { isPluginStateWorkerCommand } from "../plugin-state/plugin-state-worker-contract.js";
 import { executePluginStateCommand } from "../plugin-state/plugin-state.worker.js";
 import {
@@ -105,7 +100,7 @@ import * as skillWorkshop from "../skills/workshop/store.worker.js";
 import { isTaskRegistryWorkerCommand } from "../tasks/task-registry.worker-contract.js";
 import { executeTaskRegistryCommand } from "../tasks/task-registry.worker.js";
 import { executeTranscriptRead } from "../transcripts/store-worker-read.js";
-import { appendTranscriptInWorker } from "../transcripts/store-worker-write.js";
+import { executeTranscriptWrite } from "../transcripts/store-worker-write.js";
 import {
   listAgentProvenanceInDatabase,
   readAgentProvenanceBatchInDatabase,
@@ -355,6 +350,9 @@ export function executeSharedStateCommand(
       env: getSqliteWorkerStateContext().environment,
     });
   }
+  if (isPluginBlobWorkerCommand(command)) {
+    return executePluginBlobCommand(command, context.databasePath, open);
+  }
   if (isPluginStateWorkerCommand(command)) {
     return executePluginStateCommand(
       command,
@@ -399,8 +397,8 @@ export function executeSharedStateCommand(
   if (command.type === "deviceAuth.list") {
     return deviceAuth.readDeviceAuthTokensFromDatabase(database.db, command.input);
   }
-  if (command.type === "transcripts.append") {
-    return appendTranscriptInWorker(command.input, { database, path: context.databasePath });
+  if (command.type === "transcripts.append" || command.type === "transcripts.writeSummary") {
+    return executeTranscriptWrite(command, { database, path: context.databasePath });
   }
   switch (command.type) {
     case "transcripts.sessionEntries":
@@ -459,15 +457,6 @@ export function executeSharedStateCommand(
   if (isCronStateWorkerCommand(command)) {
     return executeCronStateCommand(command, database);
   }
-  if (command.type === "deliveryQueue.countFailed") {
-    return countFailedDeliveryQueueEntriesInDatabase(database);
-  }
-  if (command.type === "deliveryQueue.pruneTombstones") {
-    return pruneExpiredDeliveryQueueTombstonesInDatabase(database);
-  }
-  if (command.type === "deliveryQueue.mediaRetentionSnapshot") {
-    return loadDeliveryQueueMediaRetentionSnapshotInDatabase(database, command.input);
-  }
   if (isSessionDeliveryCommand(command)) {
     return executeSessionDeliveryCommand(command, database);
   }
@@ -479,17 +468,11 @@ export function executeSharedStateCommand(
   if (command.type === "sessionGroups.register") {
     return registerSessionGroupInDatabase(database, command.input.name, writeOptions.env);
   }
-  if (command.type === "deliveryQueue.ack") {
-    return executeDeliveryQueueAck(command.input, writeOptions);
-  }
-  if (command.type === "deliveryQueue.failPending") {
-    return executePendingDeliveryFailure(command.input, writeOptions);
+  if (deliveryQueue.isDeliveryQueueCommand(command)) {
+    return deliveryQueue.executeDeliveryQueueCommand(command, writeOptions);
   }
   if (command.type === "skillUploads.commit") {
     return commitSkillUploadInDatabase(command.input, writeOptions);
-  }
-  if (command.type === "deliveryQueue.enqueue") {
-    return executeDeliveryQueueEnqueue(command.input, writeOptions);
   }
   if (
     command.type === "deviceAuth.store" ||
