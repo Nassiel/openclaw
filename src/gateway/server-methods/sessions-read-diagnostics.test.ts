@@ -340,6 +340,7 @@ test.each([
           handlerElapsedMs: 25,
           handlerOutcome: "threw",
           responseOutcome: stage === "response" ? "threw" : "none",
+          prepareSyncMs: stage === "selection" ? 25 : 0,
         });
         if (cpuFailure === "none") {
           const metric = stage === "selection" ? "prepare" : stage;

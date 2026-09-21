@@ -55,7 +55,7 @@ export async function deliverPendingDeliveryNotice(
     });
     delivered = !outcome.suppressed;
   } catch {
-    const owner = findDeliveryIntentOwner(idempotencyKey);
+    const owner = await findDeliveryIntentOwner(idempotencyKey);
     if (owner?.status !== "completed" && owner?.status !== "failed") {
       return;
     }

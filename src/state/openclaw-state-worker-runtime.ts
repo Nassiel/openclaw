@@ -44,6 +44,7 @@ import { readDeferredPluginMigrations } from "../infra/deferred-plugin-migration
 import * as deliveryQueue from "../infra/delivery-queue.worker.js";
 import * as deviceAuth from "../infra/device-auth-store.kernel.js";
 import { commitExecAuthorizationsInWorker } from "../infra/exec-approvals-authorization.worker.js";
+import { executeCurrentConversationBindingCommand } from "../infra/outbound/current-conversation-bindings.worker.js";
 import { executePromotionCommand } from "../infra/promotions-feed.worker.js";
 import {
   readApnsRegistrationFromDatabase,
@@ -351,6 +352,7 @@ export function executeSharedStateCommand(
   if (
     command.type === "userProfiles.list" ||
     command.type === "userProfiles.directory" ||
+    command.type === "userProfiles.email.ensure" ||
     command.type === "userProfiles.avatar.inspect" ||
     command.type === "userProfiles.avatar.adopt"
   ) {
@@ -479,6 +481,12 @@ export function executeSharedStateCommand(
     path: context.databasePath,
     env: getSqliteWorkerStateContext().environment,
   };
+  if (
+    command.type === "conversationBindings.resolve" ||
+    command.type === "conversationBindings.touch"
+  ) {
+    return executeCurrentConversationBindingCommand(command, writeOptions);
+  }
   if (isNodeWorkerJournalCommand(command)) {
     return executeNodeWorkerJournalCommand(command, writeOptions);
   }

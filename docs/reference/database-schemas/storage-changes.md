@@ -138,8 +138,11 @@ account without repeating network verification. Empty repository results retain
 the non-repository workspace owner's fallback. Database-open behavior, publication
 writes, schemas, and retention are unchanged.
 
-Project recents and observed checkouts prepare durable session listings through
-the existing session-transcript worker. Federation captures physical targets,
+Default project recents reuse the Gateway's resident session-row projection after
+readiness, including archived metadata. The combined-store loader retains physical
+store selection, sentinel precedence, and process-local incognito reads. Observed
+checkout requests prepare durable session listings through the existing
+session-transcript worker. Federation captures physical targets,
 options, and a transferable environment before waiting, preserving canonical
 keys, ordering, and admission diagnostics; unavailable reads remain errors.
 The Gateway resolves current profile aliases and disclosure
@@ -170,6 +173,15 @@ per-row uncertainty within a valid continuation. Placement retirement still uses
 its existing live placement, claim, and environment checks; this read migration
 changes no destructive-retirement permission, schema, retention, or update behavior.
 
+Session-row placement display facts use the shared-state fixed-read worker. Each
+batch reads placement, move, pending workspace result, and environment facts from
+one committed snapshot. Resident rows refresh after owner publications; archived
+pages and private exact reads prepare only selected rows. Presentation consumes
+prepared facts without reopening SQLite, and host-only conflict payloads remain
+bound to the captured placement generation, environment, epoch, or retained
+workspace-result claim. Placement mutations, authority checks, schema, retention,
+and update behavior keep their existing owners and contracts.
+
 Observed-project discovery and the CLI's lossless worktree cleanup result read
 managed worktree registry records through the shared-state worker. The read
 captures its database before waiting and preserves record ordering, cleanup
@@ -189,6 +201,17 @@ facts, never permission or current alias authority. Project recents retain a nar
 fresh canonical-profile and alias query for their disclosure scope. Profile creation,
 display-name and role changes, explicit avatar uploads, identity merges, and final
 identity/permission lookups keep their existing native owners.
+
+Chat startup prepares its requester from the profile catalog retained by the
+session projection. Metadata reads the current merge head after preparation
+waits and rejects a changed client identity or retired physical database. A
+missing catalog leaves optional metadata unavailable without opening SQLite.
+Legacy email clients resolve their alias through the read-only worker; only
+a missing alias enters the shared-state writer and existing profile transaction.
+Committed creation updates the same resident catalog before profile observers,
+including retained reconciliation when result delivery fails. Other profile
+mutation and authorization paths retain their existing owners. Schema, migration,
+update, and retention behavior are unchanged.
 
 Post-login Tailscale avatar adoption reads and conditionally writes through the
 shared-state worker. Its transaction follows the current merge target and preserves
@@ -725,6 +748,17 @@ use one snapshot and bypass secondary indexes so stale indexes cannot hide rows.
 Only pending reads coalesce; completed results are not cached. Physical integrity
 verification remains with full registry restoration and Doctor, while known
 database failures and quarantine still refuse summary reads.
+
+Task-flow maintenance prepares cold and dirty flow projections through their
+existing worker owner. Linked-task checks join accepted event work and preserve
+unsettled publications; absence in a durable snapshot cannot retire pending work.
+The worker rereads the flow revision and linked tasks inside its transaction,
+while host admission rechecks live ownership before writing and committing.
+Timestamp repair still precedes cancellation, and both precede retention on a
+later pass. Only explicit revision conflicts retry; write failures and uncertain
+outcomes are not replayed. Committed outcomes survive later cleanup or publication
+failures. The seven-day retention policy, schemas, and update behavior are unchanged.
+Task reconciliation and ACP session and binding cleanup retain their separate owners.
 
 Offline `status --json --all` checks for existing built-in memory data through
 memory-core's retrieval worker before constructing a memory manager. The check
