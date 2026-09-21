@@ -1,6 +1,34 @@
 import { vi } from "vitest";
+import type { InternalSessionEntry as SessionEntry } from "../../config/sessions.js";
 import type { callGateway } from "../../gateway/call.js";
 import type { GatewayRecoveryRuntime } from "../../gateway/server-instance-runtime.types.js";
+import {
+  createSessionEntry,
+  type SessionEntryFixture,
+} from "../subagent-test-fixtures.test-helpers.js";
+
+export function mainSessionEntry(overrides: SessionEntryFixture = {}): SessionEntry {
+  return createSessionEntry({
+    sessionId: "main-session",
+    permissionMode: "guarded",
+    updatedAt: Date.now() - 10_000,
+    status: "running",
+    abortedLastRun: true,
+    ...overrides,
+  });
+}
+
+export function runningSessionEntry(
+  sessionId: string,
+  overrides: SessionEntryFixture = {},
+): SessionEntry {
+  return createSessionEntry({
+    sessionId,
+    updatedAt: Date.now() - 10_000,
+    status: "running",
+    ...overrides,
+  });
+}
 
 export function createRecoveryRuntimeFixture(params: {
   callGateway: typeof callGateway;

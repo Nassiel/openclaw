@@ -109,7 +109,11 @@ import {
 import { subagentRuns } from "../subagents/registry/subagent-registry-memory.js";
 import { registerHarnessCompletionRecoveryCases } from "./main-session-harness-completion.test-harness.js";
 import * as recoveryOwnerRelease from "./main-session-recovery-owner-release.js";
-import { createRecoveryRuntimeFixture } from "./main-session-recovery-runtime.test-support.js";
+import {
+  createRecoveryRuntimeFixture,
+  mainSessionEntry,
+  runningSessionEntry,
+} from "./main-session-recovery-runtime.test-support.js";
 import {
   claimMainSessionRecoveryOwner,
   commitMainSessionRecovery,
@@ -258,26 +262,6 @@ async function writeStore(
   store: Record<string, SessionEntryFixture>,
 ): Promise<void> {
   await writeStorePath(path.join(sessionsDir, "sessions.json"), store);
-}
-
-function mainSessionEntry(overrides: SessionEntryFixture = {}): SessionEntry {
-  return createSessionEntry({
-    sessionId: "main-session",
-    permissionMode: "guarded",
-    updatedAt: Date.now() - 10_000,
-    status: "running",
-    abortedLastRun: true,
-    ...overrides,
-  });
-}
-
-function runningSessionEntry(sessionId: string, overrides: SessionEntryFixture = {}): SessionEntry {
-  return createSessionEntry({
-    sessionId,
-    updatedAt: Date.now() - 10_000,
-    status: "running",
-    ...overrides,
-  });
 }
 
 function activeRestartRun(
@@ -3707,7 +3691,6 @@ describe("main-session-restart-recovery", () => {
           loadSessionEntry({ sessionKey: "agent:main:main", storePath: customStorePath }),
         ).toMatchObject({ abortedLastRun: false }),
       );
-      await recovery.stop();
     } finally {
       await recovery.stop();
     }
@@ -3720,9 +3703,7 @@ describe("main-session-restart-recovery", () => {
   });
 
   it("rediscovers a restored configured store between startup marking and recovery", async () => {
-    const sessionsDir = await makeSessionsDir();
-    const storePath = path.join(sessionsDir, "sessions.json");
-    await writeMainSession({ sessionsDir, abortedLastRun: undefined });
+    const { sessionsDir, storePath } = await makeMainSessionFixture({ abortedLastRun: undefined });
     await writeTranscript(sessionsDir, "main-session", [
       { role: "user", content: "resume the interrupted main session" },
       { role: "toolResult", content: "main result" },
@@ -3767,7 +3748,7 @@ describe("main-session-restart-recovery", () => {
       await waitForFast(() => expect(callGateway).toHaveBeenCalledOnce());
       dispatchSettlement.resolve(); // The second store waits for the first recovery slot.
       await waitForFast(() => expect(callGateway).toHaveBeenCalledTimes(2));
-      await recovery.stop();
+      await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
 
       expect(loadSessionEntry({ sessionKey: "agent:main:main", storePath })).toMatchObject({
         abortedLastRun: false,
@@ -3877,10 +3858,7 @@ describe("main-session-restart-recovery", () => {
     const storePath = path.join(sessionsDir, "sessions.json");
     const releaseStartup = createDeferred();
     await writeStore(sessionsDir, {
-      "agent:main:main": {
-        ...runningSessionEntry("pre-start-session"),
-        updatedAt: 1,
-      },
+      "agent:main:main": runningSessionEntry("pre-start-session", { updatedAt: 1 }),
     });
     await writeTranscript(sessionsDir, "pre-start-session", [
       { role: "user", content: "resume the interrupted work" },
@@ -3910,8 +3888,14 @@ describe("main-session-restart-recovery", () => {
     ]);
 
     releaseStartup.resolve();
-    await waitForFast(() => expect(callGateway).toHaveBeenCalledOnce());
-    await recovery.stop();
+    try {
+      await waitForFast(() => {
+        expect(callGateway).toHaveBeenCalledOnce();
+        expect(getActiveGatewayRootWorkCount()).toBe(0);
+      });
+    } finally {
+      await recovery.stop();
+    }
 
     const store = readStore(storePath);
     expect(store["agent:main:main"]?.abortedLastRun).toBe(false);
@@ -3947,8 +3931,14 @@ describe("main-session-restart-recovery", () => {
     } as OpenClawConfig;
     releaseStartup.resolve();
 
-    await waitForFast(() => expect(callGateway).toHaveBeenCalledOnce());
-    await recovery.stop();
+    try {
+      await waitForFast(() => {
+        expect(callGateway).toHaveBeenCalledOnce();
+        expect(getActiveGatewayRootWorkCount()).toBe(0);
+      });
+    } finally {
+      await recovery.stop();
+    }
     expect(loadSessionEntry({ sessionKey: "agent:work:main", storePath })).toMatchObject({
       abortedLastRun: false,
     });
