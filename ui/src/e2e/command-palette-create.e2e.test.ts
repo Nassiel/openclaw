@@ -4,6 +4,10 @@ import type { Locator, Page } from "playwright";
 import { expect, it } from "vitest";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import {
+  expectPaletteProjectGrouping,
+  expectPaletteSettingsAlignment,
+} from "./command-palette-settings.test-support.ts";
+import {
   appearanceKey,
   foregroundKey,
   foregroundDraft,
@@ -11,10 +15,6 @@ import {
   openFromForeground,
   expectForegroundUnchanged,
 } from "./command-palette.test-support.ts";
-import {
-  expectPaletteProjectGrouping,
-  expectPaletteSettingsAlignment,
-} from "./command-palette-settings.test-support.ts";
 import {
   createControlUiE2eContextOptions,
   createControlUiE2eSuite,
@@ -309,7 +309,7 @@ suite.define(() => {
         },
         async ({ page }) => {
           await installMockGateway(page, scenario());
-          const { palette } = await openFromForeground(page);
+          const { palette } = await openFromForeground(page, suite.server.baseUrl);
           const popup = palette.locator("wa-popover.palette-session-settings");
           await changePicker(popup, "wa-after-show", () =>
             palette.getByRole("button", { name: "New session settings", exact: true }).click(),
