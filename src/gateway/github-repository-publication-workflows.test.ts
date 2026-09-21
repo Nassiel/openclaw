@@ -165,7 +165,7 @@ describe("repository checkpoint workflow authority", () => {
   });
 
   it.each(["truncated", "different-tree"] as const)(
-    "refuses an %s workflow tree observation before upload",
+    "refuses a %s workflow tree observation before upload",
     async (failure) => {
       const f = await createFixture();
       const transport = mocks.runCommand.getMockImplementation()!;

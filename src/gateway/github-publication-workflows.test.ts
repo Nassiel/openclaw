@@ -105,7 +105,6 @@ describe("accepted GitHub workflow publication", () => {
       const respond = vi.fn();
       const params = { sessionKey: SESSION_KEY, idempotencyKey: operation };
       await handleGatewayRequest({
-        params,
         req: { type: "req", id: operation, method: "sessions.github.publish", params },
         context: {
           ...source.context,

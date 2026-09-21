@@ -109,7 +109,6 @@ describe("registered session GitHub publication access", () => {
       };
       await handleGatewayRequest({
         req: { type: "req", id: params.idempotencyKey, method: "sessions.github.publish", params },
-        params,
         context: {
           ...f.guestSource.context,
           githubPublicationService: f.coordinator,
