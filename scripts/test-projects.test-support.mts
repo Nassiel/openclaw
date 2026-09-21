@@ -3407,8 +3407,8 @@ function resolveToolingTestTargets(changedPath: string, cwd = process.cwd()) {
         })
       : [];
   if (toolingTestSource && importGraphResult === null) {
-    // An unresolved helper frontier must remain visible to the caller's broad fallback.
-    return [changedPath];
+    // Keep caller fallbacks; a partial literal reference cannot prove an opaque frontier.
+    return null;
   }
   const importGraphTargets = importGraphResult ?? [];
   const referenceTargets =

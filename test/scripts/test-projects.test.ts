@@ -1998,6 +1998,8 @@ describe("scripts/test-projects changed-target routing", () => {
     const direct = "test/scripts/direct.consumer.test.ts";
     const indirect = "test/scripts/indirect.consumer.test.ts";
     const opaque = "test/scripts/opaque/index.mjs";
+    const explicitHelper = "test/scripts/source/input.test-support.ts";
+    const explicitConsumer = "test/scripts/outer/consumer.test.ts";
     withRepo(
       {
         [fixture]: "export {};\n",
@@ -2012,6 +2014,9 @@ describe("scripts/test-projects changed-target routing", () => {
         [opaque]: "export {};\n",
         "test/scripts/literal.opaque.consumer.test.ts": `const fixture = "${opaque}";\n`,
         "test/scripts/relative.opaque.consumer.test.ts": 'import "./opaque/index.mjs";\n',
+        [explicitHelper]: "export const value = 1;\n",
+        "test/scripts/bridge/index.ts": 'export * from "../source/input.test-support.js";\n',
+        [explicitConsumer]: 'import "../bridge/index.js";\n',
       },
       (cwd) => {
         const options = { cwd, broad: true, forceFullImportGraph: true };
@@ -2026,6 +2031,14 @@ describe("scripts/test-projects changed-target routing", () => {
           mode: "targets",
           targets: [opaque, direct],
         });
+        expect(buildVitestRunPlans([explicitHelper], cwd)).toEqual([
+          {
+            config: "test/vitest/vitest.tooling.config.ts",
+            forwardedArgs: [],
+            includePatterns: [explicitConsumer],
+            watchMode: false,
+          },
+        ]);
       },
     );
   });
