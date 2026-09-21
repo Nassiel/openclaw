@@ -8,7 +8,8 @@ export const leaseHeartbeatState = {
   request: 1,
   ack: 2,
   expiresAt: 3,
-  startupPhase: 4,
+  lastRenewedAt: 4,
+  startupPhase: 5,
   starting: 0n,
   ready: 1n,
   closed: 2n,
@@ -24,6 +25,15 @@ export const leaseHeartbeatStartupPhase = {
   "initial-renew-returned": 4n,
 } as const;
 
+export type LeaseHeartbeatRenewalFailure = {
+  name: string;
+  message: string;
+  code?: string;
+  errcode?: number;
+  attempt: number;
+  elapsedMs: number;
+};
+
 export type LeaseHeartbeatWorkerData = {
   path: string;
   existingOnly?: boolean;
@@ -31,6 +41,7 @@ export type LeaseHeartbeatWorkerData = {
   parentCoordinatorRetained?: true;
   identity: OpenClawStateLeaseIdentity;
   leaseMs: number;
+  acquiredAt: number;
   heartbeatMs: number;
   processOwner?: { identity: StateLeaseProcessOwner; env: NodeJS.ProcessEnv };
   shared: SharedArrayBuffer;
