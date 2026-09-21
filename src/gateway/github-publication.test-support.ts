@@ -173,7 +173,7 @@ function bindPublicationFixtureRequest<
 }
 
 function withSystemRequesterFixture(coordinator: ReturnType<typeof createCoordinator>) {
-  const requestForSession = coordinator.requestForSession;
+  const requestForSession = coordinator.requestForSession.bind(coordinator);
   const requestForClaim = coordinator.requestForClaim;
   return Object.assign(coordinator, {
     requestForSession(
