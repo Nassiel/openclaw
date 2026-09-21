@@ -50,6 +50,7 @@ import {
   resolveCronCreatorExecToolTarget,
 } from "./cron-tool-creator-cap.js";
 import { CronToolOutputSchema } from "./cron-tool-output-schema.js";
+import { validateProactiveCheckInCreate } from "./cron-tool-proactive-create.js";
 import {
   assertCronPacingInput,
   createCronToolSchema,
@@ -541,6 +542,52 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
                   } satisfies CronDelivery;
                 }
               }
+            }
+
+            if (
+              job &&
+              typeof job === "object" &&
+              "payload" in job &&
+              (job as { payload?: { kind?: string } }).payload?.kind === "proactiveCheckIn"
+            ) {
+              // Infer the Delivery_Channel from the requesting conversation when
+              // the request omitted one (Req 1.4), mirroring the agentTurn path
+              // above. resolveCronCreationDelivery returns null for internal /
+              // missing surfaces, which validation then reports as a missing
+              // channel.
+              const inferred = resolveCronCreationDelivery({
+                cfg: runtimeConfig,
+                currentDeliveryContext: opts?.currentDeliveryContext,
+                agentSessionKey: opts?.agentSessionKey,
+              });
+              // Ordered, atomic validation before any create (Req 1.2-1.6, 3.2).
+              const { deliveryChannel } = validateProactiveCheckInCreate({
+                job: job as Record<string, unknown>,
+                inferredDeliveryChannel: inferred?.channel,
+              });
+              const proactiveJob = job as {
+                payload: Record<string, unknown>;
+                delivery?: unknown;
+              };
+              // The immutable spec and the delivery pipeline must agree on the
+              // resolved real channel; stamp both. Initial resolution state is
+              // always pending on create (Req 1.7).
+              proactiveJob.payload.deliveryChannel = deliveryChannel;
+              proactiveJob.payload.resolutionState = "pending";
+              const existingDelivery = isRecord(proactiveJob.delivery)
+                ? proactiveJob.delivery
+                : undefined;
+              const existingTo =
+                typeof existingDelivery?.to === "string" && existingDelivery.to.trim()
+                  ? existingDelivery.to
+                  : undefined;
+              const resolvedTo = existingTo ?? inferred?.to ?? undefined;
+              proactiveJob.delivery = {
+                ...(existingDelivery ?? {}),
+                mode: "announce",
+                channel: deliveryChannel,
+                ...(resolvedTo ? { to: resolvedTo } : {}),
+              } satisfies CronDelivery;
             }
 
             const contextMessages = readNonNegativeIntegerParam(params, "contextMessages") ?? 0;

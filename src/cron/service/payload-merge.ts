@@ -201,6 +201,31 @@ function buildPayloadFromPatch(patch: CronPayloadPatch): CronPayload {
     return next;
   }
 
+  if (patch.kind === "proactiveCheckIn") {
+    if (typeof patch.pendingTopicRef !== "string" || patch.pendingTopicRef.trim().length === 0) {
+      throw new Error('cron.update payload.kind="proactiveCheckIn" requires pendingTopicRef');
+    }
+    if (typeof patch.targetUser !== "string" || patch.targetUser.trim().length === 0) {
+      throw new Error('cron.update payload.kind="proactiveCheckIn" requires targetUser');
+    }
+    if (typeof patch.deliveryChannel !== "string" || patch.deliveryChannel.trim().length === 0) {
+      throw new Error('cron.update payload.kind="proactiveCheckIn" requires deliveryChannel');
+    }
+    if (patch.guardrails === undefined) {
+      throw new Error('cron.update payload.kind="proactiveCheckIn" requires guardrails');
+    }
+    const next: Extract<CronPayload, { kind: "proactiveCheckIn" }> = {
+      kind: "proactiveCheckIn",
+      pendingTopicRef: patch.pendingTopicRef,
+      targetUser: patch.targetUser,
+      deliveryChannel: patch.deliveryChannel,
+      resolutionState: patch.resolutionState ?? "pending",
+      guardrails: patch.guardrails,
+    };
+    applyToolsAllowPatch(next, patch);
+    return next;
+  }
+
   if (patch.kind !== "agentTurn") {
     return { kind: patch.kind };
   }

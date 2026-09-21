@@ -128,6 +128,35 @@ function incrementIssue(issues: CronStoreIssues, key: CronStoreIssueKey) {
   issues[key] = (issues[key] ?? 0) + 1;
 }
 
+const CRON_PROACTIVE_RESOLUTION_STATES = new Set(["pending", "resolved", "abandoned"]);
+
+/**
+ * Additive normalization for the proactive-check-in runtime state block.
+ * Legacy `proactiveCheckIn` rows persisted before this feature have no
+ * `state.proactive` block; seed one so the scheduler reads an authoritative
+ * live resolution state on restart (Req 4.7) without a new SQLite column. The
+ * initial `resolutionState` comes from the immutable payload when present.
+ * Returns true when it mutated the row. Present-but-malformed blocks are left
+ * untouched here so `persisted-shape.ts` quarantine still applies.
+ */
+function normalizeProactiveState(raw: Record<string, unknown>, payloadKind: string): boolean {
+  if (payloadKind !== "proactiveCheckIn") {
+    return false;
+  }
+  const state = isRecord(raw.state) ? raw.state : undefined;
+  if (!state || isRecord(state.proactive)) {
+    return false;
+  }
+  const payload = isRecord(raw.payload) ? raw.payload : undefined;
+  const payloadResolution = payload?.resolutionState;
+  const resolutionState =
+    typeof payloadResolution === "string" && CRON_PROACTIVE_RESOLUTION_STATES.has(payloadResolution)
+      ? payloadResolution
+      : "pending";
+  state.proactive = { resolutionState, unansweredCount: 0 };
+  return true;
+}
+
 function normalizeStoredCronJobIdentity(raw: Record<string, unknown>): {
   mutated: boolean;
   legacyJobIdIssue: boolean;
@@ -570,6 +599,9 @@ export function normalizeStoredCronJobs(
 
     const payloadKind =
       payloadRecord && typeof payloadRecord.kind === "string" ? payloadRecord.kind : "";
+    if (normalizeProactiveState(raw, payloadKind)) {
+      mutated = true;
+    }
     const rawSessionTarget = normalizeOptionalString(raw.sessionTarget) ?? "";
     const loweredSessionTarget = normalizeLowercaseStringOrEmpty(rawSessionTarget);
     if (

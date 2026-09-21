@@ -1,9 +1,9 @@
 import type { AgentRunTerminalReplySnapshot } from "../../agents/agent-run-terminal-reply.types.js";
 import type { EmbeddedAgentRunResult } from "../../agents/embedded-agent-runner/types.js";
-import type { NormalizeReplySkipReason } from "../../auto-reply/reply/normalize-reply-skip-reason.js";
 /** Execution and result contracts for isolated cron agent runs. */
 import type {
   CronJob,
+  CronDeliverySuppressionReason,
   CronDeliveryTrace,
   CronResolvedDeliveryState,
   CronNextCheckProposal,
@@ -35,7 +35,7 @@ export type RunCronAgentTurnResult = {
   /** Post-run delivery failure on an otherwise successful isolated turn. */
   deliveryError?: string;
   /** Intentional direct-delivery non-outcome recorded before transport custody. */
-  deliverySuppressionReason?: NormalizeReplySkipReason;
+  deliverySuppressionReason?: CronDeliverySuppressionReason;
   delivery?: CronDeliveryTrace;
   nextCheck?: CronNextCheckProposal;
 } & CronRunOutcome &

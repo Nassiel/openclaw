@@ -1,4 +1,5 @@
 import { parseAbsoluteTimeMs } from "../parse.js";
+import { isProactiveOccurrenceSuppressed } from "../proactive/resolution-state.js";
 import type { CronJob } from "../types.js";
 import {
   computeJobPreviousRunAtOrBeforeMs,
@@ -80,6 +81,16 @@ export function isRunnableJob(params: {
     return false;
   }
   if (hasActiveCronRun(job)) {
+    return false;
+  }
+  // A proactive check-in whose live resolutionState is resolved/abandoned is
+  // terminal: cancel the occurrence with no turn and no send (Req 3.5, 4.6).
+  // This is the single occurrence-evaluation gate for both live scheduling
+  // (collectRunnableJobs) and restart catch-up (collectStartupCatchupJobs),
+  // so the same suppression covers restart recovery without a second timing
+  // owner (Req 4.2, 4.5, 4.7). A pending topic falls through and keeps being
+  // evaluated each occurrence (Req 4.3).
+  if (isProactiveOccurrenceSuppressed(job)) {
     return false;
   }
   const next = job.state.nextRunAtMs;

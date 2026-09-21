@@ -3,7 +3,6 @@
 import type { AdmittedRunContext } from "../../agents/admitted-run-context.js";
 import type { ExecutionIdentityAdmissionFacts } from "../../audit/execution-identity-admission.js";
 import type { ReplyPayload } from "../../auto-reply/reply-payload.js";
-import type { NormalizeReplySkipReason } from "../../auto-reply/reply/normalize-reply-skip-reason.js";
 import type { SessionCreatedActor } from "../../config/sessions/session-entry-provenance.js";
 import type { CronConfig } from "../../config/types.cron.js";
 import type { HeartbeatRunResult, HeartbeatWakeRequest } from "../../infra/heartbeat-wake.js";
@@ -17,6 +16,7 @@ import type { QuarantinedCronConfigJob } from "../store.js";
 import type { CronRunReceiptHandle } from "../store/run-receipt-store.js";
 import type {
   CronCompletionStatus,
+  CronDeliverySuppressionReason,
   CronTriggerEvaluationResult,
   CronAgentExecutionPhaseUpdate,
   CronAgentExecutionStarted,
@@ -56,7 +56,7 @@ export type CronEvent = {
   delivered?: boolean;
   deliveryStatus?: CronDeliveryStatus;
   deliveryError?: string;
-  deliverySuppressionReason?: NormalizeReplySkipReason;
+  deliverySuppressionReason?: CronDeliverySuppressionReason;
   failureNotificationDelivery?: CronFailureNotificationDelivery;
   delivery?: CronDeliveryTrace;
   sessionId?: string;
@@ -103,7 +103,7 @@ export type CronRunDeliveryResult = {
   /** Delivery may have been attempted without a confirmed transport acknowledgment. */
   deliveryAttempted?: boolean;
   deliveryError?: string;
-  deliverySuppressionReason?: NormalizeReplySkipReason;
+  deliverySuppressionReason?: CronDeliverySuppressionReason;
   deliveryState?: CronResolvedDeliveryState;
   delivery?: CronDeliveryTrace;
 };

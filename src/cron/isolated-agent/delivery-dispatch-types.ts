@@ -5,7 +5,11 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { TtsAutoMode } from "../../config/types.tts.js";
 import type { SourceDeliveryOutcome } from "../../infra/outbound/source-delivery-plan.js";
 import type { CronDeliveryPlan } from "../delivery-plan.js";
-import type { CronJob, CronResolvedDeliveryState } from "../types.js";
+import type {
+  CronDeliverySuppressionReason,
+  CronJob,
+  CronResolvedDeliveryState,
+} from "../types.js";
 import type { DeliveryTargetResolution } from "./delivery-target.js";
 
 export type SuccessfulCronDeliveryTarget = Extract<DeliveryTargetResolution, { ok: true }>;
@@ -59,7 +63,7 @@ export type DispatchCronDeliveryState = {
   delivered?: boolean;
   deliveryAttempted: boolean;
   deliveryError?: string;
-  deliverySuppressionReason?: NormalizeReplySkipReason;
+  deliverySuppressionReason?: CronDeliverySuppressionReason;
   summary?: string;
   outputText?: string;
   synthesizedText?: string;
