@@ -87,6 +87,7 @@ function publicationIndexParams(fixture: Awaited<ReturnType<typeof createFixture
     branch: "main",
     env: process.env,
     assertCurrent: () => undefined,
+    assertCustody: () => undefined,
     run: async (
       argv: string[],
       options?: { cwd?: string; input?: string; env?: NodeJS.ProcessEnv },
@@ -190,7 +191,7 @@ describe("GitHub publication index update", () => {
       branch: "main",
       sourceHeadCommit: fixture.previousHead,
       workspaceTree: fixture.workspaceTree,
-      assertCurrent: () => undefined,
+      assertCustody: () => undefined,
       run: async (argv, options) =>
         await git(fixture.cwd, argv.slice(1), options?.input, options?.env ?? hookEnv),
     });
@@ -314,7 +315,7 @@ describe("GitHub publication index update", () => {
       branch: "main",
       sourceHeadCommit: fixture.previousHead,
       workspaceTree: fixture.workspaceTree,
-      assertCurrent: () => undefined,
+      assertCustody: () => undefined,
       run: async (argv, options) =>
         await git(fixture.cwd, argv.slice(1), options?.input, options?.env),
     });
@@ -323,7 +324,7 @@ describe("GitHub publication index update", () => {
     await expect(fs.stat(path.join(fixture.cwd, ".git", "index.lock"))).rejects.toThrow();
   });
 
-  it("does not install a recovered index after authority changes during Git probes", async () => {
+  it("does not install a recovered index after custody changes during Git probes", async () => {
     const fixture = await createFixture();
 
     await expect(
@@ -349,7 +350,7 @@ describe("GitHub publication index update", () => {
         branch: "main",
         sourceHeadCommit: fixture.previousHead,
         workspaceTree: fixture.workspaceTree,
-        assertCurrent: () => {
+        assertCustody: () => {
           if (!current) {
             throw new Error("publication authority changed");
           }

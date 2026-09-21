@@ -4,7 +4,6 @@ import type { GatewayOperatorRoleDefinition } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveHostAccountName } from "../infra/host-account-name.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
-import type { PluginGatewayAccessAuthority } from "../plugins/gateway-access-policy.types.js";
 import { intersectOperatorScopes } from "../shared/operator-scope-compat.js";
 import {
   ensureGatewayOwnerProfile,
@@ -16,6 +15,7 @@ import {
 import type { GatewayAuthResult } from "./auth.js";
 import { shouldUseGatewayOwnerProfile } from "./gateway-owner-profile.js";
 import { createAuthenticatedGitHubIdentitySync } from "./github-user-identity.js";
+import type { GatewayOperatorAccessAuthority } from "./operator-access-policy.js";
 import {
   GatewayOperatorAccessDeniedError,
   hasGatewayOperatorAccessPolicies,
@@ -30,7 +30,7 @@ const profileLog = createSubsystemLogger("gateway/user-profiles");
 export type AuthenticatedHttpUserProfile = {
   authenticatedUserProfile?: GatewayClient["authenticatedUserProfile"];
   operatorRolePolicy?: GatewayOperatorRoleDefinition;
-  operatorAccessAuthority?: PluginGatewayAccessAuthority;
+  operatorAccessAuthority?: GatewayOperatorAccessAuthority | null;
 };
 
 type HttpUserProfileAuthResult =
@@ -160,7 +160,7 @@ export function resolveHttpProfile(profileId: string, updatedAt: number, cfg?: O
       updatedAt,
     },
     ...(operatorRolePolicy ? { operatorRolePolicy } : {}),
-    ...(operatorAccessAuthority ? { operatorAccessAuthority } : {}),
+    ...(operatorAccessAuthority !== undefined ? { operatorAccessAuthority } : {}),
   };
 }
 

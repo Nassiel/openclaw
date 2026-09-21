@@ -102,6 +102,7 @@ function seedReceipt(agentId: string, sessionKey: string, sessionId: string): st
     request_digest: "",
     session_id: sessionId,
     session_lifecycle_revision: null,
+    requester_authority_json: null,
     session_key: sessionKey,
     agent_id: agentId,
     workspace_id: `workspace-${requestId}`,

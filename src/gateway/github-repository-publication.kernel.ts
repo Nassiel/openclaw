@@ -42,6 +42,7 @@ export function repositoryGitHubPublicationDigest(row: RepositoryGitHubPublicati
         row.workspace_tree,
         row.previous_head_commit,
         row.created_at_ms,
+        ...(row.requester_authority_json !== null ? [row.requester_authority_json] : []),
       ]),
     )
     .digest("hex");
@@ -52,7 +53,8 @@ export function checkRepositoryGitHubPublication(
 ): RepositoryGitHubPublicationRow {
   if (
     repositoryGitHubPublicationDigest(row) !== row.request_digest ||
-    (row.identity_source === "personal") !== (row.owner_profile_id !== null)
+    (row.identity_source === "personal") !== (row.owner_profile_id !== null) ||
+    (row.owner_profile_id !== null && row.requester_authority_json !== null)
   ) {
     throw new Error("GitHub repository publication receipt is corrupt.");
   }

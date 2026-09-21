@@ -191,6 +191,7 @@ it.each([
         request_id: "prior-cloud-publication",
         idempotency_key: "prior",
         request_digest: "",
+        requester_authority_json: null,
         session_id: sessionId,
         session_lifecycle_revision: lifecycleRevision,
         session_key: scope.sessionKey,
@@ -236,7 +237,10 @@ it.each([
       };
       row.request_digest = repositoryGitHubPublicationDigest(row);
       insertRepositoryGitHubPublication(row, () => {});
-      const prior = claimRepositoryGitHubPublication(row, "cloud-instance", () => {});
+      const prior = claimRepositoryGitHubPublication(row, "cloud-instance", {
+        assertCustody: () => {},
+        assertCurrent: () => {},
+      });
       prior.recordEffect("push");
       if (scenario !== "unsettled") {
         prior.recordEffect("push", { headCommit: publishedHead });
@@ -387,6 +391,13 @@ it.each([
           requestDigest: createHash("sha256").update("local").digest("hex"),
           sessionId,
           lifecycleRevision,
+          requester: {
+            version: 1,
+            actor: { kind: "system" },
+            scopes: ["operator.admin"],
+            grant: null,
+          },
+          assertCurrent: () => {},
           now: Date.now(),
           worktree,
           identity,
@@ -399,6 +410,7 @@ it.each([
         ...execution,
         identity: { prepare: async () => identity, isCurrent: () => true },
         validateAuthority: () => true,
+        validateCustody: () => true,
         projectResult: projectGitHubPublicationResult,
       });
       const localHead = git(worktree.path, "rev-parse", "HEAD");

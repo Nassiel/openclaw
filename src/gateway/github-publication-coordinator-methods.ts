@@ -21,6 +21,7 @@ import {
   resolveGitHubPublicationWorktreeOwner,
 } from "./github-publication-availability.js";
 import { captureGitHubPublicationWorkspaceSnapshot } from "./github-publication-git-transport.js";
+import type { GitHubPublicationRequester } from "./github-publication-requester.js";
 import {
   readSharedGitHubPublicationSession,
   type SharedGitHubPublicationSession,
@@ -53,7 +54,7 @@ export type GitHubPublicationClaimRequest = {
   idempotencyKey: string;
   title?: string;
   body?: string;
-  assertCurrent?: () => void;
+  requester: GitHubPublicationRequester;
   expectedPublisher?: GitHubPublicationPublisher;
 };
 
@@ -125,7 +126,8 @@ export function createGitHubPublicationCoordinatorMethods(params: {
   ) => boolean;
   processRow: (
     initial: PublicationRow,
-    validateAuthority: () => boolean,
+    validateCustody: () => boolean,
+    assertRequester?: () => void,
   ) => Promise<SessionGitHubPublicationResult>;
 }) {
   const { readById, requestForClaim, sameWorktree, processRow } = params;
@@ -135,18 +137,19 @@ export function createGitHubPublicationCoordinatorMethods(params: {
       input: SessionGitHubPublishParams & {
         agentId: string;
         expectedRunId?: string;
-        assertCurrent?: () => void;
+        requester: GitHubPublicationRequester;
       },
     ): Promise<SessionGitHubPublicationResult> {
       if (input.selection?.source === "personal") {
         throw new Error("My GitHub publication requires direct personal authorization.");
       }
       const expected = input.selection?.expected;
+      const assertRequester = input.requester.assertCurrent;
       ensureSchema();
       if (!input.sessionKey) {
         throw new Error("GitHub publication requires an authoritative session.");
       }
-      input.assertCurrent?.();
+      assertRequester();
       const initialLoaded = loadGatewaySessionEntryReadOnly(input.sessionKey, {
         agentId: input.agentId,
       });
@@ -170,7 +173,7 @@ export function createGitHubPublicationCoordinatorMethods(params: {
           }
         : null;
       const assertCaptureAuthority = () => {
-        input.assertCurrent?.();
+        assertRequester();
         resolveGitHubPublicationWorktreeOwner({
           sessionId,
           sessionKey: loaded.canonicalKey,
@@ -196,11 +199,11 @@ export function createGitHubPublicationCoordinatorMethods(params: {
           sessionKey: loaded.canonicalKey,
           agentId: input.agentId,
           idempotencyKey: input.idempotencyKey,
+          requester: input.requester,
           ...(input.title ? { title: input.title } : {}),
           ...(input.body ? { body: input.body } : {}),
-          ...(input.assertCurrent ? { assertCurrent: input.assertCurrent } : {}),
         });
-        input.assertCurrent?.();
+        assertRequester();
         if (placement?.state !== "local") {
           return accepted;
         }
@@ -208,10 +211,11 @@ export function createGitHubPublicationCoordinatorMethods(params: {
         if (!row) {
           throw new Error("GitHub publication request disappeared.");
         }
-        return await processRow(row, () => {
-          input.assertCurrent?.();
-          return params.placements.validateTurnClaim(claim);
-        });
+        return await processRow(
+          row,
+          () => params.placements.validateTurnClaim(claim),
+          assertRequester,
+        );
       }
       if (claim && placement?.state === "local") {
         throw new Error(
@@ -249,9 +253,9 @@ export function createGitHubPublicationCoordinatorMethods(params: {
           return result;
         }
       }
-      input.assertCurrent?.();
+      assertRequester();
       const identity = await prepareCurrentGitHubPublicationIdentity(input.agentId);
-      input.assertCurrent?.();
+      assertRequester();
       assertExpectedSharedGitHubPublisher(
         expected,
         { source: identity.source, ...identity.account },
@@ -269,7 +273,7 @@ export function createGitHubPublicationCoordinatorMethods(params: {
       }): PublicationRow => {
         const now = Date.now();
         const requestId = randomUUID();
-        input.assertCurrent?.();
+        assertRequester();
         return runOpenClawStateWriteTransaction(
           ({ db }) => {
             return insertGitHubPublicationRequest(db, {
@@ -281,6 +285,21 @@ export function createGitHubPublicationCoordinatorMethods(params: {
               worktree,
               sessionId,
               lifecycleRevision,
+              requester: input.requester.snapshot,
+              assertCurrent: () => {
+                assertRequester();
+                resolveGitHubPublicationWorktreeOwner({
+                  sessionId,
+                  sessionKey: loaded.canonicalKey,
+                  agentId: input.agentId,
+                  lifecycleRevision,
+                  expected: {
+                    worktreeId: worktree.id,
+                    repositoryFingerprint: worktree.repoFingerprint,
+                    branch: worktree.branch,
+                  },
+                });
+              },
               snapshot,
             });
           },
@@ -329,11 +348,14 @@ export function createGitHubPublicationCoordinatorMethods(params: {
         },
       });
       const row = insertSessionRequest(snapshot);
-      return await processRow(row, () => {
-        input.assertCurrent?.();
-        const latest = params.placements.get(sessionId);
-        return (!latest || latest.state === "local") && !latest?.turnClaim;
-      });
+      return await processRow(
+        row,
+        () => {
+          const latest = params.placements.get(sessionId);
+          return (!latest || latest.state === "local") && !latest?.turnClaim;
+        },
+        assertRequester,
+      );
     },
 
     async resumeSessionRequests(): Promise<void> {
