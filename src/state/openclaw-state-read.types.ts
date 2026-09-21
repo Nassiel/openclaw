@@ -19,6 +19,10 @@ import type {
   WorkerSessionPlacementReadResult,
 } from "../gateway/worker-environments/placement-read-projection.types.js";
 import type { WorkerSessionPlacementChangeSnapshot } from "../gateway/worker-environments/placement-record.js";
+import type {
+  DevicePairingReadCommand,
+  DevicePairingReadReply,
+} from "../infra/device-pairing-read.types.js";
 import type { readExecApprovalsConfigRow } from "../infra/exec-approvals-sqlite.js";
 import type {
   ConversationRef,
@@ -58,6 +62,7 @@ export type OpenClawStateReadAuthority = {
 
 export type OpenClawStateReadCommand =
   | { type: "conversationBindings.inspect"; conversation: ConversationRef }
+  | DevicePairingReadCommand
   | PluginBlobReadCommand
   | CronRunRecoveryReadCommand
   | { type: "exec-approvals.read" }
@@ -104,6 +109,7 @@ export type OpenClawStateReadReply = (
       sourceAdmitted: true;
       record: SessionBindingRecord | null;
     }
+  | DevicePairingReadReply
   | PluginBlobReadReply
   | {
       [Kind in keyof SkillLibraryReadOnlyOperations]: {
@@ -225,6 +231,8 @@ export type OpenClawStateReadOutcome =
 
 export type OpenClawStateReadPhase = "before-read" | "read" | "unobserved";
 export type OpenClawStateReadOptions = {
+  /** Publication and authority reads must not inherit an inspection snapshot. */
+  current?: boolean;
   mapError?: (error: unknown, phase: OpenClawStateReadPhase) => unknown;
 };
 
