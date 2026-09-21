@@ -1205,6 +1205,7 @@ describe("PR metadata through REST", () => {
         baseRefOid: base,
         headRefName: "topic",
         headRefOid: head,
+        isCrossRepository: false,
         headRepository: null,
         headRepositoryOwner: null,
         url: "https://github.com/base-owner/base-repo/pull/42",
