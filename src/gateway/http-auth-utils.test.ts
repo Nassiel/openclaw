@@ -202,7 +202,7 @@ describe("HTTP gateway owner profiles", () => {
         if (!staff.ok) {
           throw new Error("Expected independent staff admission");
         }
-        expect(staff.requestAuth.operatorAccessAuthority).toBeUndefined();
+        expect(staff.requestAuth.operatorAccessAuthority).toBeNull();
         if (change === "grant ended") {
           access.grant.abort(new Error("Access ended"));
         } else {

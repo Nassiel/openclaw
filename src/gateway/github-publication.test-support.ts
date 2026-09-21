@@ -173,19 +173,20 @@ function bindPublicationFixtureRequest<
 }
 
 function withSystemRequesterFixture(coordinator: ReturnType<typeof createCoordinator>) {
-  return {
-    ...coordinator,
+  const requestForSession = coordinator.requestForSession;
+  const requestForClaim = coordinator.requestForClaim;
+  return Object.assign(coordinator, {
     requestForSession(
       input: PublicationFixtureRequest<Parameters<typeof coordinator.requestForSession>[0]>,
     ) {
-      return coordinator.requestForSession(bindPublicationFixtureRequest(input));
+      return requestForSession(bindPublicationFixtureRequest(input));
     },
     requestForClaim(
       input: PublicationFixtureRequest<Parameters<typeof coordinator.requestForClaim>[0]>,
     ) {
-      return coordinator.requestForClaim(bindPublicationFixtureRequest(input));
+      return requestForClaim(bindPublicationFixtureRequest(input));
     },
-  };
+  });
 }
 
 type PublicationFixtureOptions<T> = Omit<T, "getCommittedRuntimeConfig"> & {
@@ -231,7 +232,7 @@ export function seedLocalPublication(
     requestId: string;
     status: "requested" | "publishing";
     repositoryFingerprint?: string;
-    headCommit?: string;
+    headCommit?: string | null;
     requester?: GitHubPublicationRequesterSnapshot | null;
   },
 ): void {
@@ -264,14 +265,14 @@ export function seedLocalPublication(
       "Resume the publication",
       "Recovered after Gateway restart.",
       params.status,
-      "previous-gateway-instance",
-      "openclaw/openclaw",
+      params.headCommit === null ? null : "previous-gateway-instance",
+      params.headCommit === null ? null : "openclaw/openclaw",
       BRANCH,
-      "main",
+      params.headCommit === null ? null : "main",
       OLD_HEAD,
       WORKSPACE_TREE,
       WORKSPACE_TREE,
-      params.headCommit ?? NEW_HEAD,
+      params.headCommit === undefined ? NEW_HEAD : params.headCommit,
       1_000,
       1_001,
     );

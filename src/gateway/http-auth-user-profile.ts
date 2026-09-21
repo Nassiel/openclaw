@@ -15,12 +15,12 @@ import {
 import type { GatewayAuthResult } from "./auth.js";
 import { shouldUseGatewayOwnerProfile } from "./gateway-owner-profile.js";
 import { createAuthenticatedGitHubIdentitySync } from "./github-user-identity.js";
-import type { GatewayOperatorAccessAuthority } from "./operator-access-policy.js";
 import {
   GatewayOperatorAccessDeniedError,
   hasGatewayOperatorAccessPolicies,
   resolveGatewayOperatorAccessAuthority,
 } from "./operator-access-policy.js";
+import type { GatewayOperatorAccessAuthority } from "./operator-access-policy.types.js";
 import { resolveOperatorRolePolicyForProfile } from "./operator-role-policy.js";
 import type { GatewayClient } from "./server-methods/shared-types.js";
 import { formatForLog } from "./ws-log.js";

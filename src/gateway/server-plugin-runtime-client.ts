@@ -17,7 +17,7 @@ import {
   readInProcessSubagentResume,
 } from "./in-process-subagent-resume.js";
 import { APPROVALS_SCOPE, WRITE_SCOPE } from "./method-scopes.js";
-import type { GatewayOperatorAccessAuthority } from "./operator-access-policy.js";
+import type { GatewayOperatorAccessAuthority } from "./operator-access-policy.types.js";
 import type { TrustedSessionCreation } from "./server-methods/session-creation-provenance.js";
 import type { GatewayOperatorRoleActor } from "./server-methods/shared-types.js";
 import type {

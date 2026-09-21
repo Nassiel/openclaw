@@ -4,7 +4,7 @@ import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/i
 import { getRuntimeConfig } from "../../config/io.js";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import { buildSessionCreationStamp } from "../../config/sessions/session-entry-provenance.js";
-import { ensureProfileForEmail } from "../../state/user-profiles.js";
+import { ensureProfileForEmail, getUserProfileDisplay } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import {
   GitHubPublicationRequesterUnavailableError,
@@ -231,6 +231,7 @@ describe("sessions.github.publish", () => {
         client.authenticatedUserProfile = {
           profileId: profile.id,
           displayName: profile.displayName,
+          avatarRevision: getUserProfileDisplay(profile.id).avatarRevision,
           hasAvatar: false,
           updatedAt: profile.updatedAt,
         };

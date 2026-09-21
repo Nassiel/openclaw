@@ -195,7 +195,9 @@ export async function executeGitHubPublication<Row extends PublicationRow>(param
   if (initial.status === "published" || initial.status === "failed") {
     return params.projectResult(initial);
   }
-  let effectPending = false;
+  let pullRequestPending = false;
+  // A confirmed push can still leave its pull-request outcome unknown.
+  let effectDispatched = false;
   let row = initial;
   const currentWorktree = () => resolveLocalGitHubPublicationWorktreeOwner(initial);
   const assertCustody = () => {
@@ -335,7 +337,7 @@ export async function executeGitHubPublication<Row extends PublicationRow>(param
         refreshIdentity,
         recordObserved: (url) => {
           params.recordEffect?.("pull_request", { url });
-          effectPending = false;
+          pullRequestPending = false;
         },
         assertCurrent: assertAuthority,
       });
@@ -528,7 +530,7 @@ export async function executeGitHubPublication<Row extends PublicationRow>(param
     if (remoteHead !== headCommit) {
       assertAuthority();
       params.recordEffect?.("push");
-      effectPending = true;
+      effectDispatched = true;
       const pushed = await runCommand(pushArgs, { cwd: worktree.path, env: transportEnv });
       params.recordEffect?.("push", pushed.code === 0 ? { headCommit } : {});
       assertAuthority();
@@ -545,7 +547,6 @@ export async function executeGitHubPublication<Row extends PublicationRow>(param
         );
       }
       params.recordEffect?.("push", { headCommit });
-      effectPending = false;
     }
 
     let pullRequestUrl = await findPullRequest();
@@ -574,7 +575,8 @@ export async function executeGitHubPublication<Row extends PublicationRow>(param
       identity = await refreshIdentity();
       assertAuthority();
       params.recordEffect?.("pull_request");
-      effectPending = true;
+      pullRequestPending = true;
+      effectDispatched = true;
       const created = await runCommand(githubPublicationCreatePullRequestArgs(repository), {
         env: identity.env,
         input: JSON.stringify({
@@ -599,10 +601,9 @@ export async function executeGitHubPublication<Row extends PublicationRow>(param
     if (!pullRequestUrl) {
       throw new Error("GitHub pull request creation was rejected.");
     }
-    if (effectPending) {
+    if (pullRequestPending) {
       params.recordEffect?.("pull_request", { url: pullRequestUrl });
     }
-    effectPending = false;
     return params.projectResult(
       params.complete(row, {
         requestId: row.request_id,
@@ -628,7 +629,7 @@ export async function executeGitHubPublication<Row extends PublicationRow>(param
     }
     if (
       params.interrupt &&
-      (effectPending || initial.last_effect) &&
+      (effectDispatched || initial.last_effect) &&
       !(error instanceof GitHubPublicationKnownFailure)
     ) {
       // Unavailable observations cannot settle dispatched effects; only an owner's
@@ -638,7 +639,7 @@ export async function executeGitHubPublication<Row extends PublicationRow>(param
     }
     if (
       !params.interrupt &&
-      (effectPending || row.head_commit) &&
+      (effectDispatched || initial.head_commit) &&
       !(error instanceof GitHubPublicationKnownFailure)
     ) {
       throw new GitHubPublicationRecoveryPendingError(

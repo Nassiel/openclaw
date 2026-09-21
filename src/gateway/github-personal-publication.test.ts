@@ -997,7 +997,8 @@ describe("personal publication authority and recovery", () => {
     expect(receipt?.status).toBe("published");
     const binding = { publicationKind: "personal" as const, requestId: result.requestId };
     const originalLifecycle = readGitHubPublicationSessionLifecycle(binding);
-    expect(originalLifecycle).toEqual({ lifecycle_revision: session.read().lifecycleRevision });
+    const lifecycle_revision = session.read().lifecycleRevision;
+    expect(originalLifecycle).toEqual({ lifecycle_revision, requester_authority_json: null });
     await session.reset(placements);
     expect(readPersonalGitHubPublication(owner, { requestId: result.requestId })).toEqual(receipt);
     expect(

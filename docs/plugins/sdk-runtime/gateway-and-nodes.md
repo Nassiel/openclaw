@@ -49,7 +49,7 @@ or sandbox state. Shared-secret system authority remains outside person policies
 
 A policy that supports deferred shared publication returns a stable UUID as
 `grantId` on its access authority and implements
-`resume({ config, profile, grantId })`. The Gateway records the plugin ID and this
+`resume({ config, profile, requiredByRole, grantId })`. The Gateway records the plugin ID and this
 original grant reference with the accepted requester and scope ceiling; it does
 not persist the authority callback, signal, credentials, or email aliases.
 
