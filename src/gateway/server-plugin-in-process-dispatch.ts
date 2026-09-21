@@ -114,6 +114,63 @@ export async function withOperatorToolGatewayAuthority<T>(
   }
 }
 
+/** Known operator sources cannot turn missing Gateway routing into standalone host access. */
+export function hasOperatorToolGatewayAuthority(): boolean {
+  const admitted = getGatewayToolCallerIdentity()?.operatorAuthority;
+  admitted?.assertCurrent();
+  const direct = operatorToolGatewayAuthority.getStore();
+  direct?.signal.throwIfAborted();
+  direct?.operatorRunAuthority?.assertCurrent();
+  const scope = getPluginRuntimeGatewayRequestScope();
+  const scopedOperator = Boolean(
+    scope?.client?.authenticatedUserProfile ||
+    scope?.client?.internal?.operatorRoleActor?.kind === "operator",
+  );
+  if (scopedOperator) {
+    scope?.signal?.throwIfAborted();
+    if (scope?.hasCurrentClientAuthority?.() === false) {
+      throw new Error("Gateway caller authority is no longer active.");
+    }
+  }
+  return Boolean(admitted || direct || scopedOperator);
+}
+
+/** Retain the already-issued source and its invocation fence for SDK-owned selection writes. */
+export function captureOperatorToolGatewayAuthority():
+  | { authority: AdmittedRunOperatorAuthority | undefined; assertCurrent: () => void }
+  | undefined {
+  const admitted = getGatewayToolCallerIdentity()?.operatorAuthority;
+  const assertCallerCurrent = captureGatewayToolCallerAssertion();
+  const direct = operatorToolGatewayAuthority.getStore();
+  const scope = getPluginRuntimeGatewayRequestScope();
+  const authority =
+    admitted ?? direct?.operatorRunAuthority ?? scope?.client?.internal?.operatorRunAuthority;
+  const requiresOperatorAuthority = Boolean(
+    admitted ||
+    (direct && direct.operatorRoleActor?.kind !== "system") ||
+    resolveGatewayOperatorRoleActor(scope?.client)?.kind === "operator",
+  );
+  if (!authority && !assertCallerCurrent && !direct && !requiresOperatorAuthority) {
+    return undefined;
+  }
+  return {
+    authority,
+    assertCurrent: () => {
+      assertCallerCurrent?.();
+      if (!admitted && !assertCallerCurrent) {
+        direct?.signal.throwIfAborted();
+        scope?.signal?.throwIfAborted();
+        if (scope?.hasCurrentClientAuthority?.() === false) {
+          throw new Error("Gateway caller authority is no longer active.");
+        }
+      }
+      if (requiresOperatorAuthority && !authority) {
+        throw new Error("Operator model selection requires original Gateway authority.");
+      }
+    },
+  };
+}
+
 /** Transfer bounded cleanup without retaining the finished operator invocation. */
 export function runWithOperatorToolGatewayCleanupContext<T>(run: () => T): T {
   const authority = operatorToolGatewayAuthority.getStore();
@@ -460,9 +517,15 @@ export function prepareInProcessAgentExecution(params: {
   // Profile verification updates the original connection. Sessionless work needs
   // that live principal, not the dispatch copy carrying session tracking metadata.
   const client = getPluginRuntimeGatewayRequestScope()?.client ?? resolved.client;
+  let operatorSource = captureGatewayOperatorRunAuthority({
+    client: resolved.operatorSourceClient,
+    context: resolved.context,
+    hasCurrentClientAuthority: resolved.hasCurrentClientAuthority,
+  });
   const assertLifetime = () => {
     resolved.assertContextCurrent();
     inheritedAuthority?.signal.throwIfAborted();
+    operatorSource?.authority.assertCurrent();
   };
   const assertCurrent = () => {
     assertLifetime();
@@ -477,7 +540,17 @@ export function prepareInProcessAgentExecution(params: {
   };
   return {
     context: resolved.context,
-    signal: inheritedAuthority?.signal,
+    get operatorAuthority() {
+      return operatorSource?.authority;
+    },
+    get signal() {
+      return operatorSource?.authority.signal
+        ? inheritedAuthority
+          ? AbortSignal.any([inheritedAuthority.signal, operatorSource.authority.signal])
+          : operatorSource.authority.signal
+        : inheritedAuthority?.signal;
+    },
+    release: () => operatorSource?.release(),
     assertCurrent,
     async authorize() {
       assertLifetime();
@@ -496,6 +569,11 @@ export function prepareInProcessAgentExecution(params: {
       if (error) {
         unwrapGatewayMethodDispatchResponse("agent", { ok: false, error });
       }
+      operatorSource ??= captureGatewayOperatorRunAuthority({
+        client,
+        context: resolved.context,
+        hasCurrentClientAuthority: resolved.hasCurrentClientAuthority,
+      });
       assertCurrent();
     },
     run<T>(run: () => Promise<T>): Promise<T> {

@@ -1,6 +1,13 @@
+import { bindOperatorModelExecution } from "../agents/admitted-run-context.js";
 import { resolveDecisionModelSetting } from "../agents/decision-model-setting.js";
+import { normalizeModelRef } from "../agents/model-ref-shared.js";
+import { captureGatewayToolCallerAssertion } from "../agents/tools/gateway-caller-context.js";
 import { getRuntimeConfig } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { resolveGatewayOperatorRoleActor } from "../gateway/operator-role-policy.js";
+import { captureGatewayOperatorRunAuthority } from "../gateway/operator-run-authority.js";
+import { captureOperatorToolGatewayAuthority } from "../gateway/server-plugin-in-process-dispatch.js";
+import { getProcessGatewayPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-state.js";
 import { withPluginHostCleanupTimeout } from "../plugins/host-hook-cleanup-timeout.js";
 import {
   capturePluginLifecycleAuthority,
@@ -10,7 +17,10 @@ import {
 } from "../plugins/registry-lifecycle.js";
 import type { PluginRegistry } from "../plugins/registry-types.js";
 import { getPluginRegistryState } from "../plugins/runtime-state.js";
-import { getPluginRegistryForContext } from "../plugins/runtime/gateway-request-scope.js";
+import {
+  getPluginRegistryForContext,
+  getPluginRuntimeGatewayRequestScope,
+} from "../plugins/runtime/gateway-request-scope.js";
 import type { DecisionProviderHost } from "./provider-host.js";
 import type { DecisionBatch, DecisionOutcome, DecisionRuntimeV1 } from "./types.js";
 import { DecisionContractError, validateDecisionBatch } from "./validation.js";
@@ -73,34 +83,95 @@ export async function evaluateDecisionInRegistry(
   if (config.plugins?.entries?.[entry.pluginId]?.enabled === false) {
     return entry.host.unavailable("disabled");
   }
-  // Root callers carry their own work signal: provider replacement may still allow fallback.
-  // Prepared views additionally lose consumer authority when their finite view is released.
-  if (getPluginRegistryResourceOwner(registry) === getPluginRegistryState()?.activeRegistry) {
-    return entry.host.evaluate(batch, options, selected.model, config, registry, consumerId);
+  const scope = getPluginRuntimeGatewayRequestScope();
+  const invocation = captureOperatorToolGatewayAuthority();
+  const inheritedOperator = invocation?.authority;
+  const context = scope?.context ?? scope?.resolveGatewayContext?.();
+  const assertInvocationCurrent =
+    inheritedOperator || !scope?.client || !context
+      ? invocation?.assertCurrent
+      : captureGatewayToolCallerAssertion();
+  if (
+    !inheritedOperator &&
+    scope?.client &&
+    !context &&
+    resolveGatewayOperatorRoleActor(scope.client)?.kind === "operator"
+  ) {
+    throw new Error("Decision evaluation requires its current Gateway binding.");
   }
-  const authority = capturePluginLifecycleAuthority(registry, undefined, { scopedRuntime: true });
-  const lifetime = capturePluginRegistryLifecycleSignal(
-    registry,
-    capturePluginRegistryLifecycleEpoch(registry),
-    { scopedRuntime: true },
-  );
-  if (!authority?.() || !lifetime) {
-    throw new Error("Decision consumer authority closed.");
+  let capturedOperator: ReturnType<typeof captureGatewayOperatorRunAuthority>;
+  let modelExecution: ReturnType<typeof bindOperatorModelExecution>;
+  try {
+    capturedOperator =
+      !inheritedOperator && scope?.client && context
+        ? captureGatewayOperatorRunAuthority({
+            client: scope.client,
+            context,
+            hasCurrentClientAuthority: scope.hasCurrentClientAuthority,
+            sourceAuthority: {
+              assertCurrent: () => scope.signal?.throwIfAborted(),
+              signal: scope.signal,
+            },
+          })
+        : undefined;
+    modelExecution = bindOperatorModelExecution(
+      inheritedOperator ?? capturedOperator?.authority,
+      normalizeModelRef(selected.provider, selected.model, {
+        allowPluginNormalization: false,
+        manifestPlugins: getProcessGatewayPluginMetadataSnapshot() ?? [],
+      }),
+    );
+    const modelSignal = modelExecution
+      ? AbortSignal.any([options.signal, modelExecution.signal])
+      : options.signal;
+    const assertCurrent = () => {
+      assertInvocationCurrent?.();
+      modelExecution?.assertCurrent();
+      modelSignal.throwIfAborted();
+    };
+    assertCurrent();
+    // Root callers carry their own work signal: provider replacement may still allow fallback.
+    // Prepared views additionally lose consumer authority when their finite view is released.
+    if (getPluginRegistryResourceOwner(registry) === getPluginRegistryState()?.activeRegistry) {
+      const result = await entry.host.evaluate(
+        batch,
+        { ...options, signal: modelSignal },
+        selected.model,
+        config,
+        registry,
+        consumerId,
+      );
+      assertCurrent();
+      return result;
+    }
+    const authority = capturePluginLifecycleAuthority(registry, undefined, { scopedRuntime: true });
+    const lifetime = capturePluginRegistryLifecycleSignal(
+      registry,
+      capturePluginRegistryLifecycleEpoch(registry),
+      { scopedRuntime: true },
+    );
+    if (!authority?.() || !lifetime) {
+      throw new Error("Decision consumer authority closed.");
+    }
+    const signal = AbortSignal.any([modelSignal, lifetime]);
+    const result = await entry.host.evaluate(
+      batch,
+      { ...options, signal },
+      selected.model,
+      config,
+      registry,
+      consumerId,
+    );
+    signal.throwIfAborted();
+    assertCurrent();
+    if (!authority()) {
+      throw new Error("Decision consumer authority closed.");
+    }
+    return result;
+  } finally {
+    modelExecution?.release();
+    capturedOperator?.release();
   }
-  const signal = AbortSignal.any([options.signal, lifetime]);
-  const result = await entry.host.evaluate(
-    batch,
-    { ...options, signal },
-    selected.model,
-    config,
-    registry,
-    consumerId,
-  );
-  signal.throwIfAborted();
-  if (!authority()) {
-    throw new Error("Decision consumer authority closed.");
-  }
-  return result;
 }
 
 /** Abort before dependent consumers drain. Services subsequently join actual physical settlement. */

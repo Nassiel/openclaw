@@ -4,6 +4,9 @@ import {
   createAdmittedRunOperatorAuthority,
   type AdmittedRunOperatorAuthority,
 } from "../agents/admitted-run-context.js";
+import { prepareOperatorModelPolicy } from "../agents/operator-model-policy.js";
+import type { GatewayOperatorRoleDefinition } from "../config/types.gateway.js";
+import { getProcessGatewayPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-state.js";
 import { intersectOperatorScopes, roleScopesAllow } from "../shared/operator-scope-compat.js";
 import {
   onUserProfilesChanged,
@@ -26,6 +29,14 @@ import type { GatewayClient, GatewayRequestContext } from "./server-methods/shar
 // Equal source tokens describe one authenticated connection, without retaining its socket or auth.
 const operatorSources = new WeakMap<GatewayClient, object>();
 
+function sourceRolePolicy(role: GatewayOperatorRoleDefinition | undefined) {
+  if (!role) {
+    return undefined;
+  }
+  const { modelPolicy: _modelPolicy, ...sourcePolicy } = role;
+  return sourcePolicy;
+}
+
 /** Transfers the original operator restriction into accepted work, independently of its request. */
 export function captureGatewayOperatorRunAuthority(params: {
   client: GatewayClient | null;
@@ -47,7 +58,13 @@ export function captureGatewayOperatorRunAuthority(params: {
       allowedScopes: scopes,
     })
       ? inherited
-      : createAdmittedRunOperatorAuthority({ ...inherited, scopes });
+      : createAdmittedRunOperatorAuthority({
+          ...inherited,
+          scopes,
+          get modelPolicy() {
+            return inherited.modelPolicy;
+          },
+        });
     return { authority, release: inherited.retain?.() ?? (() => {}) };
   }
   const actor = resolveGatewayOperatorRoleActor(params.client);
@@ -65,10 +82,14 @@ export function captureGatewayOperatorRunAuthority(params: {
   const resolveGatewayContext = params.context.resolveGatewayContext;
   const gatewayContext = resolveGatewayContext?.();
   const getConfig = params.context.getCommittedRuntimeConfig ?? params.context.getRuntimeConfig;
+  let modelPolicyConfig = getConfig();
+  let modelPolicyMetadata = getProcessGatewayPluginMetadataSnapshot();
+  let modelPolicy: ReturnType<typeof prepareOperatorModelPolicy>;
+  let originalModelPolicy: ReturnType<typeof prepareOperatorModelPolicy>;
   const isGatewayCurrent = () =>
     !resolveGatewayContext ||
     (gatewayContext !== undefined && resolveGatewayContext() === gatewayContext);
-  const sourceAuthority = params.sourceAuthority ?? client.internal?.operatorAccessAuthority;
+  const sourceAuthorities = [params.sourceAuthority, client.internal?.operatorAccessAuthority];
   const scopes = Object.freeze([...(client.connect.scopes ?? [])]);
   const policyClient: GatewayClient = {
     connect: {
@@ -104,6 +125,29 @@ export function captureGatewayOperatorRunAuthority(params: {
       throw new Error(error.message);
     }
   };
+  const readModelPolicy = () => {
+    const original = originalModelPolicy;
+    const cfg = getConfig();
+    const metadata = getProcessGatewayPluginMetadataSnapshot();
+    if (cfg !== modelPolicyConfig || metadata !== modelPolicyMetadata) {
+      const current = prepareOperatorModelPolicy({
+        cfg,
+        policy: resolveOperatorRolePolicyForProfile(profileId, cfg)?.modelPolicy,
+        manifestPlugins: metadata ?? [],
+      });
+      modelPolicy =
+        original && current
+          ? Object.freeze({
+              models: Object.freeze(current.models.filter(original.allows)),
+              allows: (ref: Parameters<typeof original.allows>[0]) =>
+                original.allows(ref) && current.allows(ref),
+            })
+          : (original ?? current);
+      modelPolicyConfig = cfg;
+      modelPolicyMetadata = metadata;
+    }
+    return modelPolicy;
+  };
   const revoke = (reason: unknown) => {
     if (references > 0 && isGatewayCurrent()) {
       revoked = true;
@@ -127,8 +171,10 @@ export function captureGatewayOperatorRunAuthority(params: {
       if (isSourceCurrent?.() === false || !isGatewayCurrent()) {
         throw new Error("operator source authority is no longer active");
       }
-      sourceAuthority?.signal?.throwIfAborted();
-      sourceAuthority?.assertCurrent();
+      for (const authority of sourceAuthorities) {
+        authority?.signal?.throwIfAborted();
+        authority?.assertCurrent();
+      }
       assertProfileCurrent();
       assertRoleCurrent();
     } catch (error) {
@@ -155,6 +201,13 @@ export function captureGatewayOperatorRunAuthority(params: {
     const capturedRole = structuredClone(
       resolveOperatorRolePolicyForProfile(profileId, getConfig()),
     );
+    const capturedSourcePolicy = sourceRolePolicy(capturedRole);
+    modelPolicy = prepareOperatorModelPolicy({
+      cfg: modelPolicyConfig,
+      policy: capturedRole?.modelPolicy,
+      manifestPlugins: modelPolicyMetadata ?? [],
+    });
+    originalModelPolicy = modelPolicy;
     subscriptions.push(
       onGatewayDeviceSourceRevoked(params.hasCurrentClientAuthority, () =>
         revoke(new Error("operator source authority is no longer active")),
@@ -168,7 +221,7 @@ export function captureGatewayOperatorRunAuthority(params: {
         ) {
           recheck(() => {
             const currentRole = resolveOperatorRolePolicyForProfile(profileId, getConfig());
-            if (!isDeepStrictEqual(capturedRole, currentRole)) {
+            if (!isDeepStrictEqual(capturedSourcePolicy, sourceRolePolicy(currentRole))) {
               throw new Error("Your operator role changed; reconnect before continuing.");
             }
           });
@@ -176,11 +229,13 @@ export function captureGatewayOperatorRunAuthority(params: {
       }),
       onUserProfilesChanged(() => recheck(assertProfileCurrent)),
     );
-    const sourceSignal = sourceAuthority?.signal;
-    if (sourceSignal) {
-      const onAbort = () => revoke(sourceSignal.reason);
-      sourceSignal.addEventListener("abort", onAbort, { once: true });
-      subscriptions.push(() => sourceSignal.removeEventListener("abort", onAbort));
+    for (const authority of sourceAuthorities) {
+      const sourceSignal = authority?.signal;
+      if (sourceSignal) {
+        const onAbort = () => revoke(sourceSignal.reason);
+        sourceSignal.addEventListener("abort", onAbort, { once: true });
+        subscriptions.push(() => sourceSignal.removeEventListener("abort", onAbort));
+      }
     }
     assertCurrent();
     return {
@@ -195,6 +250,15 @@ export function captureGatewayOperatorRunAuthority(params: {
           references += 1;
           return releaseHold();
         },
+        get modelPolicy() {
+          return readModelPolicy();
+        },
+        onModelPolicyChanged: (listener) =>
+          onOperatorRolePolicyChanged((change) => {
+            if (change.kind === "config" && change.context === (gatewayContext ?? params.context)) {
+              listener();
+            }
+          }),
       }),
       release,
     };

@@ -10,6 +10,7 @@ type PersistSessionEntryParams = {
   initialEntry: SessionEntry;
   entry: SessionEntry;
   shouldPersist?: (entry: SessionEntry | undefined) => boolean;
+  assertCommitAllowed?: () => void;
 };
 
 /** Persists one session entry while keeping the caller's in-memory store aligned. */
@@ -46,6 +47,7 @@ export async function persistAgentSession(
     {
       fallbackEntry: params.sessionStore[params.sessionKey] ?? params.entry,
       replaceEntry: true,
+      assertCommitAllowed: params.assertCommitAllowed,
     },
   );
   if (rejectedMissingEntry) {

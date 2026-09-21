@@ -2,8 +2,11 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { createAdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
 import type { ModelCatalogEntry } from "../agents/model-catalog.js";
 import { loadProviderScopedThinkingCatalog } from "../agents/model-catalog.runtime.js";
+import { preparePublishedModelRuntimeChoice } from "../agents/model-runtime-choice.js";
+import { prepareOperatorModelPolicy } from "../agents/operator-model-policy.js";
 import {
   loadSessionEntryReadOnly,
   replaceSessionEntry,
@@ -70,6 +73,149 @@ beforeEach(() => {
 afterEach(() => unsubscribeLifecycle());
 
 describe("applySessionModelSelection", () => {
+  function restrictedSelection(options: { empty?: boolean; assertCurrent?: () => void } = {}) {
+    const models = ["primary", "fallback", "manual"].map((id) => ({
+      provider: "fixture",
+      id,
+      name: id,
+      reasoning: false,
+    }));
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          model: { primary: "fixture/primary", fallbacks: ["fixture/fallback"] },
+          modelPolicy: { allow: ["fixture/primary", "fixture/manual"] },
+        },
+      },
+      models: {
+        providers: {
+          fixture: {
+            api: "openai-completions",
+            baseUrl: "https://fixture.invalid/v1",
+            models: models.map<ModelDefinitionConfig>(({ id, name }) => ({
+              id,
+              name,
+              reasoning: false,
+              input: ["text"],
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+              maxTokens: 1024,
+            })),
+          },
+        },
+      },
+    };
+    return createParams({
+      cfg,
+      defaultProvider: "fixture",
+      defaultModel: "primary",
+      currentProvider: "fixture",
+      currentModel: "manual",
+      sessionEntry: createEntry({ providerOverride: "fixture", modelOverride: "manual" }),
+      modelCatalog: models,
+      thinkingCatalog: models,
+      operatorAuthority: createAdmittedRunOperatorAuthority({
+        profileId: "limited-operator",
+        scopes: ["operator.write"],
+        assertCurrent: options.assertCurrent ?? (() => {}),
+        modelPolicy: prepareOperatorModelPolicy({
+          cfg,
+          policy: { allow: options.empty ? [] : ["fixture/fallback", "fixture/manual"] },
+        }),
+      }),
+      request: {
+        provider: "fixture",
+        model: "manual",
+        isDefault: false,
+        runtime: { kind: "unchanged" },
+      },
+    });
+  }
+
+  it.each([false, true])(
+    "constrains Default to permitted automatic models without granting manual fallback selection (%s)",
+    async (reset) => {
+      const params = restrictedSelection();
+      params.request = {
+        provider: "fixture",
+        model: "fallback",
+        isDefault: false,
+        ...(reset ? { resetToDefault: true as const } : {}),
+        runtime: { kind: "unchanged" },
+      };
+      const before = structuredClone(params.sessionEntry);
+      const result = await applySessionModelSelection(params);
+
+      expect(result).toMatchObject(
+        reset
+          ? { status: "applied", provider: "fixture", model: "fallback" }
+          : { status: "rejected", reason: "not-allowed" },
+      );
+      if (reset) {
+        expect(params.sessionEntry.modelOverride).toBeUndefined();
+      } else {
+        expect(params.sessionEntry).toEqual(before);
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "rejects denied manual selection or an empty role before effects (empty=%s)",
+    async (empty) => {
+      const params = restrictedSelection({ empty });
+      params.request = {
+        provider: "fixture",
+        model: "primary",
+        isDefault: false,
+        ...(empty ? { resetToDefault: true as const } : {}),
+        runtime: { kind: "unchanged" },
+      };
+      const before = structuredClone(params.sessionEntry);
+      const result = await applySessionModelSelection(params);
+
+      expect(result).toMatchObject({
+        status: "rejected",
+        reason: "not-allowed",
+        message: expect.stringContaining("operator role"),
+      });
+      expect(params.sessionEntry).toEqual(before);
+      expect(lifecycleEvents).toEqual([]);
+      expect(loadProviderScopedThinkingCatalog).not.toHaveBeenCalled();
+      expect(effects.refreshQueuedFollowupSession).not.toHaveBeenCalled();
+      expect(effects.triggerSessionPatchHook).not.toHaveBeenCalled();
+      expect(effects.mutateConfigFileWithRetry).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rechecks original operator authority after model preparation before selection mutation", async () => {
+    let current = true;
+    const params = restrictedSelection({
+      assertCurrent: () => {
+        if (!current) {
+          throw new Error("operator policy changed");
+        }
+      },
+    });
+    vi.mocked(preparePublishedModelRuntimeChoice).mockImplementationOnce(
+      async ({ runtimeId, preferredRuntimeId }) => {
+        current = false;
+        return {
+          kind: "ready",
+          runtimeId: runtimeId ?? preferredRuntimeId ?? "openclaw",
+          validate: () => undefined,
+        };
+      },
+    );
+    const before = structuredClone(params.sessionEntry);
+
+    expect(await applySessionModelSelection(params)).toMatchObject({
+      status: "rejected",
+      message: "operator policy changed",
+    });
+    expect(params.sessionEntry).toEqual(before);
+    expect(lifecycleEvents).toEqual([]);
+    expect(effects.refreshQueuedFollowupSession).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])("uses configured default only with reset intent=%s", async (reset) => {
     const modelCatalog = [
       { provider: "fixture", id: "automatic", name: "Automatic" },

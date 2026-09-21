@@ -1,6 +1,11 @@
 import { expectDefined } from "@openclaw/normalization-core";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { GATEWAY_OWNER_PROFILE_ID } from "../../packages/gateway-protocol/src/schema/users.js";
+import {
+  assertOperatorModelAllowed,
+  bindOperatorModelExecution,
+} from "../agents/admitted-run-context.js";
+import { runWithModelFallback } from "../agents/model-fallback-runner.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { ensureProfileForEmail, linkEmail, setUserProfileRole } from "../state/user-profiles.js";
@@ -73,6 +78,44 @@ function identifiedClient(profileId: string): GatewayClient {
 afterEach(() => closeOpenClawStateDatabaseForTest());
 
 describe("operator role policy", () => {
+  it.each(["request", "access"] as const)(
+    "retains both request and client access authority when the %s source ends",
+    async (ended) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async () => {
+        const profile = ensureProfileForEmail("model-source-composition@example.test");
+        const request = new AbortController();
+        const access = new AbortController();
+        const cfg = roleConfig();
+        const client = identifiedClient(profile.id);
+        client.internal = {
+          operatorAccessAuthority: {
+            signal: access.signal,
+            assertCurrent: () => access.signal.throwIfAborted(),
+          },
+        };
+        const captured = captureGatewayOperatorRunAuthority({
+          client,
+          context: { getRuntimeConfig: () => cfg },
+          sourceAuthority: {
+            signal: request.signal,
+            assertCurrent: () => request.signal.throwIfAborted(),
+          },
+        })!;
+        try {
+          expect(captured.authority.assertCurrent).not.toThrow();
+          const endedSource = ended === "request" ? request : access;
+          const otherSource = ended === "request" ? access : request;
+          endedSource.abort(new Error(`${ended} source ended`));
+          expect(otherSource.signal.aborted).toBe(false);
+          expect(captured.authority.signal?.aborted).toBe(true);
+          expect(captured.authority.assertCurrent).toThrow("source ended");
+        } finally {
+          captured.release();
+        }
+      });
+    },
+  );
+
   it("retires the original source on a profile merge while preserving unrelated sources", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const source = ensureProfileForEmail("source-role@example.test");
@@ -201,6 +244,160 @@ describe("operator role policy", () => {
           releaseQueued();
           original.release();
           unaffected.release();
+        }
+      });
+    },
+  );
+
+  it("intersects current and original model choices without revoking allowed sibling or unrelated work", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const guest = ensureProfileForEmail("model-guest@example.test");
+      const staff = ensureProfileForEmail("model-staff@example.test");
+      setUserProfileRole(staff.id, "maintainer");
+      let cfg = roleConfig();
+      cfg.agents = {
+        defaults: { model: { primary: "fixture/primary", fallbacks: ["fixture/fallback"] } },
+      };
+      cfg.gateway!.roles!.definitions.guest!.modelPolicy = { deny: ["fixture/restricted-*"] };
+      const context = { getRuntimeConfig: () => cfg };
+      const capture = (profileId: string) =>
+        captureGatewayOperatorRunAuthority({ client: identifiedClient(profileId), context })!;
+      const original = capture(guest.id);
+      const unaffected = capture(staff.id);
+      const primaryExecution = bindOperatorModelExecution(original.authority, {
+        provider: "fixture",
+        model: "primary",
+      })!;
+      const fallbackExecution = bindOperatorModelExecution(original.authority, {
+        provider: "fixture",
+        model: "fallback",
+      })!;
+      const releaseQueued = original.authority.retain!();
+      original.release();
+      try {
+        assertOperatorModelAllowed(original.authority, { provider: "fixture", model: "primary" });
+        cfg = { ...cfg, logging: { level: "debug" } };
+        publishOperatorRoleConfigChange(context);
+        expect(original.authority.signal?.aborted).toBe(false);
+        const execute = vi.fn(async (_provider: string, model: string) => model);
+        const result = await runWithModelFallback({
+          cfg,
+          provider: "fixture",
+          model: "primary",
+          operatorAuthority: original.authority,
+          manifestPlugins: [],
+          skipAuthProfileRuntime: true,
+          prepareCandidateChain: () => {
+            cfg = {
+              ...cfg,
+              agents: {
+                defaults: {
+                  model: {
+                    primary: "fixture/next",
+                    fallbacks: ["fixture/fallback", "fixture/restricted-new"],
+                  },
+                },
+              },
+            };
+            publishOperatorRoleConfigChange(context);
+          },
+          run: execute,
+        });
+        expect(result.result).toBe("fallback");
+        expect(execute.mock.calls.map((call) => call[1])).toEqual(["fallback"]);
+        expect(primaryExecution.signal.aborted).toBe(true);
+        expect(primaryExecution.assertCurrent).toThrow("operator role cannot use this model");
+        expect(fallbackExecution.signal.aborted).toBe(false);
+        expect(fallbackExecution.assertCurrent).not.toThrow();
+        expect(original.authority.signal?.aborted).toBe(false);
+        expect(original.authority.assertCurrent).not.toThrow();
+        expect(() =>
+          assertOperatorModelAllowed(original.authority, { provider: "fixture", model: "primary" }),
+        ).toThrow("operator role cannot use this model");
+        expect(() =>
+          assertOperatorModelAllowed(original.authority, {
+            provider: "fixture",
+            model: "fallback",
+          }),
+        ).not.toThrow();
+        expect(() =>
+          assertOperatorModelAllowed(original.authority, { provider: "fixture", model: "next" }),
+        ).toThrow("operator role cannot use this model");
+        expect(() =>
+          assertOperatorModelAllowed(unaffected.authority, {
+            provider: "fixture",
+            model: "restricted-new",
+          }),
+        ).not.toThrow();
+        const fresh = capture(guest.id);
+        try {
+          expect(fresh.authority.modelPolicy?.models).toEqual([
+            { provider: "fixture", model: "next" },
+            { provider: "fixture", model: "fallback" },
+          ]);
+          expect(() =>
+            assertOperatorModelAllowed(fresh.authority, {
+              provider: "fixture",
+              model: "restricted-new",
+            }),
+          ).toThrow("operator role cannot use this model");
+        } finally {
+          fresh.release();
+        }
+      } finally {
+        primaryExecution.release();
+        fallbackExecution.release();
+        expect(fallbackExecution.assertCurrent).toThrow("no longer active");
+        releaseQueued();
+        unaffected.release();
+      }
+    });
+  });
+
+  it.each([false, true])(
+    "applies model-only role changes without revoking the source (original ceiling: %s)",
+    async (bounded) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async () => {
+        const profile = ensureProfileForEmail("model-field@example.test");
+        let cfg = roleConfig();
+        cfg.agents = { defaults: { model: "fixture/a" } };
+        if (bounded) {
+          cfg.gateway!.roles!.definitions.guest!.modelPolicy = {
+            allow: ["fixture/a", "fixture/b"],
+          };
+        }
+        const context = { getRuntimeConfig: () => cfg };
+        const client = identifiedClient(profile.id);
+        const source = captureGatewayOperatorRunAuthority({ client, context })!;
+        const narrowed = captureGatewayOperatorRunAuthority({
+          client: {
+            ...client,
+            connect: { ...client.connect, scopes: [] },
+            internal: { operatorRunAuthority: source.authority },
+          },
+          context,
+        })!;
+        try {
+          cfg = structuredClone(cfg);
+          cfg.gateway!.roles!.definitions.guest!.modelPolicy = {
+            allow: ["fixture/b", "fixture/c"],
+          };
+          publishOperatorRoleConfigChange(context);
+          expect(source.authority.signal?.aborted).toBe(false);
+          expect(source.authority.assertCurrent).not.toThrow();
+          expect(narrowed.authority.scopes).toEqual([]);
+          expect(() =>
+            assertOperatorModelAllowed(narrowed.authority, { provider: "fixture", model: "a" }),
+          ).toThrow("operator role cannot use this model");
+          expect(() =>
+            assertOperatorModelAllowed(narrowed.authority, { provider: "fixture", model: "b" }),
+          ).not.toThrow();
+          expect(narrowed.authority.modelPolicy?.allows({ provider: "fixture", model: "c" })).toBe(
+            !bounded,
+          );
+        } finally {
+          narrowed.release();
+          source.release();
         }
       });
     },

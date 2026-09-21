@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import {
   buildMediaUnderstandingRegistry,
@@ -11,6 +12,9 @@ import type {
   MediaUnderstandingProvider,
 } from "../../plugin-sdk/media-understanding.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import { createAdmittedRunOperatorAuthority } from "../admitted-run-context.js";
+import { prepareOperatorModelPolicy } from "../operator-model-policy.js";
+import { withGatewayToolCallerIdentity } from "./gateway-caller-context.js";
 import { createImageTool } from "./image-tool.js";
 import {
   createMinimaxImageConfig,
@@ -89,6 +93,82 @@ describe("image tool run abort", () => {
       describeImagesWithModel: spies.describeImages,
     });
   }
+
+  it.each(["denied override", "permitted fallback", "retired after download"] as const)(
+    "preserves requester model policy for %s",
+    async (scenario) => {
+      const cfg: OpenClawConfig = {
+        plugins: { enabled: false },
+        agents: {
+          entries: { main: {} },
+          defaults: {
+            model: "test-provider/allowed",
+            models: { "test-provider/blocked": { alias: "blocked-alias" } },
+            imageModel: { primary: "test-provider/blocked", fallbacks: ["test-provider/allowed"] },
+          },
+        },
+      };
+      let active = true;
+      const authority = createAdmittedRunOperatorAuthority({
+        profileId: "image-reader",
+        scopes: ["operator.write"],
+        assertCurrent: () => {
+          if (!active) {
+            throw new Error("requester retired");
+          }
+        },
+        modelPolicy: prepareOperatorModelPolicy({
+          cfg,
+          policy: { sourceAgent: "main" },
+          manifestPlugins: [],
+        }),
+      });
+      const loadWebMedia: MockImageLoadWebMedia = vi.fn(async () => {
+        active = scenario !== "retired after download";
+        return {
+          buffer: Buffer.from(ONE_PIXEL_PNG_B64, "base64"),
+          contentType: "image/png",
+          kind: "image",
+        };
+      });
+      const spies = makeDescribeSpies();
+      const resolveModel = vi.fn(resolveConfiguredImageModelForTest);
+      installAbortImageDeps(
+        loadWebMedia,
+        spies,
+        [{ id: "test-provider", capabilities: ["image"] }],
+        resolveModel,
+      );
+      await withTempAgentDir(async (agentDir) => {
+        const tool = createRequiredImageTool({ config: cfg, agentDir });
+        const execution = withGatewayToolCallerIdentity(
+          { agentId: "main", sessionKey: "agent:main:reader", operatorAuthority: authority },
+          () =>
+            tool.execute("policy", {
+              path: "https://example.test/image.png",
+              prompt: "Answer using this image.",
+              ...(scenario === "denied override" ? { model: "blocked-alias" } : {}),
+            }),
+        );
+        if (scenario === "permitted fallback") {
+          await expect(execution).resolves.toMatchObject({
+            content: [{ type: "text", text: "ok" }],
+          });
+          expect(spies.describeImage).toHaveBeenCalledWith(
+            expect.objectContaining({ provider: "test-provider", model: "allowed" }),
+          );
+        } else {
+          await expect(execution).rejects.toThrow();
+          expect(spies.describeImage).not.toHaveBeenCalled();
+          expect(spies.describeImages).not.toHaveBeenCalled();
+        }
+        if (scenario === "denied override") {
+          expect(loadWebMedia).not.toHaveBeenCalled();
+          expect(resolveModel).not.toHaveBeenCalled();
+        }
+      });
+    },
+  );
 
   it("forwards the run signal through the provider request contract", async () => {
     vi.stubEnv("MINIMAX_API_KEY", "minimax-test");

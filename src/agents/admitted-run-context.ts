@@ -17,6 +17,8 @@ import {
   type AgentRunDelegatedAuthority,
 } from "../infra/agent-run-registry.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
+import type { ModelRef } from "./model-ref-shared.js";
+import type { PreparedOperatorModelPolicy } from "./operator-model-policy.js";
 
 /** Operational lifecycle correlation. This is never identity or authorization evidence. */
 export type OperationalRunInstanceRef = Readonly<{
@@ -39,6 +41,9 @@ export type AdmittedRunOperatorAuthority = Readonly<{
   source?: object;
   /** Retains the original source independently of a foreground run or request. */
   retain?: () => () => void;
+  modelPolicy?: PreparedOperatorModelPolicy;
+  /** Committed policy changes invalidate only executions using a removed model. */
+  onModelPolicyChanged?: (listener: () => void) => () => void;
 }>;
 
 const operatorAuthorityIssuers = resolveGlobalSingleton(
@@ -59,6 +64,10 @@ export function createAdmittedRunOperatorAuthority(
     source: source.source ?? Object.freeze({}),
     signal,
     retain: source.retain,
+    onModelPolicyChanged: source.onModelPolicyChanged,
+    get modelPolicy() {
+      return source.modelPolicy;
+    },
     assertCurrent: () => {
       if (revoked) {
         throw new Error("operator execution authority is no longer active");
@@ -82,6 +91,85 @@ export function assertAdmittedRunOperatorAuthority(
   if (!authority || typeof authority !== "object" || !operatorAuthorityIssuers.has(authority)) {
     throw new Error("operator run authority must be issued by the host");
   }
+}
+
+/** Selection never grants authority; callers must pass the original host-issued source. */
+export function assertOperatorModelAllowed(
+  authority: AdmittedRunOperatorAuthority | undefined,
+  model: ModelRef | undefined,
+): void {
+  if (!authority) {
+    return;
+  }
+  assertAdmittedRunOperatorAuthority(authority);
+  authority.assertCurrent();
+  const policy = authority.modelPolicy;
+  if (policy && (!model || !policy.allows(model))) {
+    throw new Error(
+      "Your operator role cannot use this model. Choose an allowed model or ask a gateway administrator to update your role's model policy.",
+    );
+  }
+}
+
+/** Keeps one selected model current without revoking other work from the same source. */
+export function bindOperatorModelExecution(
+  authority: AdmittedRunOperatorAuthority | undefined,
+  model: ModelRef | undefined,
+): Readonly<{ signal: AbortSignal; assertCurrent: () => void; release: () => void }> | undefined {
+  if (!authority) {
+    return undefined;
+  }
+  const selected = model ? { ...model } : undefined;
+  assertOperatorModelAllowed(authority, selected);
+  const releaseAuthority = authority.retain?.();
+  const revoked = new AbortController();
+  let released = false;
+  const assertCurrent = () => {
+    if (released) {
+      throw new Error("operator model execution authority is no longer active");
+    }
+    revoked.signal.throwIfAborted();
+    try {
+      assertOperatorModelAllowed(authority, selected);
+    } catch (error) {
+      revoked.abort(error);
+      throw error;
+    }
+  };
+  const recheck = () => {
+    try {
+      assertCurrent();
+    } catch {
+      // The latched signal owns cancellation; notification must reach other executions.
+    }
+  };
+  const onSourceAbort = () => revoked.abort(authority.signal?.reason);
+  authority.signal?.addEventListener("abort", onSourceAbort, { once: true });
+  const unsubscribe = authority.onModelPolicyChanged?.(recheck);
+  recheck();
+  return {
+    signal: revoked.signal,
+    assertCurrent,
+    release: () => {
+      if (!released) {
+        released = true;
+        unsubscribe?.();
+        authority.signal?.removeEventListener("abort", onSourceAbort);
+        releaseAuthority?.();
+      }
+    },
+  };
+}
+
+/** Prepared and admitted paths share the same source throughout retries and detached work. */
+export function readRunOperatorAuthority(params: {
+  preparedRunAdmission?: PreparedAgentRunAdmission;
+  admittedRunContext?: AdmittedRunContext;
+}): AdmittedRunOperatorAuthority | undefined {
+  return (
+    readAdmittedRunOperatorAuthority(params.admittedRunContext) ??
+    readPreparedRunOperatorAuthority(params.preparedRunAdmission)
+  );
 }
 
 export type PreparedAgentRunAdmission = Readonly<{

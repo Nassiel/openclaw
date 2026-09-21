@@ -57,10 +57,7 @@ import { resolveReusableWorkspaceSkillSnapshot } from "../../skills/runtime/sess
 import type { SkillUsagePath } from "../../skills/types.js";
 import { resolveUserPath } from "../../utils.js";
 import { normalizeMessageChannel } from "../../utils/message-channel.js";
-import {
-  resolveAdmittedRunActiveAssertion,
-  resolvePreparedRunAdmission,
-} from "../admitted-run-context.js";
+import { resolveAdmittedRunActiveAssertion } from "../admitted-run-context.js";
 import { hasAgentRosterProperty, resolveAgentWorkspaceDir } from "../agent-scope-config.js";
 import { resolveAgentDir, resolveSessionAgentIds } from "../agent-scope.js";
 import { hasUsableOAuthCredential } from "../auth-profiles/credential-state.js";
@@ -170,6 +167,7 @@ import {
   composeCliPromptContext,
   prepareCliSystemPrompt,
 } from "./prompt-context.js";
+import { admitCliRunParams, prepareCliRunModelAuthority } from "./run-admission.js";
 import {
   buildCliSessionHistoryPrompt,
   hasCliSessionTranscript,
@@ -562,21 +560,6 @@ async function prepareCliRunContextWithinReadFence(
   // Control bytes must reach the resumed backend without turn hooks, prompts,
   // tools, MCP, skills, or context-engine setup changing their execution.
   const skipsTurnPreparation = isSideQuestion || isControlOperation;
-  const admitPreparedParams = async (
-    candidate: RunCliAgentParams,
-  ): Promise<
-    RunCliAgentParams & { admittedRunContext: NonNullable<RunCliAgentParams["admittedRunContext"]> }
-  > => {
-    const admittedRunContext = await resolvePreparedRunAdmission({
-      runId: candidate.runId,
-      runtimeKind: "embedded",
-      admittedRunContext: candidate.admittedRunContext,
-      preparedRunAdmission: candidate.preparedRunAdmission,
-    });
-    candidate.assertCurrent?.();
-    const { preparedRunAdmission: _preparedRunAdmission, ...rest } = candidate;
-    return { ...rest, agentId: workspaceResolution.agentId, admittedRunContext };
-  };
   const runtimeChatType = params.chatType ?? params.sessionEntry?.chatType;
   const workspaceResolution = resolveRunWorkspaceDir({
     workspaceDir: params.rootedExecution?.root ?? params.workspaceDir,
@@ -633,6 +616,7 @@ async function prepareCliRunContextWithinReadFence(
   if (!backendResolved) {
     throw new Error(`Unknown CLI backend: ${params.provider}`);
   }
+  params = prepareCliRunModelAuthority(params);
   const backendAuthPolicy = resolveBundledCliBackendAuthPolicy(backendResolved.id);
   const canEnforceExactToolAvailability =
     backendResolved.nativeToolMode === "selectable" &&
@@ -732,7 +716,7 @@ async function prepareCliRunContextWithinReadFence(
       disableCliLiveSession: true,
       cliToolAvailability: { native: [], openClaw: params.cliToolAvailability?.openClaw ?? [] },
     };
-    const admittedParams = await admitPreparedParams(params);
+    const admittedParams = await admitCliRunParams(params, workspaceResolution.agentId);
     const assertRootedCurrent = resolveAdmittedRunActiveAssertion(
       admittedParams.admittedRunContext,
       params.abortSignal,
@@ -1365,7 +1349,7 @@ async function prepareCliRunContextWithinReadFence(
     if (!promptBuildHookRunner || !toolAuthorityFingerprint) {
       return undefined;
     }
-    const admittedParams = await admitPreparedParams(params);
+    const admittedParams = await admitCliRunParams(params, workspaceResolution.agentId);
     params = admittedParams;
     const assertHostActive = resolveAdmittedRunActiveAssertion(
       admittedParams.admittedRunContext,
@@ -2039,7 +2023,7 @@ async function prepareCliRunContextWithinReadFence(
     let systemPrompt = transformedSystemPrompt;
     const allowRawTranscriptReseed =
       backendResolved.config.reseedFromRawTranscriptWhenUncompacted === true;
-    const historyParams = await admitPreparedParams(params);
+    const historyParams = await admitCliRunParams(params, workspaceResolution.agentId);
     params = historyParams;
     const cliHistoryWriter = !isSideQuestion
       ? await prepareCliHistoryBoundary(historyParams, { credential: authCredential })
@@ -2244,13 +2228,16 @@ async function prepareCliRunContextWithinReadFence(
       ...(mcpDeliveryCaptureEnabled ? { mcpDeliveryCapture: true as const } : {}),
     });
     const admitFinalParams = () =>
-      admitPreparedParams({
-        ...params,
-        config: runConfig,
-        prompt: preparedPrompt,
-        transcriptPrompt: finalizedTranscriptPrompt,
-        ...(requireExplicitMessageTarget ? { requireExplicitMessageTarget: true } : {}),
-      });
+      admitCliRunParams(
+        {
+          ...params,
+          config: runConfig,
+          prompt: preparedPrompt,
+          transcriptPrompt: finalizedTranscriptPrompt,
+          ...(requireExplicitMessageTarget ? { requireExplicitMessageTarget: true } : {}),
+        },
+        workspaceResolution.agentId,
+      );
     const bindPreparedParams = (preparedParams: PreparedCliRunContext["params"]) => {
       bindMcpClientGrantAdmission(preparedParams.admittedRunContext);
       if (!isControlOperation) {

@@ -2,9 +2,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
 import * as pdfExtractModule from "../../media/pdf-extract.js";
+import { AsyncWorkScope } from "../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import { createAdmittedRunOperatorAuthority } from "../admitted-run-context.js";
 import * as modelResolution from "../embedded-agent-runner/model.js";
+import { prepareOperatorModelPolicy } from "../operator-model-policy.js";
 import * as preparedModelRuntime from "../prepared-model-runtime.js";
+import { withGatewayToolCallerIdentity } from "./gateway-caller-context.js";
 import { createPdfToolInfraStub, withTempPdfAgentDir } from "./pdf-tool.test-support.js";
 
 const completeMock = vi.hoisted(() => vi.fn());
@@ -24,8 +28,90 @@ const { stubPdfToolInfra } = createPdfToolInfraStub(completeMock);
 describe("PDF tool prepared-runtime cancellation", () => {
   afterEach(() => {
     completeMock.mockReset();
+    registerProviderStreamForModelMock.mockReset();
     vi.restoreAllMocks();
   });
+
+  it.each(["denied override", "permitted fallback", "retired after extraction"] as const)(
+    "preserves requester model policy for %s",
+    async (scenario) => {
+      await withTempPdfAgentDir(async (agentDir) => {
+        const { loadSpy } = await stubPdfToolInfra(agentDir, {
+          provider: "test-provider",
+          api: "openai-completions",
+          input: ["text"],
+        });
+        const cfg: OpenClawConfig = {
+          plugins: { enabled: false },
+          agents: {
+            entries: { main: {} },
+            defaults: {
+              model: "test-provider/allowed",
+              models: { "test-provider/blocked": { alias: "blocked-alias" } },
+              pdfModel: { primary: "test-provider/blocked", fallbacks: ["test-provider/allowed"] },
+            },
+          },
+        };
+        let active = true;
+        const authority = createAdmittedRunOperatorAuthority({
+          profileId: "pdf-reader",
+          scopes: ["operator.write"],
+          assertCurrent: () => {
+            if (!active) {
+              throw new Error("requester retired");
+            }
+          },
+          modelPolicy: prepareOperatorModelPolicy({
+            cfg,
+            policy: { sourceAgent: "main" },
+            manifestPlugins: [],
+          }),
+        });
+        vi.spyOn(pdfExtractModule, "extractPdfContent").mockImplementation(async () => {
+          active = scenario !== "retired after extraction";
+          return { text: "Synthetic document text", images: [] };
+        });
+        completeMock.mockResolvedValue({
+          role: "assistant",
+          stopReason: "stop",
+          content: [{ type: "text", text: "Allowed PDF answer." }],
+        });
+        const tool = (await import("./pdf-tool.js")).createPdfTool({ config: cfg, agentDir });
+        if (!tool) {
+          throw new Error("expected PDF tool");
+        }
+        const work = new AsyncWorkScope();
+        try {
+          const execution = work.track(() =>
+            withGatewayToolCallerIdentity(
+              { agentId: "main", sessionKey: "agent:main:reader", operatorAuthority: authority },
+              () =>
+                tool.execute("policy", {
+                  pdf: "/tmp/synthetic.pdf",
+                  prompt: "Answer using this PDF.",
+                  ...(scenario === "denied override" ? { model: "blocked-alias" } : {}),
+                }),
+            ),
+          );
+          if (scenario === "permitted fallback") {
+            await expect(execution).resolves.toMatchObject({
+              content: [{ type: "text", text: "Allowed PDF answer." }],
+            });
+            expect(completeMock).toHaveBeenCalledOnce();
+          } else {
+            await expect(execution).rejects.toThrow();
+            expect(completeMock).not.toHaveBeenCalled();
+          }
+          if (scenario === "denied override") {
+            expect(loadSpy).not.toHaveBeenCalled();
+            expect(preparedModelRuntime.acquireAgentRunPreparedModelRuntime).not.toHaveBeenCalled();
+          }
+        } finally {
+          await work.drain();
+        }
+      });
+    },
+  );
 
   it.each(["runtime acquisition", "model resolution"])(
     "forwards cancellation to %s before provider work starts",

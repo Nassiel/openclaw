@@ -10,7 +10,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createZeroUsageFixture } from "../agents/test-helpers/usage-fixtures.js";
 import { attachModelProviderRuntimePluginHandle } from "../plugins/provider-hook-runtime.js";
 import { bindModelLlmRuntime } from "./model-runtime-binding.js";
-import { completeSimple } from "./stream.js";
+import { complete, completeSimple } from "./stream.js";
 import { createAssistantMessageEventStream } from "./utils/event-stream.js";
 
 function createCompletionRuntime(
@@ -158,6 +158,31 @@ describe("LLM completion transport host", () => {
         expect(providerStream).not.toHaveBeenCalled();
       }
       expect(controller.signal.aborted).toBe(authority === "aborted");
+    },
+  );
+  it.each(["current", "retired", "aborted"] as const)(
+    "checks %s full-completion authority after transport initialization",
+    async (authority) => {
+      const { model, message, providerStream } = createCompletionRuntime();
+      const controller = new AbortController();
+      const retired = new Error("Completion owner retired.");
+      let current = true;
+      const completion = complete(model, { messages: [] }, { signal: controller.signal }, () => {
+        if (!current) {
+          throw retired;
+        }
+      });
+      current = authority !== "retired";
+      if (authority === "aborted") {
+        controller.abort(retired);
+      }
+      if (authority === "current") {
+        await expect(completion).resolves.toEqual(message);
+        expect(providerStream).toHaveBeenCalledOnce();
+      } else {
+        await expect(completion).rejects.toBe(retired);
+        expect(providerStream).not.toHaveBeenCalled();
+      }
     },
   );
 });
