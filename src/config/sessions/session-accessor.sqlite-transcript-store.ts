@@ -60,11 +60,13 @@ import {
   createTranscriptPayloadUpdater,
   prepareTranscriptPayload,
   transcriptEventJsonSql,
+  type PreparedTranscriptPayload,
 } from "./transcript-payload.js";
 
 type TranscriptAppendOptions = {
   /** Exact event bytes, including canonical media, prepared by the message append owner. */
   eventJson?: string;
+  preparedPayload?: PreparedTranscriptPayload;
   allowStoredAlias?: boolean;
   idempotencyKeyMode?: "dedupe" | "preserve-owner" | "relocate-owner";
   onProjectionReconcileNeeded?: () => void;
@@ -207,6 +209,7 @@ function appendTranscriptEvent(
     eventJson,
     createdAt,
     parsedEvent: options.eventJson === undefined ? undefined : persistedEvent,
+    preparedPayload: options.preparedPayload,
   });
   cursor.nextSeq = seq + 1;
   if (options.touchMutation !== false) {

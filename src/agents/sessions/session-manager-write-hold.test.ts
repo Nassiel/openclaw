@@ -2,11 +2,13 @@ import path from "node:path";
 import { expect, it, vi } from "vitest";
 import {
   loadTranscriptEventsSync,
+  readTranscriptMutationAtSync,
   resolveSessionTranscriptDatabasePath,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
 import { prepareTranscriptMessageAppend } from "../../config/sessions/session-accessor.sqlite-transcript-message-append.js";
 import { appendTranscriptMessageSnapshotSync } from "../../config/sessions/session-accessor.sqlite-transcript-write.js";
+import { resolveZstdCodec } from "../../infra/zstd-codec.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import type { AgentMessage } from "../runtime/index.js";
@@ -53,10 +55,20 @@ it.each(["assistant", "toolResult"] as const)(
       });
       const redactionHeld: boolean[] = [];
       const largeJsonHeld: boolean[] = [];
+      const compressionHeld: boolean[] = [];
+      const codec = resolveZstdCodec();
+      if (!codec) {
+        throw new Error("Writer preparation proof requires native zstd support");
+      }
+      const compress = codec.compress;
       const redact = transcriptRedact.redactTranscriptMessage;
       const stringify = JSON.stringify;
       const parse = JSON.parse;
       const spies = [
+        vi.spyOn(codec, "compress").mockImplementation((...args) => {
+          compressionHeld.push(db.isTransaction);
+          return compress(...args);
+        }),
         vi.spyOn(transcriptRedact, "redactTranscriptMessage").mockImplementation((...args) => {
           redactionHeld.push(db.isTransaction);
           return redact(...args);
@@ -86,6 +98,7 @@ it.each(["assistant", "toolResult"] as const)(
       expect(redactionHeld).toEqual([false]);
       expect(largeJsonHeld.length).toBeGreaterThan(0);
       expect(largeJsonHeld).not.toContain(true);
+      expect(compressionHeld).toEqual([false]);
       const entry = manager.getEntry(entryId);
       expect(entry).toMatchObject({
         parentId,
@@ -117,3 +130,81 @@ it.each(["assistant", "toolResult"] as const)(
     });
   },
 );
+
+it("rejects a stale generation and rebuilds prepared bytes for a rebased descendant", async () => {
+  await withOpenClawTestState({ label: "session-prepared-reparent" }, async (state) => {
+    const scope = {
+      agentId: "main",
+      sessionId: "prepared-reparent",
+      sessionKey: "agent:main:prepared-reparent",
+      storePath: path.join(state.sessionsDir(), "sessions.json"),
+    };
+    await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
+    const manager = SessionManager.open(scope, state.workspaceDir);
+    const parentId = manager.appendMessage({ role: "user", content: "first", timestamp: 1 });
+    const message = {
+      role: "assistant" as const,
+      content: [{ type: "text" as const, text: "prepared response ".repeat(8000) }],
+      api: "messages" as const,
+      provider: "anthropic",
+      model: "sonnet-4.6",
+      usage: createZeroUsageFixture(),
+      stopReason: "stop" as const,
+      timestamp: 2,
+    };
+    const prepared = prepareTranscriptMessageAppend(
+      { message },
+      {
+        scope,
+        envelope: {
+          type: "message",
+          id: "prepared-response",
+          parentId,
+          timestamp: new Date(2).toISOString(),
+        },
+      },
+    );
+    expect(prepared?.physicalPayload?.payload.event_zstd).toBeInstanceOf(Uint8Array);
+    const expectedMutationAt = readTranscriptMutationAtSync(scope);
+    const descendant = manager.appendMessage({
+      ...message,
+      content: [{ type: "text", text: "intervening assistant" }],
+    });
+    const before = loadTranscriptEventsSync(scope);
+    const options = {
+      message,
+      eventId: "prepared-response",
+      parentId,
+      now: 2,
+      appendIntent: "active-branch" as const,
+    };
+    expect(() =>
+      appendTranscriptMessageSnapshotSync(scope, { ...options, expectedMutationAt }, prepared),
+    ).toThrow("SQLite transcript changed while preparing rewrite");
+    expect(loadTranscriptEventsSync(scope)).toEqual(before);
+
+    expect(appendTranscriptMessageSnapshotSync(scope, options, prepared)).toMatchObject({
+      ok: true,
+      value: { result: { appended: true, effectiveParentId: descendant } },
+    });
+    const stored = loadTranscriptEventsSync(scope);
+    expect(stored.slice(0, -1)).toEqual(before);
+    expect(stored.at(-1)).toMatchObject({
+      id: "prepared-response",
+      parentId: descendant,
+      message,
+    });
+    const { db } = openOpenClawAgentDatabase({
+      agentId: scope.agentId,
+      path: resolveSessionTranscriptDatabasePath(scope),
+    });
+    const row = db
+      .prepare("SELECT navigation_json FROM transcript_events ORDER BY seq DESC LIMIT 1")
+      .get();
+    expect(typeof row?.navigation_json).toBe("string");
+    if (typeof row?.navigation_json !== "string") {
+      throw new Error("Expected compressed rebased transcript metadata");
+    }
+    expect(JSON.parse(row.navigation_json).report.entry.parentId).toBe(descendant);
+  });
+});

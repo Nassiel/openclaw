@@ -22,7 +22,7 @@ const MAX_NAVIGATION_BYTES = 16 * 1024;
 const MIN_COMPRESS_BYTES = 1024;
 const DECODE_FUNCTION = "openclaw_transcript_payload_decode";
 const registeredDecoders = new WeakSet<DatabaseSync>();
-const utf8Databases = new WeakMap<DatabaseSync, boolean>();
+const storageEncodings = new WeakMap<DatabaseSync, string>();
 const utf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 export type TranscriptPayloadRecord = {
@@ -30,6 +30,12 @@ export type TranscriptPayloadRecord = {
   event_zstd: Uint8Array | null;
   event_utf8_bytes: number | null;
   navigation_json: string | null;
+};
+
+export type PreparedTranscriptPayload = {
+  eventJson: string;
+  storageEncoding: string;
+  payload: TranscriptPayloadRecord;
 };
 
 export type TranscriptPayloadAlias = "transcript_events" | "event" | "te" | "parent";
@@ -51,8 +57,21 @@ export function createTranscriptEventInserter(database: DatabaseSync, sessionId:
         created_at: parameter((row) => row.createdAt),
       }),
   );
-  return (row: { seq: number; eventJson: string; createdAt: number; parsedEvent?: unknown }) =>
-    insert({ ...row, ...prepareTranscriptPayload(database, row.eventJson, row.parsedEvent) });
+  return (row: {
+    seq: number;
+    eventJson: string;
+    createdAt: number;
+    parsedEvent?: unknown;
+    preparedPayload?: PreparedTranscriptPayload;
+  }) => {
+    const prepared = row.preparedPayload;
+    const payload =
+      prepared?.eventJson === row.eventJson &&
+      prepared.storageEncoding === readStorageEncoding(database)
+        ? prepared.payload
+        : prepareTranscriptPayload(database, row.eventJson, row.parsedEvent);
+    return insert({ ...row, ...payload });
+  };
 }
 
 export function createTranscriptPayloadUpdater(database: DatabaseSync, sessionId: string) {
@@ -74,16 +93,33 @@ export function createTranscriptPayloadUpdater(database: DatabaseSync, sessionId
   );
 }
 
-function hasUtf8Storage(database: DatabaseSync): boolean {
-  let utf8 = utf8Databases.get(database);
-  if (utf8 === undefined) {
+function readStorageEncoding(database: DatabaseSync): string {
+  let encoding = storageEncodings.get(database);
+  if (encoding === undefined) {
     const db = getNodeSqliteKysely<{ pragma_encoding: { encoding: string } }>(database);
-    utf8 =
-      executeSqliteQueryTakeFirstSync(database, db.selectFrom("pragma_encoding").select("encoding"))
-        ?.encoding === "UTF-8";
-    utf8Databases.set(database, utf8);
+    encoding = executeSqliteQueryTakeFirstSync(
+      database,
+      db.selectFrom("pragma_encoding").select("encoding"),
+    )?.encoding;
+    if (encoding === undefined) {
+      throw new Error("SQLite did not report its transcript storage encoding");
+    }
+    storageEncodings.set(database, encoding);
   }
-  return utf8;
+  return encoding;
+}
+
+/** Prepared bytes grant no write authority and must match the eventual envelope and encoding. */
+export function prepareTranscriptPayloadForReuse(
+  database: DatabaseSync,
+  eventJson: string,
+  parsedEvent?: unknown,
+): PreparedTranscriptPayload {
+  return {
+    eventJson,
+    storageEncoding: readStorageEncoding(database),
+    payload: prepareTranscriptPayload(database, eventJson, parsedEvent),
+  };
 }
 
 function navigationProjection(
@@ -163,7 +199,7 @@ export function prepareTranscriptPayload(
   parsedEvent?: unknown,
 ): TranscriptPayloadRecord {
   const rawBytes = Buffer.byteLength(eventJson, "utf8");
-  const utf8 = hasUtf8Storage(database);
+  const utf8 = readStorageEncoding(database) === "UTF-8";
   const identity: TranscriptPayloadRecord = {
     event_json: eventJson,
     event_zstd: null,

@@ -242,6 +242,10 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
   measure complete hosted timing including duplicated setup. Packages do not
   restore or save app build products. Build caches stay phase-owned; the sole eligible shared
   SwiftPM cache writer is regular `tests` or full-validation `release`.
+  Debug test/package builds disable indexing and use Swift line-table debug
+  information, retaining coverage and source-line backtraces. Test build caches
+  use the v7 profile; Release flags and v6 caches remain unchanged. Local debug
+  builds retain full debugger metadata.
 - Android regular CI uses four test/lint rows, including benchmark compilation
   in the Kotlin-lint row when benchmark/build/dependency inputs change or the
   changed-path manifest is unusable. Full manual validation retains all six
@@ -422,9 +426,10 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
 - `OPENCLAW_CI_RUNNER_BACKEND=github` routes every configurable `ci.yml` job
   to its existing GitHub-hosted fallback label. Unset or `blacksmith` preserves
   the normal Blacksmith-first route.
-- Vitest/test compile caches are restore-only in CI and use immutable Actions
-  caches; the daily/dispatch warmer is their sole writer. Build compile cache
-  writes rotate at most once per UTC day. PRs create no runtime-cache archives.
+- Vitest transform and Node compile caches are restore-only in CI and use
+  immutable Actions caches; the main-push/daily/dispatch warmer is their sole
+  writer. Build, QA and test orchestration consume its shared Node compile seed.
+  PRs create no runtime-cache archives.
 
 When changing one knob, update `docs/ci.md` and the guard test in the same PR.
 

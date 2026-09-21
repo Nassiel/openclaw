@@ -145,6 +145,15 @@ export class SessionManagerEntries extends SessionManagerPersistence {
               message: canonicalEntry.message,
               config: options?.config,
             }),
+            {
+              scope: this.persistenceTarget,
+              envelope: {
+                type: "message",
+                id: canonicalEntry.id,
+                parentId: canonicalEntry.parentId,
+                timestamp: canonicalEntry.timestamp,
+              },
+            },
           )
         : undefined;
     let persistenceResult;

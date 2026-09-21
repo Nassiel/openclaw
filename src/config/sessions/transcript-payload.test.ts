@@ -12,7 +12,9 @@ import {
   projectResetBoundaryNavigationSql,
 } from "./session-model-context-projection.js";
 import {
+  createTranscriptEventInserter,
   prepareTranscriptPayload,
+  prepareTranscriptPayloadForReuse,
   transcriptEventJsonSql,
   transcriptEventModelBytesSql,
   transcriptEventModelNavigationSql,
@@ -99,6 +101,55 @@ function inspectNavigation(database: DatabaseSync, event: RawBuilder<string>, se
 }
 
 describe("transcript payload storage boundary", () => {
+  it.each([
+    ["UTF-8", "UTF-16le"],
+    ["UTF-8", "UTF-16be"],
+    ["UTF-16le", "UTF-8"],
+    ["UTF-16be", "UTF-8"],
+  ])("recomputes a prepared %s frame for %s storage", (sourceEncoding, targetEncoding) => {
+    const source = openNodeSqliteDatabase(":memory:");
+    const target = openNodeSqliteDatabase(":memory:");
+    try {
+      source.exec(`PRAGMA encoding = '${sourceEncoding}'`);
+      target.exec(`PRAGMA encoding = '${targetEncoding}'`);
+      createTable(source);
+      createTable(target);
+      target.exec(`ALTER TABLE transcript_events ADD COLUMN session_id TEXT;
+        ALTER TABLE transcript_events ADD COLUMN created_at INTEGER`);
+      const eventJson = `{"type":"custom","id":"first","id":"last","data":"${"fixture".repeat(1024)}"}`;
+      const prepared = prepareTranscriptPayloadForReuse(source, eventJson);
+      expect(prepared.storageEncoding).toBe(sourceEncoding);
+      const insertEvent = createTranscriptEventInserter(target, "session");
+      insertEvent({
+        seq: 1,
+        eventJson,
+        createdAt: 1,
+        preparedPayload: prepared,
+      });
+      const stored = target
+        .prepare(
+          "SELECT event_json, event_zstd, event_utf8_bytes, navigation_json FROM transcript_events",
+        )
+        .get();
+      expect(readBody(target, 1)).toBe(eventJson);
+      if (targetEncoding === "UTF-8") {
+        expect(stored?.event_json).toBeNull();
+        expect(stored?.event_zstd).toBeInstanceOf(Uint8Array);
+        expect(stored?.event_utf8_bytes).toBe(Buffer.byteLength(eventJson));
+      } else {
+        expect(stored).toEqual({
+          event_json: eventJson,
+          event_zstd: null,
+          event_utf8_bytes: null,
+          navigation_json: null,
+        });
+      }
+    } finally {
+      source.close();
+      target.close();
+    }
+  });
+
   it("keeps identity storage when navigation would outweigh compressed payload savings", () => {
     const database = openNodeSqliteDatabase(":memory:");
     try {
