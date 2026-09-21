@@ -3,8 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { prepareCronPromptRunAdmission } from "../../cron/isolated-agent/run-admission.js";
 import type { GatewayRequestContext } from "../../gateway/server-methods/types.js";
 import { bindGatewayContextResolver } from "../../plugins/runtime/gateway-request-scope.js";
+import { prepareSystemAgentRunAdmission } from "../admitted-run-context.js";
 import {
   createAdmittedGatewayToolCallerIdentity,
+  getGatewayToolCallerIdentity,
   withGatewayToolCallerIdentity,
 } from "./gateway-caller-context.js";
 import { createGatewayTool } from "./gateway-tool.js";
@@ -106,6 +108,40 @@ describe("gateway update action", () => {
     host.context = {} as GatewayRequestContext;
   });
 
+  it("refuses scheduler-source injection inside a live non-scheduler run", async () => {
+    const sessionKey = "agent:main:operator";
+    const admission = prepareSystemAgentRunAdmission({}, "operator-run", "main", "test");
+    try {
+      const context = await admission.admit("embedded");
+      bindGatewayContextResolver(context, () => host.context);
+      const caller = createAdmittedGatewayToolCallerIdentity({
+        admittedRunContext: context,
+        agentId: "main",
+        sessionKey,
+      });
+      const injectedIdentity = {
+        agentId: "main",
+        sessionKey,
+        admissionSource: "operator-schedule" as const,
+      };
+      dispatchMock.mockResolvedValue({ ok: true, result: { status: "ok" } });
+      const result = await withGatewayToolCallerIdentity(caller, () =>
+        withGatewayToolCallerIdentity(injectedIdentity, () => {
+          expect(getGatewayToolCallerIdentity()?.approvalAuthority).toBe(caller?.approvalAuthority);
+          return createGatewayTool().execute("injected-update", { action: "update.run" });
+        }),
+      );
+      expect(result.details).toMatchObject({
+        ok: false,
+        code: "owner_required",
+        reason: "owner_required",
+      });
+      expect(dispatchMock).not.toHaveBeenCalled();
+    } finally {
+      admission.close();
+    }
+  });
+
   it.each(["operator-schedule", "requester-schedule", undefined] as const)(
     "uses recorded scheduler admission %s independently of audit and chat delivery",
     async (admissionSource) => {
@@ -147,7 +183,11 @@ describe("gateway update action", () => {
             deliveryContext: { channel: "telegram", to: "123" },
           });
           admission.close();
-          await expect(invoke()).rejects.toThrow("caller authority is no longer active");
+          expect((await invoke()).details).toMatchObject({
+            ok: false,
+            code: "owner_required",
+            reason: "owner_required",
+          });
           expect(dispatchMock).toHaveBeenCalledOnce();
         } else {
           expect(result.details).toMatchObject({

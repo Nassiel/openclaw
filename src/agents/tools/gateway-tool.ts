@@ -8,6 +8,7 @@ import {
   summarizeUpdateRunResponse,
 } from "../../gateway/update-run-summary.js";
 import { parseConfigPathArrayIndex } from "../../shared/path-array-index.js";
+import { getAdmittedRunSource } from "../admitted-run-context.js";
 import { stringEnum } from "../schema/typebox.js";
 import {
   type AnyAgentTool,
@@ -145,8 +146,7 @@ export function createGatewayTool(options?: {
         const caller = getGatewayToolCallerIdentity();
         const operatorSchedule =
           !options?.requesterSenderId &&
-          caller?.admissionSource === "operator-schedule" &&
-          caller.approvalAuthority !== undefined;
+          getAdmittedRunSource(caller?.approvalAuthority) === "operator-schedule";
         if (options?.senderIsOwner !== true && !operatorSchedule) {
           const hint = formatCommandOwnerHint({
             channel: caller?.turnSourceChannel,

@@ -109,6 +109,7 @@ type DelegatedAuthorityLease = {
 };
 
 const delegatedAuthorityLeases = new WeakMap<AdmittedRunContext, DelegatedAuthorityLease>();
+const admittedContextsByAuthority = new WeakMap<AgentRunDelegatedAuthority, AdmittedRunContext>();
 const activeNativeHookRecoveryLeases = new Map<
   string,
   { lease: DelegatedAuthorityLease; releaseOperatorAuthority?: () => void }
@@ -128,6 +129,9 @@ function bindAdmittedRunDelegatedAuthority(
   previousRecovery?.releaseOperatorAuthority?.();
   const lease = { authority, foregroundClosed: false, assertSourceCurrent, operatorAuthority };
   delegatedAuthorityLeases.set(context, lease);
+  if (!admittedContextsByAuthority.has(authority)) {
+    admittedContextsByAuthority.set(authority, context);
+  }
 }
 
 /** Reads the immutable outer-run authority without reviving a closed claim. */
@@ -166,6 +170,16 @@ export function readPreparedRunOperatorAuthority(
     assertAdmittedRunOperatorAuthority(authority);
   }
   return authority;
+}
+
+/** Reads the original admission source only through its exact live authority. */
+export function getAdmittedRunSource(
+  authority: AgentRunDelegatedAuthority | undefined,
+): AdmittedRunContext["admissionSource"] {
+  const context = authority && admittedContextsByAuthority.get(authority);
+  return context && getAdmittedRunDelegatedAuthority(context) === authority
+    ? context.admissionSource
+    : undefined;
 }
 
 /** Captures an exact admitted-run assertion for work that may cross an await boundary. */
