@@ -319,7 +319,6 @@ describe.skipIf(process.platform === "win32")("native inference admission", () =
       expect(await waitFor(() => terminals.get(waiting.threadId))).toBe("completed");
       expect(held.size).toBe(15);
       const parent = await begin(true);
-      expect(await waitFor(() => terminals.get(parent.threadId))).toBe("completed");
       const childId = await waitFor(
         () => [...metadata].find(([, info]) => info.parent_thread_id === parent.threadId)?.[0],
       );
@@ -331,6 +330,8 @@ describe.skipIf(process.platform === "win32")("native inference admission", () =
       finish(childId);
       await waitFor(() => (held.has(quick.threadId) ? true : undefined));
       finish(quick.threadId);
+      // Child and queued root may run before the parent's follow-up request.
+      expect(await waitFor(() => terminals.get(parent.threadId))).toBe("completed");
       expect(await waitFor(() => terminals.get(quick.threadId))).toBe("completed");
       expect(transport.rejected).toHaveLength(rejectedBeforeDrain);
       for (const threadId of [...held.keys()]) finish(threadId);
