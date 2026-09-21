@@ -117,6 +117,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/tool-resolution.cron-capture.test.ts",
   "src/gateway/tui-session-description-wire.test.ts",
   "src/gateway/worker-environments/local-workspace-projection.test.ts",
+  "src/gateway/worker-environments/placement-change-snapshot.test.ts",
   "src/gateway/worker-environments/prepared-pool-local-project.test.ts",
   "src/gateway/worker-environments/provider-crabbox-runtime-preflight.test.ts",
   "src/gateway/worker-environments/workspace-result-ref-mutation.test.ts",

@@ -370,9 +370,9 @@ describe("worker placement recovery session events", () => {
 
   it("reserves reconciliation and coalesces its reporting before the worker snapshot yields", async () => {
     const snapshot = createDeferredCore<RecoveryPlacement[]>();
-    const snapshotStarted = createDeferredCore<void>();
-    const operationStarted = createDeferredCore<void>();
-    const firstOperation = createDeferredCore<void>();
+    const snapshotStarted = createDeferredCore();
+    const operationStarted = createDeferredCore();
+    const firstOperation = createDeferredCore();
     const started: string[] = [];
     await withRecoveryRuntime(
       {
