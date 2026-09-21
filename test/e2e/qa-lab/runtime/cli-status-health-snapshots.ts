@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { createQaGatewayChild } from "../../../../extensions/qa-lab/api.js";
@@ -102,9 +101,9 @@ async function runStoppedCli(
 
 export async function runCliStatusHealthSnapshots(repoRoot: string): Promise<JsonRecord> {
   const gatewayOwner = createQaGatewayChild();
-  let tempRoot: string | undefined;
   let knownToken: string | undefined;
-  let stopped = false;
+  let result: JsonRecord | undefined;
+  let failure: Error | undefined;
   try {
     const gateway = await gatewayOwner.start({
       repoRoot,
@@ -119,7 +118,6 @@ export async function runCliStatusHealthSnapshots(repoRoot: string): Promise<Jso
         knownToken = context.token;
       },
     });
-    tempRoot = gateway.tempRoot;
     const token = gateway.token;
     knownToken = token;
     const command = gateway.cliCommand;
@@ -140,7 +138,6 @@ export async function runCliStatusHealthSnapshots(repoRoot: string): Promise<Jso
     }
     const runtimeEnv = { ...gateway.runtimeEnv };
     await gateway.stop({ keepTemp: true });
-    stopped = true;
 
     const stoppedStatus = await runStoppedCli(command, runtimeEnv, [
       "status",
@@ -192,7 +189,7 @@ export async function runCliStatusHealthSnapshots(repoRoot: string): Promise<Jso
       throw new Error("stopped human status did not provide the gateway probe recovery command");
     }
 
-    return {
+    result = {
       healthy: {
         healthOk: healthyHealth.ok,
         statusReachable: record(healthyStatus.gateway)?.reachable,
@@ -205,15 +202,23 @@ export async function runCliStatusHealthSnapshots(repoRoot: string): Promise<Jso
       tokenLeak: false,
     };
   } catch (error) {
-    throw redactKnownToken(error, knownToken);
-  } finally {
-    if (!stopped) {
-      await gatewayOwner.stop();
-    }
-    if (stopped && tempRoot) {
-      await fs.rm(tempRoot, { force: true, recursive: true });
-    }
+    failure = redactKnownToken(error, knownToken);
   }
+
+  const cleanup = await gatewayOwner.stop({ keepTemp: false });
+  if (cleanup.errors.length > 0) {
+    const cleanupFailure = new Error("CLI status and health fixture cleanup failed");
+    failure = failure
+      ? new AggregateError([failure, cleanupFailure], "CLI status and health scenario failed")
+      : cleanupFailure;
+  }
+  if (failure) {
+    throw failure;
+  }
+  if (!result) {
+    throw new Error("CLI status and health scenario did not produce a result");
+  }
+  return result;
 }
 
 async function main(): Promise<void> {
