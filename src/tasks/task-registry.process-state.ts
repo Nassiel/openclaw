@@ -16,6 +16,7 @@ import {
   listTasksFromIndex,
 } from "./task-registry-records.js";
 import type {
+  TaskExecutionRestoreStore,
   TaskRegistryMutationScope,
   TaskRegistryObserverEvent,
 } from "./task-registry.store.types.js";
@@ -25,6 +26,11 @@ export type PendingTaskRegistryMutation = {
   scope: TaskRegistryMutationScope;
   readEventTarget?: () => TaskAgentEventTarget | undefined;
   readIdentity?: "preserved";
+  readSettlement?: {
+    databaseKey: string;
+    store: TaskExecutionRestoreStore;
+    promise: Promise<void>;
+  };
   published: Map<string, Omit<TaskRecord, "detail"> | undefined>;
   publication?: {
     records: Map<string, TaskRecord>;
