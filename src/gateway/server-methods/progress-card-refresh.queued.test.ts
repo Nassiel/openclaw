@@ -18,7 +18,11 @@ import type { FollowupRun, QueueSettings } from "../../auto-reply/reply/queue/ty
 import { createReplyOperation } from "../../auto-reply/reply/reply-run-registry.operation.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
-import { registerQueuedChatTurn } from "../chat-queued-turns.js";
+import {
+  abortQueuedChatTurnById,
+  abortQueuedChatTurns,
+  registerQueuedChatTurn,
+} from "../chat-queued-turns.js";
 import type { handleTrustedInternalChatSend } from "./chat-send-handler.js";
 import { createChatSendTurnAdoptionLifecycle } from "./chat-send-turn-adoption.js";
 import { requestProgressCardRefresh } from "./progress-card-refresh.js";
@@ -400,6 +404,43 @@ describe("queued progress refresh settlement", () => {
     expectTerminal(await f.refresh());
     expect(mocks.execute).not.toHaveBeenCalled();
   });
+
+  it.each(["single", "bulk", "signal"])(
+    "retires a cancelled queued refresh before %s abort removes its owner",
+    async (mode) => {
+      const f = fixture();
+      expectAccepted(await f.refresh());
+      const source = f.first();
+      if (mode === "single") {
+        expect(
+          abortQueuedChatTurnById(f.context.chatQueuedTurns, {
+            runId: source.runId,
+            sessionKey: f.sessionKey,
+            stopReason: "rpc",
+          }).aborted,
+        ).toBe(true);
+      } else if (mode === "bulk") {
+        const entry = f.context.chatQueuedTurns.get(source.runId);
+        if (!entry) {
+          throw new Error("Missing queued refresh owner");
+        }
+        expect(
+          abortQueuedChatTurns(f.context.chatQueuedTurns, [{ runId: source.runId, entry }], "rpc"),
+        ).toEqual([source.runId]);
+      } else {
+        source.controller.abort();
+      }
+      expect(f.context.chatQueuedTurns.has(source.runId)).toBe(false);
+      expectTerminal(await f.refresh());
+      expect(f.context.dedupe.get(`chat:${source.runId}`)?.payload).toMatchObject({
+        status: "timeout",
+        summary: "aborted",
+      });
+      expectAccepted(await f.refresh("after-abort"));
+      expect(f.sources.size).toBe(2);
+      expect(mocks.execute).not.toHaveBeenCalled();
+    },
+  );
 
   it("does not let a revoked queued controller overwrite its successor receipt", async () => {
     const f = fixture();

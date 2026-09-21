@@ -97,15 +97,12 @@ export const LAB_FEATURES = [
     onValue: true,
     offValue: false,
     activeValues: [true],
-    // Mirrors resolveToolSearchConfig: the boolean shorthand decides directly,
-    // and an object configuring anything besides `enabled` is already on.
-    // Reading only the `enabled` leaf would show `{ mode: "tools" }` as off and
-    // let a click replace that operator's mode with ours.
-    readEnabled: (raw) => readConfiguredFeatureEnabled(raw, [true]),
-    // resolveToolSearchConfig defaults an unset mode to "code" even in object
-    // form, which is the surface with the weakest recall. Pin the bounded
-    // directory instead, so enabling from Labs is the variant we recommend.
-    enableAlso: { mode: "directory" },
+    // Mirrors resolveToolSearchConfig: unauthored config is on, while explicit
+    // booleans and objects retain their own enablement semantics.
+    readEnabled: (raw) => raw === undefined || readConfiguredFeatureEnabled(raw, [true]),
+    // Explicit objects without a mode retain the legacy "code" surface.
+    // Pin structured calls when writing an enabled override from Labs.
+    enableAlso: { mode: "tools" },
     resetScope: "parent",
     restartHint: null,
   },

@@ -3,6 +3,7 @@ import path from "node:path";
 export function sqliteLifecycleFixtureFiles(repoRoot: string): Record<string, string> {
   const source = (name: string) => JSON.stringify(path.join(repoRoot, "src", name));
   return {
+    ...stateReadPoolFixtureFiles(repoRoot),
     "11-a-sqlite-owner.test.ts": `
 import { afterAll, expect, it, vi } from "vitest";
 import path from "node:path";
@@ -163,4 +164,67 @@ it("retains installed-schema repair ownership through retired agent lease cleanu
 });
 `,
   };
+}
+
+function stateReadPoolFixtureFiles(repoRoot: string): Record<string, string> {
+  const source = (name: string) => JSON.stringify(path.join(repoRoot, "src", name));
+  return Object.fromEntries(
+    ["a", "b", "c"].map((generation) => [
+      `12-${generation}-state-read-pool.test.ts`,
+      `
+import fs from "node:fs";
+import path from "node:path";
+import { afterAll, expect, it, vi } from "vitest";
+import { executeExistingOpenClawStateRead } from ${source("state/openclaw-state-db-readonly.ts")};
+import { readWorkspaceStateSnapshot } from ${source("agents/workspace-state-store.ts")};
+import { createWorkspaceStateIdentity } from ${source("agents/workspace-state-identity.ts")};
+
+const generation = ${JSON.stringify(generation)};
+const probeKey = Symbol.for("fixture.stateReadPoolGenerations");
+const probe = Reflect.get(globalThis, probeKey) ?? { closes: [] as string[], reads: [] as string[] };
+Reflect.set(globalThis, probeKey, probe);
+const edge = vi.hoisted(() => ({ create: vi.fn(), close: vi.fn(async () => {}) }));
+vi.mock(${source("infra/worker-task-pool.ts")}, async (importOriginal) => ({
+  ...await importOriginal<typeof import(${source("infra/worker-task-pool.ts")})>(),
+  createOwnedWorkerTaskPool: edge.create,
+}));
+edge.close.mockImplementation(async () => { probe.closes.push(generation); });
+edge.create.mockImplementation(() => ({
+  runTask: () => {
+    probe.reads.push(generation);
+    return {
+      result: Promise.resolve(generation === "c" ? {
+        ok: true, type: "workspace.snapshot", sourceAdmitted: true,
+        snapshot: { identity: createWorkspaceStateIdentity("/fixture/workspace"), setupExists: false, setup: { version: 1 } },
+      } : { ok: true, type: "fleet.list", sourceAdmitted: true, cells: [] }),
+      close: async () => {},
+    };
+  },
+  close: edge.close,
+  closeResources: async () => {},
+}));
+
+it("rebinds the shared read pool to generation " + generation, async () => {
+  const pathname = path.join(import.meta.dirname, "read-" + generation + ".sqlite");
+  // The transport is controlled; the real read owner uses only file identity.
+  fs.writeFileSync(pathname, "synthetic reader source");
+  const options = { path: pathname, env: { OPENCLAW_STATE_DIR: import.meta.dirname } };
+  if (generation === "c") {
+    const result = await readWorkspaceStateSnapshot("/fixture/workspace", { ...options, readOnly: true });
+    expect(result.setupExists).toBe(false);
+    expect(probe.reads).toEqual(["a", "b", "c"]);
+    expect(probe.closes).toEqual(["a", "b"]);
+  } else {
+    await expect(executeExistingOpenClawStateRead(options, { type: "fleet.list" })).resolves.toMatchObject({ type: "fleet.list" });
+  }
+  expect(edge.create).toHaveBeenCalledOnce();
+  expect(edge.close).not.toHaveBeenCalled();
+});
+afterAll(() => {
+  expect(edge.close).not.toHaveBeenCalled();
+  if (generation === "c") Reflect.deleteProperty(globalThis, probeKey);
+});
+`,
+    ]),
+  );
 }

@@ -82,6 +82,7 @@ export async function admitChatSend(params: {
   params.assertCurrent?.();
   const { request, session, respond, context, client } = params;
   const { p, explicitOrigin, normalizedAttachments, turnKind } = request;
+  const progressRefresh = isProgressCardRefreshInputProvenance(request.systemInputProvenance);
   const {
     rawSessionKey,
     sessionLoadKey,
@@ -394,9 +395,7 @@ export async function admitChatSend(params: {
       isAbortable: (active) => isReplyRunAbortableForSignal(active.controller.signal),
       kind: "chat-send",
       turnKind,
-      ...(isProgressCardRefreshInputProvenance(request.systemInputProvenance)
-        ? { controlUiVisible: false, projectSessionActive: false }
-        : {}),
+      ...(progressRefresh ? { controlUiVisible: false, projectSessionActive: false } : {}),
       lifecycleGeneration,
     });
   };
@@ -621,7 +620,8 @@ export async function admitChatSend(params: {
       !acquiredGatewayWorkAdmission.isActive() ||
       !isChatAbortControllerEntryAbortable(sessionBinding) ||
       sessionBinding.registrationCleanupRequested ||
-      sessionBinding.projectSessionActive === false ||
+      // Refresh starts hidden; its presentation bit is not admission liveness.
+      (sessionBinding.projectSessionActive === false && !progressRefresh) ||
       sessionBinding.projectSessionTerminalPending ||
       sessionBinding.projectSessionTerminalPersisted
     ) {
