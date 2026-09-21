@@ -431,18 +431,20 @@ let value;
 if (args[0] === 'auth') process.exit(1);
 if (args[0] === 'pr' && args[1] === 'view') {
   value = control.metadata;
+} else if (args[0] === 'pr' && args[1] === 'merge' && args.includes('--auto')) {
+  if (args[2] !== '42' || !args.includes('--squash') ||
+      args[args.indexOf('--match-head-commit') + 1] !== control.metadata.headRefOid) {
+    throw new Error('Unpinned synthetic auto-merge');
+  }
+  control.metadata.autoMergeRequest = { mergeMethod: 'SQUASH' };
+  writeFileSync(controlFile, JSON.stringify(control));
+  value = {};
 } else if (args[0] === 'api' && args.includes('graphql') && args.includes('--input')) {
   const payload = JSON.parse(readFileSync(0, 'utf8'));
   const input = payload.variables.input;
   if (input.expectedHeadOid !== control.metadata.headRefOid || input.pullRequestId !== control.metadata.id ||
       input.mergeMethod !== 'SQUASH' || Object.hasOwn(input, 'commitHeadline')) {
     throw new Error('Unpinned synthetic merge');
-  }
-  if (args.includes('--auto')) {
-    control.metadata.autoMergeRequest = { mergeMethod: 'SQUASH' };
-    writeFileSync(controlFile, JSON.stringify(control));
-    console.log('{}');
-    process.exit(0);
   }
   const parent = runGit(['-C', origin, 'rev-parse', 'refs/heads/main']);
   const tree = runGit(['-C', origin, 'merge-tree', '--write-tree', parent, control.metadata.headRefOid]);
