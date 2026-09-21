@@ -12,6 +12,7 @@ import { ExecutionDecisionCursorError } from "../audit/execution-decision-receip
 import { inspectExecutionIdentityRunInDatabase } from "../audit/execution-identity-context.js";
 import { getFleetCellInDatabase, listFleetCellsInDatabase } from "../fleet/registry.kernel.js";
 import { readExecApprovalsConfigRow } from "../infra/exec-approvals-sqlite.js";
+import { inspectCurrentConversationBindingRecordInDatabase } from "../infra/outbound/current-conversation-bindings.kernel.js";
 import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
 import { runWithSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import { withStateDatabaseCoordinatorRuntimeDirectory } from "../infra/state-database-coordinator.js";
@@ -41,6 +42,7 @@ import type {
   OpenClawStateReadRequest,
 } from "./openclaw-state-read.types.js";
 import { encodeOpenClawStateWorkerError } from "./openclaw-state-worker-error.js";
+import { readUserProfileIdForEmail } from "./user-profile-identity.read.js";
 import { selectProfileDisplayEntries } from "./user-profiles-internal.js";
 
 function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
@@ -64,6 +66,13 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
     typeof coordinatorRuntime.directory === "string" &&
     typeof coordinatorRuntime.keepAlive === "boolean" &&
     (isPluginBlobReadCommand(input.command) ||
+      (input.command.type === "conversationBindings.inspect" &&
+        isRecord(input.command.conversation) &&
+        typeof input.command.conversation.channel === "string" &&
+        typeof input.command.conversation.accountId === "string" &&
+        typeof input.command.conversation.conversationId === "string" &&
+        (input.command.conversation.parentConversationId === undefined ||
+          typeof input.command.conversation.parentConversationId === "string")) ||
       input.command.type === "admit" ||
       input.command.type === "exec-approvals.read" ||
       ((input.command.type === "skills.library.descriptions" ||
@@ -75,8 +84,10 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
             isRecord(pin) && typeof pin.skillId === "string" && typeof pin.revision === "string",
         )) ||
       input.command.type === "agentDatabaseRegistry.read" ||
-      (input.command.type === "userProfiles.avatar.reconcile" &&
+      (input.command.type === "userProfiles.reconcile" &&
         typeof input.command.profileId === "string") ||
+      (input.command.type === "userProfiles.email.resolve" &&
+        typeof input.command.email === "string") ||
       (input.command.type === "audit.run.inspect" &&
         isRecord(input.command.input) &&
         typeof input.command.input.now === "number" &&
@@ -163,6 +174,17 @@ serveOwnedWorkerTasks(
             return withOpenClawStateReadOnlyLocation(
               ({ db }) => {
                 sourceAdmitted = true;
+                if (command.type === "conversationBindings.inspect") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    record: inspectCurrentConversationBindingRecordInDatabase(
+                      db,
+                      command.conversation,
+                    ),
+                  };
+                }
                 if (command.type === "pluginBlob.lookup") {
                   return {
                     ok: true,
@@ -283,7 +305,7 @@ serveOwnedWorkerTasks(
                     }),
                   };
                 }
-                if (command.type === "userProfiles.avatar.reconcile") {
+                if (command.type === "userProfiles.reconcile") {
                   return {
                     ok: true,
                     type: command.type,
@@ -291,6 +313,16 @@ serveOwnedWorkerTasks(
                     profile: runSqliteDeferredTransactionSync(
                       db,
                       () => selectProfileDisplayEntries(db, [command.profileId])[0]?.[1],
+                    ),
+                  };
+                }
+                if (command.type === "userProfiles.email.resolve") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    profileId: runSqliteDeferredTransactionSync(db, () =>
+                      readUserProfileIdForEmail(db, command.email),
                     ),
                   };
                 }
