@@ -4647,6 +4647,12 @@ describe("scripts/test-projects changed-target routing", () => {
 
 describe("test selector native source facts", () => {
   it("keeps whole-area UI consumers and source readers across graph cache scopes", () => {
+    const pluginModule = "extensions/example/browser/view.ts";
+    const pluginConsumer = "test/plugin-browser-consumer.test.ts";
+    // This import belongs to the virtual repository, not this test's module graph.
+    const pluginImport = path.posix
+      .relative(path.posix.dirname(pluginConsumer), pluginModule)
+      .replace(/\.ts$/u, ".js");
     withTinyGitRepo(
       {
         "src/owner/value.ts": "export const value = 1;\n",
@@ -4654,13 +4660,12 @@ describe("test selector native source facts", () => {
         "ui/src/catalog.json": '{"label":"Changed dynamically loaded data"}\n',
         "ui/src/catalog-extra.json": '{"label":"Another dynamically loaded catalog"}\n',
         "ui/src/presenter.test.ts": 'import { value } from "./presenter.js"; void value;\n',
-        "extensions/example/browser/view.ts": "export const view = 1;\n",
+        [pluginModule]: "export const view = 1;\n",
         "src/consumer.test.ts": 'import { value } from "../ui/src/presenter.js"; void value;\n',
         "scripts/ui-consumer.mjs": 'export { value } from "../ui/src/presenter.js";\n',
         "test/scripts/ui-consumer.test.ts":
           'import { value } from "../../scripts/ui-consumer.mjs"; void value;\n',
-        "test/plugin-browser-consumer.test.ts":
-          'import { view } from "../extensions/example/browser/view.js"; void view;\n',
+        [pluginConsumer]: `import { view } from ${JSON.stringify(pluginImport)}; void view;\n`,
         "test/scripts/ui-catalog-reader.test.ts":
           'import { readFileSync } from "node:fs"; readFileSync("ui/src/catalog.json", "utf8");\n',
         "test/scripts/ui-extra-reader.test.ts":
