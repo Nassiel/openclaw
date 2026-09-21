@@ -539,9 +539,7 @@ export async function admitChatSend(params: {
   }
   let releaseGatewayRootContinuation = () => {};
   let releaseCallerAuthority: (() => void) | undefined;
-  let operatorAuthority:
-    | import("../../agents/admitted-run-context.js").AdmittedRunOperatorAuthority
-    | undefined;
+  let capturedOperator: ReturnType<typeof retainGatewayOperatorRun>;
   // Until dispatch takes custody, interruption and callback failures release every admission hold.
   const cleanupPreDispatchAdmission = () => {
     try {
@@ -555,12 +553,11 @@ export async function admitChatSend(params: {
   };
   let interruptedActiveRun = false;
   try {
-    const capturedOperator = retainGatewayOperatorRun({
+    capturedOperator = retainGatewayOperatorRun({
       ...params,
       runId: clientRunId,
       entry: activeRunAbort.entry,
     });
-    operatorAuthority = capturedOperator.authority;
     releaseCallerAuthority = capturedOperator.release;
     let interruptionSettled = true;
     if (runInterruptTarget) {
@@ -687,7 +684,9 @@ export async function admitChatSend(params: {
     ok: true as const,
     value: {
       activeRunAbort,
-      operatorAuthority,
+      operatorAuthority: capturedOperator.authority,
+      armOperatorRunCancellation: capturedOperator.armCancellation,
+      retireOperatorRunCancellation: capturedOperator.retireCancellation,
       admittedSessionSettings,
       admittedSessionId,
       ...(expectedActiveReplyOperation ? { expectedActiveReplyOperation } : {}),

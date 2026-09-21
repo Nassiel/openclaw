@@ -17,7 +17,7 @@ import {
   retireQueuedChatTurnCancellation,
   type QueuedChatTurnEntry,
 } from "./chat-queued-turns.js";
-import { bindGatewayOperatorRunCancellation } from "./operator-run-cancellation.js";
+import { retainGatewayOperatorRun } from "./operator-run-cancellation.js";
 import { createChatRunState } from "./server-chat-state.js";
 import { createChatSendWorkAdmission } from "./server-methods/chat-send-work-admission.js";
 
@@ -55,7 +55,7 @@ async function createCancellationFixture(cfg: OpenClawConfig) {
   const execution = new AsyncWorkScope();
   const logGateway = createSubsystemLogger("test/operator-run-cancellation");
   const warn = vi.spyOn(logGateway, "warn").mockImplementation(() => {});
-  const context: Parameters<typeof bindGatewayOperatorRunCancellation>[0]["context"] = {
+  const context: Parameters<typeof retainGatewayOperatorRun>[0]["context"] = {
     chatAbortControllers: new Map<string, ChatAbortControllerEntry>(),
     chatQueuedTurns: new Map<string, QueuedChatTurnEntry>(),
     chatRunState,
@@ -92,10 +92,28 @@ async function createCancellationFixture(cfg: OpenClawConfig) {
     registrations.push(registration);
     return registration;
   };
-  const bind = (signal: AbortSignal, runId: string, entry: ChatAbortControllerEntry) => {
-    const release = bindGatewayOperatorRunCancellation({ signal, runId, entry, context });
-    releases.push(release);
-    return release;
+  const retain = (signal: AbortSignal, runId: string, entry: ChatAbortControllerEntry) => {
+    const retained = retainGatewayOperatorRun({
+      context,
+      runId,
+      entry,
+      client: {
+        connect: {
+          minProtocol: 1,
+          maxProtocol: 1,
+          client: { id: "test", version: "test", platform: "test", mode: "test" },
+          role: "operator",
+          scopes: ["operator.sessions.write"],
+        },
+        internal: { operatorRoleActor: { kind: "operator", profileId: "guest-profile" } },
+      },
+      sourceAuthority: { signal, assertCurrent: () => signal.throwIfAborted() },
+    });
+    if (!retained.authority) {
+      throw new Error("fixture operator source was not retained");
+    }
+    releases.push(retained.release);
+    return retained;
   };
   return {
     scope,
@@ -108,7 +126,7 @@ async function createCancellationFixture(cfg: OpenClawConfig) {
       ),
     warn,
     register,
-    bind,
+    retain,
     release: () => {
       for (const release of releases) {
         release();
@@ -141,7 +159,7 @@ describe("operator access cancellation", () => {
         const savedTranscript = loadTranscriptEventsSync(f.scope);
         f.context.chatRunState.getOrCreate("guest-run").buffer = "The guest's saved progress.";
         f.context.chatRunState.getOrCreate("staff-run").buffer = "Staff work continues.";
-        f.bind(source.signal, "guest-run", guest.entry);
+        f.retain(source.signal, "guest-run", guest.entry).armCancellation();
         const terminalWrite = createDeferredCore();
         const cancellationObserved = createDeferredCore();
         let sourceClosedAtAbort = false;
@@ -234,7 +252,7 @@ describe("operator access cancellation", () => {
           guest.entry.projectSessionTerminalPersisted = true;
         });
         guest.entry.projectSessionTerminalPersistence = persistence;
-        f.bind(source.signal, "terminal-run", guest.entry);
+        f.retain(source.signal, "terminal-run", guest.entry).armCancellation();
         try {
           if (phase === "persisted") {
             terminalWrite.resolve();
@@ -266,16 +284,21 @@ describe("operator access cancellation", () => {
     },
   );
 
-  it.each([false, true])(
-    "retains queued custody and respects collect transfer=%s",
-    async (collect) => {
+  it.each(
+    [false, true].flatMap((collect) =>
+      [false, true].map((activeAdmission) => ({ collect, activeAdmission })),
+    ),
+  )(
+    "retains queued custody across collect=$collect and active admission=$activeAdmission",
+    async ({ collect, activeAdmission }) => {
       await withCancellationFixture(async (f) => {
         const source = new AbortController();
         const guest = f.register("queued-guest");
         const staff = f.register("queued-staff");
+        const retained = f.retain(source.signal, "queued-guest", guest.entry);
         const work = createChatSendWorkAdmission({
           admission: { release: () => {} },
-          releaseCallerAuthority: f.bind(source.signal, "queued-guest", guest.entry),
+          releaseCallerAuthority: retained.release,
           logGateway: f.context.logGateway,
         });
         const releaseQueue = work.retain();
@@ -291,8 +314,11 @@ describe("operator access cancellation", () => {
               controller: registration.controller,
             }),
           ).toBe(true);
-          registration.cleanup();
+          if (!activeAdmission) {
+            registration.cleanup();
+          }
         }
+        retained.armCancellation();
         work.release();
         if (collect) {
           retireQueuedChatTurnCancellation(
@@ -308,6 +334,10 @@ describe("operator access cancellation", () => {
           expect(f.context.chatQueuedTurns.has("queued-guest")).toBe(collect);
           expect(staff.controller.signal.aborted).toBe(false);
           expect(f.context.chatQueuedTurns.has("queued-staff")).toBe(true);
+          expect(f.context.chatAbortControllers.get("queued-guest")).toBe(
+            activeAdmission ? guest.entry : undefined,
+          );
+          expect(f.context.broadcast).not.toHaveBeenCalled();
         } finally {
           releaseQueue();
         }
@@ -319,7 +349,7 @@ describe("operator access cancellation", () => {
     await withCancellationFixture(async (f) => {
       const source = new AbortController();
       const original = f.register("reused-run");
-      f.bind(source.signal, "reused-run", original.entry);
+      f.retain(source.signal, "reused-run", original.entry).armCancellation();
       original.cleanup();
       const replacement = f.register("reused-run");
       source.abort();
@@ -331,21 +361,55 @@ describe("operator access cancellation", () => {
   });
 
   it.each(["released", "already-aborted"] as const)(
-    "handles a %s source at binding",
+    "leaves its run untouched after source release or rejected admission (%s)",
     async (state) => {
       await withCancellationFixture(async (f) => {
         const source = new AbortController();
         const guest = f.register("bound-run");
         if (state === "already-aborted") {
-          source.abort();
-        }
-        const release = f.bind(source.signal, "bound-run", guest.entry);
-        if (state === "released") {
-          release();
+          source.abort(new Error("operator source already ended"));
+          expect(() => f.retain(source.signal, "bound-run", guest.entry)).toThrow(
+            "operator source already ended",
+          );
+        } else {
+          const retained = f.retain(source.signal, "bound-run", guest.entry);
+          retained.armCancellation();
+          retained.release();
           source.abort();
         }
         await f.settle();
-        expect(guest.controller.signal.aborted).toBe(state === "already-aborted");
+        expect(guest.controller.signal.aborted).toBe(false);
+      });
+    },
+  );
+
+  it.each([false, true])(
+    "leaves input custody untouched until execution owns cancellation (retired: %s)",
+    async (retired) => {
+      await withCancellationFixture(async (f) => {
+        const source = new AbortController();
+        const guest = f.register("admitted-input");
+        const staff = f.register("independent-backing-run");
+        const retained = f.retain(source.signal, "admitted-input", guest.entry);
+        const transcript = loadTranscriptEventsSync(f.scope);
+        if (retired) {
+          retained.armCancellation();
+          retained.retireCancellation();
+        }
+
+        source.abort();
+        await f.settle();
+        expect(guest.controller.signal.aborted).toBe(false);
+        expect(f.context.chatAbortControllers.get("admitted-input")).toBe(guest.entry);
+        expect(f.context.broadcast).not.toHaveBeenCalled();
+        expect(loadTranscriptEventsSync(f.scope)).toEqual(transcript);
+        expect(() => retained.authority?.assertCurrent()).toThrow();
+
+        retained.armCancellation();
+        await f.settle();
+        expect(guest.controller.signal.aborted).toBe(!retired);
+        expect(staff.controller.signal.aborted).toBe(false);
+        expect(f.context.chatAbortControllers.get("independent-backing-run")).toBe(staff.entry);
       });
     },
   );
@@ -356,10 +420,11 @@ describe("operator access cancellation", () => {
       const guest = f.register("settled-run");
       f.context.chatRunState.getOrCreate("settled-run").buffer =
         "Keep the canceled run's progress.";
-      const release = f.bind(source.signal, "settled-run", guest.entry);
+      const retained = f.retain(source.signal, "settled-run", guest.entry);
+      retained.armCancellation();
       source.abort();
       guest.cleanup();
-      release();
+      retained.release();
       const replacement = f.register("settled-run");
       await f.settle();
       expect(guest.controller.signal.aborted).toBe(true);
@@ -381,7 +446,7 @@ describe("operator access cancellation", () => {
       guest.entry.sessionId = "retired-session";
       f.context.chatRunState.getOrCreate("failed-partial-capture").buffer =
         "Preserve this progress.";
-      f.bind(source.signal, "failed-partial-capture", guest.entry);
+      f.retain(source.signal, "failed-partial-capture", guest.entry).armCancellation();
       source.abort();
       await f.settle();
       expect(guest.controller.signal.aborted).toBe(true);

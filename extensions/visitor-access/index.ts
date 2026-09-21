@@ -47,9 +47,12 @@ function registerVisitorPlugin(api: OpenClawPluginApi): void {
   };
 
   api.registerGatewayAccessPolicy({
-    authorize({ config: currentConfig, profile }) {
+    authorize({ config: currentConfig, profile, requiredByRole }) {
       const roles = currentConfig.gateway?.roles;
-      if (!profileUsesVisitorRole(roles, { id: profile.profileId, role: profile.assignedRole })) {
+      if (
+        !requiredByRole ||
+        !profileUsesVisitorRole(roles, { id: profile.profileId, role: profile.assignedRole })
+      ) {
         return undefined;
       }
       resolveVisitorRole(currentConfig);

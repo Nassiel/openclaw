@@ -1,6 +1,5 @@
 import type { Result } from "@openclaw/normalization-core/result";
 import { loadSessionEntry } from "../session-utils.js";
-import type { appendAssistantTranscriptMessage } from "./chat-transcript-persistence.js";
 
 export type ChatAbortOrigin = "rpc" | "stop-command" | "placement-abandon";
 
@@ -12,10 +11,7 @@ export type ChatAbortSessionSnapshot = Result<
   unknown
 >;
 
-export type AbortedPartialSnapshot = {
-  runId: string;
-  abortOrigin: ChatAbortOrigin;
-} & Result<Parameters<typeof appendAssistantTranscriptMessage>[0], unknown>;
+export type AbortedPartialSnapshot = ReturnType<typeof captureAbortedPartial>;
 
 /** Capture before signaling cancellation, without loading asynchronous transcript writers. */
 export function captureAbortedPartial(params: {
@@ -26,7 +22,7 @@ export function captureAbortedPartial(params: {
   text: string;
   abortOrigin: ChatAbortOrigin;
   session?: ChatAbortSessionSnapshot;
-}): AbortedPartialSnapshot {
+}) {
   const { runId, abortOrigin } = params;
   try {
     const session = params.session ?? {
@@ -62,9 +58,9 @@ export function captureAbortedPartial(params: {
         idempotencyKey: `${runId}:assistant`,
         abortMeta: { aborted: true, origin: abortOrigin, runId },
       },
-    };
+    } as const;
   } catch (error) {
     // Preparation is fallible metadata I/O, never a prerequisite for cancellation.
-    return { runId, abortOrigin, ok: false, error };
+    return { runId, abortOrigin, ok: false, error } as const;
   }
 }

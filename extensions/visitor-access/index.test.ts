@@ -9,7 +9,6 @@ import type {
   OpenClawPluginService,
   OpenClawPluginServiceContext,
   OpenClawPluginToolContext,
-  PluginGatewayAccessPolicy,
 } from "openclaw/plugin-sdk/plugin-entry";
 import type { OpenAsyncKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
@@ -21,6 +20,8 @@ import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runt
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import plugin from "./index.js";
 import type { VisitorGrant } from "./src/visitors.js";
+
+type PluginGatewayAccessPolicy = Parameters<OpenClawPluginApi["registerGatewayAccessPolicy"]>[0];
 
 const TOKEN = "visitor-test-token-never-echo";
 const DAY_MS = 86_400_000;
@@ -116,7 +117,10 @@ describe("visitor-access plugin lifecycle", () => {
     rmSync(stateDir, { recursive: true, force: true });
   });
 
-  function registerPlugin(contextOverrides: Partial<OpenClawPluginToolContext<2>> = {}) {
+  function registerPlugin(
+    contextOverrides: Partial<OpenClawPluginToolContext<2>> = {},
+    config: OpenClawConfig = gatewayConfig,
+  ) {
     const tools = new Map<string, AnyAgentTool>();
     const services: OpenClawPluginService[] = [];
     const accessPolicies: PluginGatewayAccessPolicy[] = [];
@@ -162,7 +166,7 @@ describe("visitor-access plugin lifecycle", () => {
       .spyOn(api.runtime.gateway, "request")
       .mockResolvedValue({ profiles: [] });
     api.runtime.config = {
-      current: () => gatewayConfig,
+      current: () => config,
       async mutateConfigFile() {
         throw new Error("Visitor operations must not change Gateway configuration");
       },
@@ -191,8 +195,10 @@ describe("visitor-access plugin lifecycle", () => {
       gatewayRequest,
       logger,
       store,
-      authorize: (profile: Parameters<PluginGatewayAccessPolicy["authorize"]>[0]["profile"]) =>
-        accessPolicy.authorize({ config: gatewayConfig, profile }),
+      authorize: (
+        profile: Parameters<PluginGatewayAccessPolicy["authorize"]>[0]["profile"],
+        requiredByRole = true,
+      ) => accessPolicy.authorize({ config, profile, requiredByRole }),
       toolContext,
       start: () => service.start(context),
       stop: () => service.stop?.(context),
@@ -226,6 +232,43 @@ describe("visitor-access plugin lifecycle", () => {
     expect(() => plugin.register(api)).not.toThrow();
     expect(runtime).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([
+    { label: "roles disabled", scope: undefined, assignedRole: null },
+    { label: "assigned default writer", scope: "operator.write", assignedRole: "staff" },
+    { label: "unassigned default writer", scope: "operator.write", assignedRole: null },
+    {
+      label: "missing assignment falling back to admin",
+      scope: "operator.admin",
+      assignedRole: "removed",
+    },
+    { label: "assigned default admin", scope: "operator.admin", assignedRole: "staff" },
+  ] as const)("preserves unbound staff admission with $label", ({ scope, assignedRole }) => {
+    const config: OpenClawConfig = scope
+      ? {
+          gateway: {
+            roles: {
+              default: "staff",
+              definitions: {
+                staff: { sessions: { others: "write" }, agents: "*", scopes: [scope] },
+              },
+            },
+          },
+        }
+      : {};
+    const registered = registerPlugin({}, config);
+    expect(
+      registered.authorize(
+        {
+          profileId: "staff-profile",
+          emails: ["staff@example.test"],
+          assignedRole,
+        },
+        false,
+      ),
+    ).toBeUndefined();
+    expect(registered.gatewayRequest).not.toHaveBeenCalled();
   });
 
   it.each([false, undefined])(
@@ -354,7 +397,7 @@ describe("visitor-access plugin lifecycle", () => {
       { profileId: "staff-profile", emails: ["expired@example.test"], assignedRole: "staff" },
       { profileId: "gateway-owner", emails: [], assignedRole: null },
     ]) {
-      expect(restarted.authorize(profile)).toBeUndefined();
+      expect(restarted.authorize(profile, false)).toBeUndefined();
     }
     const deadline = restarted.authorize({
       ...visitor,

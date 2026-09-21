@@ -207,8 +207,8 @@ it.each([
           ? 'throw new Error("access policy import failed");'
           : `module.exports = { id: "${id}", register(api) {
               ${state === "registration failure" ? 'throw new Error("access policy registration failed");' : ""}
-              api.registerGatewayAccessPolicy({ authorize({ profile }) {
-                if (profile.assignedRole !== null) return undefined;
+              api.registerGatewayAccessPolicy({ authorize({ profile, requiredByRole }) {
+                if (!requiredByRole || profile.assignedRole !== null) return undefined;
                 return { signal: new AbortController().signal, assertCurrent() {} };
               } });
             } };`,
@@ -230,12 +230,12 @@ it.each([
     const optionalChecks = vi.fn();
     const optional = writePlugin({
       id: "optional-access-policy",
-      registration: `api.registerGatewayAccessPolicy({ authorize({ profile }) {
-        process.emit(${JSON.stringify(optionalCheckEvent)}, profile.profileId);
+      registration: `api.registerGatewayAccessPolicy({ authorize({ profile, requiredByRole }) {
+        process.emit(${JSON.stringify(optionalCheckEvent)}, profile.profileId, requiredByRole);
         return undefined;
       } });`,
     });
-    const config: OpenClawConfig = {
+    const config = {
       gateway: {
         roles: {
           default: "visitor",
@@ -261,7 +261,7 @@ it.each([
         entries: { [id]: { enabled: state !== "disabled" } },
         slots: { memory: "none" },
       },
-    };
+    } satisfies OpenClawConfig;
     const visitor = ensureProfileForEmail("loader-visitor@example.test");
     const staff = ensureProfileForEmail("loader-staff@example.test");
     const unbound = ensureProfileForEmail("loader-unbound@example.test");
@@ -311,7 +311,15 @@ it.each([
           "loaded required access policy authority",
         );
         expect(authority.assertCurrent).not.toThrow();
-        expect(optionalChecks).toHaveBeenCalledWith(visitor.id);
+        expect(optionalChecks).toHaveBeenCalledWith(visitor.id, false);
+        const staffDefault = {
+          ...config,
+          gateway: { roles: { ...config.gateway.roles, default: "staff" } },
+        };
+        for (const unboundConfig of [staffDefault, { ...config, gateway: {} }]) {
+          expect(resolveGatewayOperatorAccessAuthority(visitor.id, unboundConfig)).toBeUndefined();
+          expect(resolveGatewayOperatorAccessAuthority(staff.id, unboundConfig)).toBeUndefined();
+        }
       } else {
         expect(() => resolveGatewayOperatorAccessAuthority(visitor.id, config)).toThrow(
           GatewayOperatorAccessDeniedError,
@@ -320,8 +328,8 @@ it.each([
       }
       expect(resolveGatewayOperatorAccessAuthority(staff.id, config)).toBeUndefined();
       expect(resolveGatewayOperatorAccessAuthority(unbound.id, config)).toBeUndefined();
-      expect(optionalChecks).toHaveBeenCalledWith(staff.id);
-      expect(optionalChecks).toHaveBeenCalledWith(unbound.id);
+      expect(optionalChecks).toHaveBeenCalledWith(staff.id, false);
+      expect(optionalChecks).toHaveBeenCalledWith(unbound.id, false);
       optionalChecks.mockClear();
       expect(
         resolveGatewayOperatorAccessAuthority(GATEWAY_OWNER_PROFILE_ID, config),

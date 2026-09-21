@@ -28,7 +28,7 @@ type OperatorRunCancellationContext = Pick<
   | "trackExecution"
 >;
 
-/** Admission releases its retained source and exact-run cancellation listener together. */
+/** Retain authority before its execution or queue owner can arm cancellation. */
 export function retainGatewayOperatorRun(
   params: Parameters<typeof captureGatewayOperatorRunAuthority>[0] & {
     context: OperatorRunCancellationContext;
@@ -40,41 +40,39 @@ export function retainGatewayOperatorRun(
   const releaseSource =
     captured?.release ?? retainGatewayDeviceRevocation(params.hasCurrentClientAuthority);
   const signal = captured?.authority.signal;
-  if (!signal || !params.entry) {
-    return { authority: captured?.authority, release: releaseSource };
-  }
-  try {
-    const releaseCancellation = bindGatewayOperatorRunCancellation({
-      signal,
-      runId: params.runId,
-      entry: params.entry,
-      context: params.context,
-    });
-    return {
-      authority: captured.authority,
-      release: () => {
-        releaseCancellation();
-        releaseSource?.();
-      },
-    };
-  } catch (error) {
-    releaseSource?.();
-    throw error;
-  }
+  const cancellation =
+    signal && params.entry
+      ? createGatewayOperatorRunCancellation({
+          signal,
+          runId: params.runId,
+          entry: params.entry,
+          context: params.context,
+        })
+      : undefined;
+  return {
+    authority: captured?.authority,
+    armCancellation: () => cancellation?.arm(),
+    retireCancellation: () => cancellation?.release(),
+    release: () => {
+      cancellation?.release();
+      releaseSource?.();
+    },
+  };
 }
 
-/** Retained work owns this listener across active-to-queue transfer, until its final release. */
-export function bindGatewayOperatorRunCancellation(params: {
+/** Queue retirement detaches cancellation while the original authority can still settle work. */
+function createGatewayOperatorRunCancellation(params: {
   signal: AbortSignal;
   runId: string;
   entry: ChatAbortControllerEntry;
   context: OperatorRunCancellationContext;
-}): () => void {
+}) {
   const { signal, runId, entry, context } = params;
   const controller = entry.controller;
   const sessionKey = entry.sessionKey;
   const lifecycleGeneration = entry.lifecycleGeneration;
   let released = false;
+  let armed = false;
   let cancellationStarted = false;
   const ownsLifetime = () =>
     !released &&
@@ -103,8 +101,13 @@ export function bindGatewayOperatorRunCancellation(params: {
     });
   };
   const cancel = async () => {
-    if (!ownsActiveRun()) {
+    // Queue custody supersedes the source admission even before its active entry
+    // is removed. A collected source cannot fall back to aborting another owner.
+    if (context.chatQueuedTurns.get(runId)?.controller === controller) {
       cancelQueuedTurn();
+      return;
+    }
+    if (!ownsActiveRun()) {
       return;
     }
     // A provider can settle and release its run during source abortion. Capture
@@ -162,12 +165,20 @@ export function bindGatewayOperatorRunCancellation(params: {
       context.logGateway.warn(`Operator access cancellation failed: ${formatForLog(error)}`);
     });
   };
-  signal.addEventListener("abort", onAbort, { once: true });
-  if (signal.aborted) {
-    onAbort();
-  }
-  return () => {
-    released = true;
-    signal.removeEventListener("abort", onAbort);
+  return {
+    arm: () => {
+      if (released || armed) {
+        return;
+      }
+      armed = true;
+      signal.addEventListener("abort", onAbort, { once: true });
+      if (signal.aborted) {
+        onAbort();
+      }
+    },
+    release: () => {
+      released = true;
+      signal.removeEventListener("abort", onAbort);
+    },
   };
 }

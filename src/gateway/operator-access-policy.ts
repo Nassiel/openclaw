@@ -2,7 +2,7 @@ import { GATEWAY_OWNER_PROFILE_ID } from "../../packages/gateway-protocol/src/sc
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginGatewayAccessAuthority } from "../plugins/gateway-access-policy.types.js";
 import { getPluginRegistryState } from "../plugins/runtime-state.js";
-import { readUserProfileVersion } from "../state/user-profile-events.js";
+import { onUserProfilesChanged, readUserProfileVersion } from "../state/user-profile-events.js";
 import { getUserProfileListItem } from "../state/user-profiles.js";
 import { resolveOperatorRolePolicyForAssignment } from "./operator-role-policy.js";
 
@@ -14,6 +14,31 @@ export class GatewayOperatorAccessDeniedError extends Error {
     super(GATEWAY_OPERATOR_ACCESS_DENIED_MESSAGE);
     this.name = "GatewayOperatorAccessDeniedError";
   }
+}
+
+// A retained signal keeps its identity check alive without pinning abandoned HTTP captures.
+// An abort listener on AbortSignal.any would itself keep the composite signal alive in Node.
+const profileAccessChecks = new WeakMap<AbortSignal, () => void>();
+const profileAccessCleanup = new FinalizationRegistry<() => void>((release) => release());
+
+function watchProfileAccess(reference: WeakRef<() => void>, token: object): () => void {
+  const unsubscribe = onUserProfilesChanged(() => {
+    const check = reference.deref();
+    if (check) {
+      try {
+        check();
+        return;
+      } catch {
+        // The identity check publishes revocation before throwing.
+      }
+    }
+    release();
+  });
+  function release() {
+    unsubscribe();
+    profileAccessCleanup.unregister(token);
+  }
+  return release;
 }
 
 function currentAccessPolicies() {
@@ -48,6 +73,8 @@ export function resolveGatewayOperatorAccessAuthority(
     return undefined;
   }
   const profile = getUserProfileListItem(profileId);
+  const emails = [...profile.emails];
+  let profileVersion = readUserProfileVersion();
   const requiredPlugin = resolveOperatorRolePolicyForAssignment(
     profile.id,
     profile.role ?? null,
@@ -56,35 +83,16 @@ export function resolveGatewayOperatorAccessAuthority(
   if (requiredPlugin && !policies.some((entry) => entry.pluginId === requiredPlugin)) {
     throw new GatewayOperatorAccessDeniedError();
   }
-  const emails = [...profile.emails];
-  let authorities: PluginGatewayAccessAuthority[];
-  try {
-    let requiredPolicyConfirmed = !requiredPlugin;
-    authorities = policies.flatMap(({ policy, pluginId }) => {
-      const authority = policy.authorize({
-        config,
-        profile: { profileId: profile.id, emails: [...emails], assignedRole: profile.role ?? null },
-      });
-      if (authority && pluginId === requiredPlugin) {
-        requiredPolicyConfirmed = true;
-      }
-      return authority ? [authority] : [];
-    });
-    if (!requiredPolicyConfirmed) {
-      throw new GatewayOperatorAccessDeniedError();
-    }
-  } catch {
-    // Policy errors can contain private configuration; only the generic denial crosses ingress.
-    throw new GatewayOperatorAccessDeniedError();
-  }
-  if (authorities.length === 0) {
-    return undefined;
-  }
   const invalidated = new AbortController();
-  const signal = AbortSignal.any([invalidated.signal, ...authorities.map((entry) => entry.signal)]);
-  let profileVersion = readUserProfileVersion();
+  let signal = invalidated.signal;
   let denial: GatewayOperatorAccessDeniedError | undefined;
-  const assertCurrent = () => {
+  const invalidate = () => {
+    // A later invitation, alias restoration, or profile repair cannot revive this capture.
+    denial ??= new GatewayOperatorAccessDeniedError();
+    invalidated.abort(denial);
+    return denial;
+  };
+  const assertProfileCurrent = () => {
     try {
       signal.throwIfAborted();
       if (profile.id !== profileId) {
@@ -101,18 +109,56 @@ export function resolveGatewayOperatorAccessAuthority(
         }
         profileVersion = currentVersion;
       }
-      for (const authority of authorities) {
-        authority.assertCurrent();
-      }
     } catch {
-      // Once closed, a later invitation, profile repair or renewal cannot revive this capture.
-      denial ??= new GatewayOperatorAccessDeniedError();
-      invalidated.abort(denial);
-      throw denial;
+      throw invalidate();
     }
   };
-  assertCurrent();
-  return { assertCurrent, signal };
+  // Observe before plugin callbacks: an alias can move away and back during authorization.
+  // The separately scoped listener and finalizer hold no strong reference to this capture.
+  const token = {};
+  const releaseProfiles = watchProfileAccess(new WeakRef(assertProfileCurrent), token);
+  profileAccessCleanup.register(assertProfileCurrent, releaseProfiles, token);
+  try {
+    let requiredPolicyConfirmed = !requiredPlugin;
+    const authorities = policies.flatMap(({ policy, pluginId }) => {
+      const authority = policy.authorize({
+        config,
+        profile: { profileId: profile.id, emails: [...emails], assignedRole: profile.role ?? null },
+        requiredByRole: pluginId === requiredPlugin,
+      });
+      if (authority && pluginId === requiredPlugin) {
+        requiredPolicyConfirmed = true;
+      }
+      return authority ? [authority] : [];
+    });
+    if (!requiredPolicyConfirmed) {
+      throw new GatewayOperatorAccessDeniedError();
+    }
+    if (authorities.length === 0) {
+      releaseProfiles();
+      return undefined;
+    }
+    signal = AbortSignal.any([invalidated.signal, ...authorities.map((entry) => entry.signal)]);
+    const assertCurrent = () => {
+      try {
+        assertProfileCurrent();
+        for (const authority of authorities) {
+          authority.assertCurrent();
+        }
+      } catch {
+        releaseProfiles();
+        throw invalidate();
+      }
+    };
+    // Retaining only the composed signal must also retain its policy sources.
+    profileAccessChecks.set(signal, assertCurrent);
+    assertCurrent();
+    return { assertCurrent, signal };
+  } catch {
+    releaseProfiles();
+    // Policy errors can contain private configuration; only the generic denial crosses ingress.
+    throw invalidate();
+  }
 }
 
 export function hasCurrentGatewayOperatorAccess(

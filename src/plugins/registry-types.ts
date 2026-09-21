@@ -252,7 +252,7 @@ type PluginNodeInvokePolicyRegistration = PluginRegistrationOwner & {
   pluginConfig?: Record<string, unknown>;
 };
 
-export type PluginGatewayAccessPolicyRegistration = PluginRegistrationOwner & {
+type PluginGatewayAccessPolicyRegistration = PluginRegistrationOwner & {
   policy: PluginGatewayAccessPolicy;
 };
 

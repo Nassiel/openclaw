@@ -17,6 +17,9 @@ Reach the Gateway and paired nodes from plugin code, and the events a long-lived
 `api.registerGatewayAccessPolicy({ authorize })` adds a plugin-owned access
 requirement to authenticated person admission. The callback receives the current
 configuration and the canonical profile's ID, email aliases, and assigned role.
+The Gateway resolves `requiredByRole` from the person's effective role and this
+plugin's ID; role-bound policies use that fact instead of inferring a binding
+from the default role's name.
 Return `undefined` when the policy does not govern that person. Otherwise return
 `{ assertCurrent, signal }`; reject admission when the required access is absent.
 
@@ -31,6 +34,10 @@ Abort its signal when that source expires or is revoked, including plugin servic
 shutdown. An ended source must stay ended if a later grant is created. A renewal
 may extend an uninterrupted source. Keep the source in its existing lifecycle
 owner and initialize it before accepting person access.
+
+Return a native `AbortSignal`. Registration preserves native cancellation and
+cleanup while keeping the assertion and callable abort-reason values bound to
+the plugin instance. Plugin retirement also ends captured access.
 
 The Gateway binds the returned authority to the original person and carries it
 through WebSocket and HTTP requests. Ordinary transport disconnect is distinct

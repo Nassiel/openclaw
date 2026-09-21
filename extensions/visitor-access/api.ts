@@ -1,3 +1,5 @@
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+
 export {
   buildPluginConfigSchema,
   definePluginEntry,
@@ -5,7 +7,10 @@ export {
   type OpenClawPluginApi,
   type OpenClawPluginToolContext,
   type PluginLogger,
-  type PluginGatewayAccessAuthority,
 } from "openclaw/plugin-sdk/plugin-entry";
 export type { PluginStateKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
 export { createPluginRuntimeStore, type PluginRuntime } from "openclaw/plugin-sdk/runtime-store";
+
+export type PluginGatewayAccessAuthority = NonNullable<
+  ReturnType<Parameters<OpenClawPluginApi["registerGatewayAccessPolicy"]>[0]["authorize"]>
+>;

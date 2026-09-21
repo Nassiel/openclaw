@@ -21,7 +21,7 @@ export function resolveAuthenticatedProfile(profileId: string, updatedAt: number
   return { profileId: id, displayName, avatarRevision, hasAvatar, updatedAt };
 }
 
-export async function resolveGatewayConnectUserProfile(params: {
+async function resolveGatewayConnectUserProfile(params: {
   ownerProfileExpected: boolean;
   authenticatedUserId: string | undefined;
   authResult: GatewayAuthResult;
@@ -40,8 +40,11 @@ export async function resolveGatewayConnectUserProfile(params: {
 
 /** Role and access policies need verified identity before admission; attribution alone may defer it. */
 export async function resolveGatewayConnectProfileAdmission(params: {
-  context: GatewayConnectPhaseContext;
-  state: DeviceAuthorizedGatewayConnect;
+  context: Pick<GatewayConnectPhaseContext, "configSnapshot"> &
+    Parameters<typeof rejectUnavailableProfileConnect>[0] & {
+      handler: Pick<GatewayConnectPhaseContext["handler"], "connId" | "logWsControl">;
+    };
+  state: Pick<DeviceAuthorizedGatewayConnect, "authResult" | "role" | "authMethod">;
   ownerProfileExpected: boolean;
   authenticatedUserId: string | undefined;
   resolveAuthenticatedGitHubIdentity: ReturnType<typeof createAuthenticatedGitHubIdentitySync>;

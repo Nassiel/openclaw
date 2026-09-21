@@ -11,5 +11,7 @@ export type PluginGatewayAccessPolicy = {
   authorize: (context: {
     config: OpenClawConfig;
     profile: { profileId: string; emails: readonly string[]; assignedRole: string | null };
+    /** The person's effective operator role explicitly names this policy's plugin. */
+    requiredByRole: boolean;
   }) => PluginGatewayAccessAuthority | undefined;
 };

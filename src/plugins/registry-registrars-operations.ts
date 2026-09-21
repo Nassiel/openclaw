@@ -19,6 +19,7 @@ import {
   NODE_WORKER_PRIVATE_COMMANDS,
 } from "../infra/node-commands.js";
 import { isReservedCommandName, registerPluginCommandInRegistry } from "./command-registration.js";
+import { bindPluginGatewayAccessPolicy } from "./gateway-access-policy-registration.js";
 import type { PluginGatewayAccessPolicy } from "./gateway-access-policy.types.js";
 import { getPluginInstance } from "./plugin-instance-scope.js";
 import type { WidgetPresenter } from "./plugin-registration.types.js";
@@ -60,8 +61,13 @@ export function canClaimReservedCommandOwnership(
 }
 
 export function createOperationRegistrars(state: PluginRegistryState) {
-  const { registry, createRegistration, reportRegistrationError, reportRegistrationWarning } =
-    state;
+  const {
+    registry,
+    createRegistration,
+    createIdentityRegistration,
+    reportRegistrationError,
+    reportRegistrationWarning,
+  } = state;
 
   const registerWidgetPresenter = (record: PluginRecord, presenter: WidgetPresenter) => {
     const description = normalizeOptionalString(presenter.description);
@@ -324,7 +330,11 @@ export function createOperationRegistrars(state: PluginRegistryState) {
       reportRegistrationError(record, "Gateway access policy requires an authorize handler");
       return;
     }
-    registry.gatewayAccessPolicies.push(createRegistration(record, { policy }));
+    registry.gatewayAccessPolicies.push(
+      createIdentityRegistration(record, {
+        policy: bindPluginGatewayAccessPolicy(policy, getPluginInstance(record)),
+      }),
+    );
   };
 
   const resolveServiceRegistrationId = (

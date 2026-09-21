@@ -1,5 +1,7 @@
 import { getEventListeners, once } from "node:events";
 import type { IncomingMessage } from "node:http";
+import { setImmediate as nextTurn } from "node:timers/promises";
+import { queryObjects } from "node:v8";
 import {
   createPluginRegistryFixture,
   registerVirtualTestPlugin,
@@ -10,6 +12,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
 import {
   ensureProfileForEmail,
+  getUserProfileListItem,
   linkEmail,
   setDisplayName,
   setUserProfileRole,
@@ -23,6 +26,7 @@ import {
 } from "./http-auth-utils.js";
 import { GatewayOperatorAccessDeniedError } from "./operator-access-policy.js";
 import { invalidateOperatorRolePolicy } from "./operator-role-policy.js";
+import { captureGatewayOperatorRunAuthority } from "./operator-run-authority.js";
 import { makeMockHttpResponse } from "./test-http-response.js";
 
 const { authorize, ensureOwner } = vi.hoisted(() => ({ authorize: vi.fn(), ensureOwner: vi.fn() }));
@@ -54,6 +58,37 @@ async function authenticate(
   return checkGatewayHttpRequestAuth({ req, auth: { mode: "none", allowTailscale: false }, cfg });
 }
 
+async function admitResponse(response: ReturnType<typeof makeMockHttpResponse>, email: string) {
+  authorize.mockResolvedValueOnce({ ok: true, method: "trusted-proxy", user: email });
+  const admitted = await authorizeGatewayHttpRequestOrReply({
+    req: response.res.req,
+    res: response.res,
+    auth: { mode: "none", allowTailscale: false },
+  });
+  if (!admitted?.operatorAccessAuthority) {
+    throw new Error("Expected admitted response access");
+  }
+  return admitted.operatorAccessAuthority;
+}
+
+async function completeResponseCapture(email: string) {
+  const response = makeMockHttpResponse();
+  try {
+    const authority = await admitResponse(response, email);
+    const references = {
+      authority: new WeakRef(authority),
+      assertion: new WeakRef(authority.assertCurrent),
+      signal: new WeakRef(authority.signal),
+    };
+    const finished = once(response.res, "finish");
+    response.res.end();
+    await finished;
+    return references;
+  } finally {
+    response.res.destroy();
+  }
+}
+
 function registerPersonAccessFixture() {
   const { config, registry } = createPluginRegistryFixture();
   const cfg: OpenClawConfig = {
@@ -70,7 +105,7 @@ function registerPersonAccessFixture() {
   };
   const email = "visitor@example.test";
   const person = ensureProfileForEmail(email);
-  const access: { grant?: AbortController; inapplicable?: boolean } = {};
+  const access: { grant?: AbortController; inapplicable?: boolean; onAuthorize?: () => void } = {};
   registerVirtualTestPlugin({
     registry,
     config,
@@ -79,6 +114,7 @@ function registerPersonAccessFixture() {
     register(api) {
       api.registerGatewayAccessPolicy({
         authorize({ profile }) {
+          access.onAuthorize?.();
           if (profile.assignedRole === "staff" || access.inapplicable) {
             return undefined;
           }
@@ -143,7 +179,7 @@ describe("HTTP gateway owner profiles", () => {
     },
   );
 
-  it.each(["grant ended", "email moved"])(
+  it.each(["grant ended", "email moved away and back"])(
     "enforces registered person access without retiring independent staff authority (%s)",
     async (change) => {
       await withOpenClawTestState({ label: "http-person-access" }, async () => {
@@ -171,9 +207,10 @@ describe("HTTP gateway owner profiles", () => {
           access.grant.abort(new Error("Access ended"));
         } else {
           linkEmail(email, ensureProfileForEmail("replacement@example.test").id);
+          linkEmail(email, person.id);
         }
-        expect(() => captured.assertCurrent()).toThrow(GatewayOperatorAccessDeniedError);
         expect(captured.signal.aborted).toBe(true);
+        expect(() => captured.assertCurrent()).toThrow(GatewayOperatorAccessDeniedError);
         expect((await authenticate("trusted-proxy", cfg, staffEmail)).ok).toBe(true);
         access.grant = new AbortController();
         expect(() => captured.assertCurrent()).toThrow(GatewayOperatorAccessDeniedError);
@@ -182,39 +219,94 @@ describe("HTTP gateway owner profiles", () => {
     },
   );
 
+  it.each([false, true])(
+    "rejects alias retirement during policy authorization (restored: %s)",
+    async (restore) => {
+      await withOpenClawTestState({ label: "http-reentrant-person-access" }, async () => {
+        const { cfg, email, person, access } = registerPersonAccessFixture();
+        linkEmail("retained@example.test", person.id);
+        const replacement = ensureProfileForEmail("replacement@example.test");
+        access.grant = new AbortController();
+        access.onAuthorize = () => {
+          linkEmail(email, replacement.id);
+          if (restore) {
+            linkEmail(email, person.id);
+          }
+        };
+        expect(await authenticate("trusted-proxy", cfg, email)).toMatchObject({
+          ok: false,
+          authResult: { reason: "operator_access_denied" },
+        });
+        expect(getUserProfileListItem(person.id).id).toBe(person.id);
+        expect(access.grant.signal.aborted).toBe(false);
+      });
+    },
+  );
+
+  it.each(["grant", "alias"])(
+    "collects HTTP captures while a retained signal observes %s retirement",
+    async (source) => {
+      await withOpenClawTestState({ label: "http-access-retention" }, async () => {
+        const { cfg, email, person, access } = registerPersonAccessFixture();
+        setRuntimeConfigSnapshot(cfg);
+        linkEmail("retained@example.test", person.id);
+        const replacement = ensureProfileForEmail("replacement@example.test");
+        access.grant = new AbortController();
+        const retired = await completeResponseCapture(email);
+        const signal = await authenticate("trusted-proxy", cfg, email).then((admitted) => {
+          if (!admitted.ok || !admitted.requestAuth.operatorAccessAuthority) {
+            throw new Error("Expected retained access signal");
+          }
+          return admitted.requestAuth.operatorAccessAuthority.signal;
+        });
+        const control = new WeakRef({ unowned: true });
+        // Leave the creation job before collecting; dereferencing first would retain the capture.
+        await nextTurn();
+        queryObjects(WeakRef);
+        expect(control.deref()).toBeUndefined();
+        for (const [name, reference] of Object.entries(retired)) {
+          expect(reference.deref(), `completed HTTP ${name} should collect`).toBeUndefined();
+        }
+        expect(access.grant.signal.aborted).toBe(false);
+        setDisplayName(person.id, "Still authorized");
+        expect(signal.aborted).toBe(false);
+        if (source === "grant") {
+          access.grant.abort(new Error("Access ended"));
+        } else {
+          linkEmail(email, replacement.id);
+          linkEmail(email, person.id);
+        }
+        expect(signal.aborted).toBe(true);
+      });
+    },
+  );
+
   it("binds revocation to an active response and releases completed keep-alive responses", async () => {
     await withOpenClawTestState({ label: "http-response-access" }, async () => {
-      const { cfg, email, access } = registerPersonAccessFixture();
+      const { cfg, email, person, access } = registerPersonAccessFixture();
       setRuntimeConfigSnapshot(cfg);
+      linkEmail("retained@example.test", person.id);
+      const replacement = ensureProfileForEmail("replacement@example.test");
       const streaming = makeMockHttpResponse();
       const completed = makeMockHttpResponse();
       const next = makeMockHttpResponse();
+      const aliasStreaming = makeMockHttpResponse();
       const keepAliveSocket = completed.res.req.socket;
       Object.assign(completed.res, { socket: keepAliveSocket });
       Object.assign(next.res.req, { socket: keepAliveSocket });
       Object.assign(next.res, { socket: keepAliveSocket });
-      const admitResponse = async (response: ReturnType<typeof makeMockHttpResponse>) => {
-        authorize.mockResolvedValueOnce({ ok: true, method: "trusted-proxy", user: email });
-        const admitted = await authorizeGatewayHttpRequestOrReply({
-          req: response.res.req,
-          res: response.res,
-          auth: { mode: "none", allowTailscale: false },
-        });
-        if (!admitted?.operatorAccessAuthority) {
-          throw new Error("Expected admitted response access");
-        }
-        return admitted.operatorAccessAuthority;
-      };
+      let releaseRun: (() => void) | undefined;
+      let releaseChild: (() => void) | undefined;
       try {
         access.grant = new AbortController();
-        await admitResponse(streaming);
+        await admitResponse(streaming, email);
         expect(streaming.res.destroyed).toBe(false);
         access.grant.abort(new Error("Access ended"));
         expect(streaming.res.destroyed).toBe(true);
 
         const completedGrant = new AbortController();
         access.grant = completedGrant;
-        const completedAuthority = await admitResponse(completed);
+        const completedAuthority = await admitResponse(completed, email);
         expect(getEventListeners(completedAuthority.signal, "abort").length).toBeGreaterThan(0);
         const finished = once(completed.res, "finish");
         completed.res.end();
@@ -222,17 +314,61 @@ describe("HTTP gateway owner profiles", () => {
         expect(getEventListeners(completedAuthority.signal, "abort")).toEqual([]);
 
         access.grant = new AbortController();
-        const nextAuthority = await admitResponse(next);
+        const nextAuthority = await admitResponse(next, email);
         completedGrant.abort(new Error("Previous invitation ended"));
         expect(completedAuthority.signal.aborted).toBe(true);
         expect(nextAuthority.signal.aborted).toBe(false);
         expect(() => nextAuthority.assertCurrent()).not.toThrow();
         expect(next.res.destroyed).toBe(false);
         expect(keepAliveSocket.destroyed).toBe(false);
+
+        await admitResponse(aliasStreaming, email);
+        // The child keeps its source after the parent releases it and its response disconnects.
+        const captured = captureGatewayOperatorRunAuthority({
+          client: {
+            connect: {
+              minProtocol: 1,
+              maxProtocol: 1,
+              client: { id: "test", version: "test", platform: "test", mode: "test" },
+              role: "operator",
+              scopes: ["operator.read"],
+            },
+            internal: { operatorRoleActor: { kind: "operator", profileId: person.id } },
+          },
+          context: { getRuntimeConfig: () => cfg },
+          sourceAuthority: nextAuthority,
+        });
+        releaseRun = captured?.release;
+        if (!captured?.authority.retain) {
+          throw new Error("Expected retained operator source");
+        }
+        releaseChild = captured.authority.retain();
+        captured.release();
+        const disconnected = once(next.res, "close");
+        next.res.destroy();
+        await disconnected;
+        expect(nextAuthority.signal.aborted).toBe(false);
+        expect(captured.authority.signal?.aborted).toBe(false);
+        setDisplayName(person.id, "Updated during retained work");
+        linkEmail("added@example.test", person.id);
+        expect(aliasStreaming.res.destroyed).toBe(false);
+        expect(captured.authority.signal?.aborted).toBe(false);
+
+        linkEmail(email, replacement.id);
+        linkEmail(email, person.id);
+        expect(aliasStreaming.res.destroyed).toBe(true);
+        expect(captured.authority.signal?.aborted).toBe(true);
+        expect(nextAuthority.signal.aborted).toBe(true);
+        expect(access.grant.signal.aborted).toBe(false);
+        expect((await authenticate("trusted-proxy", cfg, email)).ok).toBe(true);
+        expect(nextAuthority.signal.aborted).toBe(true);
       } finally {
+        releaseChild?.();
+        releaseRun?.();
         streaming.res.destroy();
         completed.res.destroy();
         next.res.destroy();
+        aliasStreaming.res.destroy();
       }
     });
   });

@@ -23,7 +23,12 @@ import { seedOriginDeviceToken } from "../infra/device-auth-store.test-support.j
 import { loadOrCreateDeviceIdentity } from "../infra/device-identity.js";
 import { getPairedDevice, listDevicePairing } from "../infra/device-pairing.js";
 import { connectUserModelAccount } from "../state/user-model-accounts.js";
-import { ensureProfileForEmail, setUserProfileRole } from "../state/user-profiles.js";
+import {
+  ensureProfileForEmail,
+  linkEmail,
+  setDisplayName,
+  setUserProfileRole,
+} from "../state/user-profiles.js";
 import { invalidateOperatorRolePolicy } from "./operator-role-policy.js";
 import type { OperatorScope } from "./operator-scopes.js";
 import {
@@ -88,7 +93,7 @@ function responseScopes(response: Awaited<ReturnType<typeof connectReq>>): strin
 }
 
 describe("gateway identity scope grants", () => {
-  test("denies missing person access, closes its active connection, and preserves staff", async () => {
+  test("denies missing person access, retires grant or alias authority, and preserves staff", async () => {
     await configureGatewayAuth(
       {
         mode: "trusted-proxy",
@@ -177,6 +182,24 @@ describe("gateway identity scope grants", () => {
         expect(await waitForWsClose(guest.socket, 1_000)).toBe(true);
         expect((await rpcReq(staff.socket, "status")).ok).toBe(true);
         expect((await connect("ended", "visitor@example.com")).result.ok).toBe(false);
+
+        grant = new AbortController();
+        const person = ensureProfileForEmail("visitor@example.com");
+        linkEmail("retained@example.com", person.id);
+        const replacement = ensureProfileForEmail("replacement@example.com");
+        const aliasGuest = await connect("alias-guest", "visitor@example.com");
+        expect(aliasGuest.result.ok).toBe(true);
+        setDisplayName(person.id, "Updated visitor");
+        linkEmail("added@example.com", person.id);
+        expect((await rpcReq(aliasGuest.socket, "status")).ok).toBe(true);
+
+        const closed = waitForWsClose(aliasGuest.socket, 1_000);
+        linkEmail("visitor@example.com", replacement.id);
+        linkEmail("visitor@example.com", person.id);
+        expect(await closed).toBe(true);
+        expect(grant.signal.aborted).toBe(false);
+        expect((await rpcReq(staff.socket, "status")).ok).toBe(true);
+        expect((await connect("restored", "visitor@example.com")).result.ok).toBe(true);
       } finally {
         accessPolicies.splice(0, accessPolicies.length, ...registeredPolicies);
         for (const socket of sockets) {
